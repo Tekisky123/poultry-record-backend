@@ -24,7 +24,6 @@ const vehicleSchema = new mongoose.Schema({
         trim: true
     },
 
-
     capacityKg: {
         type: Number,
         required: true,
@@ -59,7 +58,8 @@ const vehicleSchema = new mongoose.Schema({
         validate: [
             {
                 validator: function (val) {
-                    return this.purchaseType !== "OWNED" || !!val;
+                    // Require date if purchaseType is OWNED
+                    return this.purchaseType !== "OWNED" || validator.isDate(String(val));
                 },
                 message: "Purchase date is required for owned vehicles"
             },
@@ -171,7 +171,7 @@ const vehicleSchema = new mongoose.Schema({
     toObject: { virtuals: true }
 });
 
-vehicleSchema.pre('save', function(next) {
+vehicleSchema.pre('save', function (next) {
     if (this.vehicleNumber) {
         this.vehicleNumber = String(this.vehicleNumber).toUpperCase().trim();
     }

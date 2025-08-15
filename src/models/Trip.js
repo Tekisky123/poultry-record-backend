@@ -91,6 +91,6 @@ const tripSchema = new mongoose.Schema({
 });
 
 
-const Trip = mongoose.Model('Trip', tripSchema);
+const Trip = mongoose.model('Trip', tripSchema);
 
 export default Trip;

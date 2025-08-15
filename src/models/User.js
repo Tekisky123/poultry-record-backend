@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import bcrypt from "bcrypt";
 import jwt from 'jsonwebtoken';
 import { config } from 'dotenv';
+import validator from 'validator';
 config({ path: `${process.cwd()}/src/.env` });
 
 const userSchema = new mongoose.Schema({
@@ -63,10 +64,16 @@ const userSchema = new mongoose.Schema({
         minlength: [6, 'Password must be at least 6 characters'],
         validate: {
             validator: function (value) {
-                // at least one uppercase, one lowercase, one number
-                return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/.test(value);
+                // You can customize the strong password requirements here
+                return validator.isStrongPassword(value, {
+                    minLength: 6,
+                    minLowercase: 1,
+                    minUppercase: 1,
+                    minNumbers: 1,
+                    minSymbols: 0 // no special char required unless you want it
+                });
             },
-            message: 'Password must contain uppercase, lowercase, and a number'
+            message: 'Password must contain at least one uppercase letter, one lowercase letter, and one number'
         }
     },
 
@@ -106,10 +113,10 @@ userSchema.methods.validatePassword = async function (inputPassword) {
 userSchema.methods.getJWT = async function () {
     const user = this;
 
-    const token = await jwt.sign({ 
-        _id: user._id, 
-        role:user.role, 
-        name:user.name 
+    const token = await jwt.sign({
+        _id: user._id,
+        role: user.role,
+        name: user.name
     }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
     return token;

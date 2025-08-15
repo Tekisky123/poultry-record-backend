@@ -30,6 +30,10 @@ const server = http.createServer(app);
 
 app.use("/api", router);
 
+app.get('/health', (req, res) => {
+  return res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 app.all('/*splat', (req, res) => {
   return res.status(404).json({
     success: false,
