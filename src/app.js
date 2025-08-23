@@ -12,15 +12,17 @@ const app = express();
 const port = process.env.PORT || 8888;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const BASE_URL = NODE_ENV === 'production'
-  ? 'http://poultryrecord.in/api'
+  ? 'https://poultry-record-backend.vercel.app/api'
   : `http://localhost:${port}`;
 
-app.use(
-  cors({
-    origin: "http://localhost:5173",
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: [
+    'http://localhost:5173', 
+    'https://poultry-record-frontend.vercel.app'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
+  credentials: true
+}));
 
 app.use(express.json());
 app.use(cookieParser());
