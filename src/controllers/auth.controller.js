@@ -7,6 +7,13 @@ import bcrypt from 'bcrypt';
 import { config } from 'dotenv';
 config({ path: `${process.cwd()}/src/.env` });
 
+const cookieConfig = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", // NONE for cross-site
+  maxAge: 365 * 24 * 60 * 60 * 1000, // one year
+}
+
 export const signup = async (req, res, next) => {
   try {
     signupValidator(req.body);
@@ -84,10 +91,7 @@ export const login = async (req, res, next) => {
     const { password, ...otherData } = user.toObject();
 
     // Set cookie
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production'
-    });
+    res.cookie('token', token, cookieConfig);
 
     // Send success response
     successResponse(res, 'Login successful!!', 200, otherData);
