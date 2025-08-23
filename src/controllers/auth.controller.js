@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import AppError from "../utils/AppError.js";
+import validator from 'validator';
 import { loginValidator, signupValidator } from '../utils/validators.js';
 import { successResponse } from "../utils/responseHandler.js";
 import bcrypt from 'bcrypt';
@@ -10,15 +11,13 @@ export const signup = async (req, res, next) => {
   try {
     signupValidator(req.body);
 
-    const { mobileNumber, email, password: inputPassword } = req.body;
-
-    const hashPassword = await bcrypt.hash(inputPassword, 10);
+    const { mobileNumber, role, email, password: inputPassword } = req.body;
 
     // Check if user already exists (email or mobile)
     const existingUser = await User.findOne({
       $or: [
-        { email: email || null }, // only check email if provided
-        { mobileNumber }
+        { email: email }, // only check email if provided
+        { mobileNumber: mobileNumber }
       ]
     });
 
@@ -26,21 +25,17 @@ export const signup = async (req, res, next) => {
       throw new AppError('User with this email or mobile number already exists', 400);
     }
 
+    const hashPassword = await bcrypt.hash(inputPassword, 10);
+
     const user = new User({
       ...req.body,
       password: hashPassword,
+      approvalStatus: role === 'customer' ? 'approved' : 'pending'
     });
 
     const savedUser = await user.save();
 
-    const token = await user.getJWT();
-
     const { password, ...otherData } = savedUser.toObject();
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production'
-    });
 
     successResponse(res, "signup successfull!!", 201, otherData);
   } catch (error) {
@@ -53,19 +48,27 @@ export const login = async (req, res, next) => {
     // Validate request body
     loginValidator(req.body);
 
-    const { mobileNumber, email, password: inputPassword } = req.body;
+    const { username, password: inputPassword } = req.body;
 
     const query = { isActive: true };
-    if (email) {
-      query.email = email.toLowerCase();
-    } else if (mobileNumber) {
-      query.mobileNumber = mobileNumber;
+
+    if (validator.isEmail(username)) {
+      query.email = username.toLowerCase();
+    } else if (validator.isMobilePhone(username.toString(), "any", { strictMode: true })) {
+      query.mobileNumber = username;
+    } else {
+      throw new AppError("Username must be a valid email or mobile number", 400);
     }
 
     // Check if user exists and is active
     const user = await User.findOne(query);
 
     if (!user) throw new AppError('Invalid credentials', 401);
+
+    // Require approval for admin/supervisor before allowing login
+    if ((user.role === 'admin' || user.role === 'supervisor') && user.approvalStatus !== 'approved') {
+      throw new AppError(`Account approval is ${user.approvalStatus || "pending"}`, 403);
+    }
 
     // Check password
     const validPassword = await user.validatePassword(inputPassword);
@@ -101,5 +104,14 @@ export const logout = async (req, res, next) => {
     successResponse(res, "logout successfull!!");
   } catch (error) {
     next(error);
+  }
+};
+
+export const getVerifiedUser = async (req, res, next) => {
+  const user = req.user;
+  try {
+    successResponse(res, 'Fetch verified user', 200, user);
+  } catch (error) {
+    next(error)
   }
 };

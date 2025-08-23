@@ -19,23 +19,16 @@ const userSchema = new mongoose.Schema({
     role: {
         type: String,
         required: true,
-        enum: ['admin', 'supervisor', 'driver', 'labour']
+        enum: ['superadmin', 'admin', 'supervisor', 'customer']
     },
 
     email: {
         type: String,
-        required: [
-            function () {
-                return this.role === 'admin' || this.role === 'supervisor';
-            },
-            'Email is required for admin and supervisor'
-        ],
+        required: true,
         unique: true,
         lowercase: true,
         validate: {
             validator: function (value) {
-                // Allow empty email if not required
-                if (!value) return true;
                 return validator.isEmail(value);
             },
             message: 'Invalid email format'
@@ -48,7 +41,7 @@ const userSchema = new mongoose.Schema({
         trim: true,
         validate: {
             validator: (value) => validator.isMobilePhone(value, 'any', { strictMode: true }),
-            message: 'Invalid contact number'
+            message: 'Invalid mobile number!'
         }
     },
 
@@ -92,6 +85,15 @@ const userSchema = new mongoose.Schema({
         default: true
     },
 
+    // Approval workflow
+    approvalStatus: {
+        type: String,
+        enum: ['pending', 'approved', 'rejected'],
+        default: 'pending'
+    },
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: { type: Date },
+
     lastLogin: {
         type: Date
     }
@@ -113,11 +115,8 @@ userSchema.methods.validatePassword = async function (inputPassword) {
 userSchema.methods.getJWT = async function () {
     const user = this;
 
-    const token = await jwt.sign({
-        _id: user._id,
-        role: user.role,
-        name: user.name
-    }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    const token = await jwt.sign({...user}, process.env.JWT_SECRET, { expiresIn: '1h' });
 
     return token;
 }

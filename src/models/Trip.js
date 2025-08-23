@@ -1,13 +1,12 @@
 import mongoose from "mongoose";
 
 const tripSchema = new mongoose.Schema({
-    tripId: { type: String, unique: true, required: true },
     date: { type: Date, required: true },
     vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true },
     supervisor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    driver: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    driver: { type: String, required: true },
     labours: {
-        type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+        type: [{ type: String }],
         required: true,
         validate: [arr => arr.length > 0, 'At least one labour is required']
     },
@@ -86,8 +85,9 @@ const tripSchema = new mongoose.Schema({
     },
 
     status: { type: String, enum: ['started', 'ongoing', 'completed'], default: 'started' },
-    createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
+
+},{
+    timestamps: true
 });
 
 

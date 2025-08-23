@@ -19,20 +19,18 @@ const vehicleSchema = new mongoose.Schema({
 
     type: {
         type: String,
-        enum: ["Pickup", "Mini Truck", "Truck", "Tempo", "Container", "Trailer"],
-        required: true,
-        trim: true
+        enum: ["pickup", "mini-truck", "truck", "tempo", "container", "trailer"],
+        default: "truck",
     },
 
     capacityKg: {
         type: Number,
-        required: true,
         min: [100, "Capacity should be at least 100kg"]
     },
 
     fuelType: {
         type: String,
-        enum: ["Diesel", "Petrol", "CNG", "Electric"],
+        enum: ["diesel", "petrol", "cng", "electric"],
     },
 
     fuelEfficiency: { type: Number, default: 6 }, // km per liter
@@ -47,96 +45,10 @@ const vehicleSchema = new mongoose.Schema({
         }
     },
 
-    purchaseType: {
-        type: String,
-        required: true,
-        enum: ["OWNED", "RENTED"]
-    },
-
-    purchaseDate: {
-        type: Date,
-        validate: [
-            {
-                validator: function (val) {
-                    // Require date if purchaseType is OWNED
-                    return this.purchaseType !== "OWNED" || validator.isDate(String(val));
-                },
-                message: "Purchase date is required for owned vehicles"
-            },
-            {
-                validator: val => !val || val <= new Date(),
-                message: "purchaseDate cannot be in the future"
-            }
-        ]
-    },
-
-    purchaseAmount: {
-        type: mongoose.Schema.Types.Decimal128,
-        min: [0, 'purchaseAmount cannot be negative'],
-        validate: {
-            validator: function (val) {
-                if (this.purchaseType === "OWNED") {
-                    return val != null && parseFloat(val.toString()) > 0;
-                }
-                return true;
-            },
-            message: "Purchase amount must be greater than 0 for owned vehicles"
-        },
-        get: v => (v != null ? parseFloat(v.toString()) : v),
-        set: v => (v == null ? v : mongoose.Types.Decimal128.fromString(String(v)))
-    },
-
-    rentedFrom: {
-        type: String,
-        trim: true,
-        select: false,
-        validate: {
-            validator: function (val) {
-                return this.purchaseType === "RENTED" ? !!val : true;
-            },
-            message: "Rented from (vendor name) is required for rented vehicles"
-        }
-    },
-
-    rentedPerKmCharge: {
-        type: mongoose.Schema.Types.Decimal128,
-        min: [0, 'rentedPerKmCharge cannot be negative'],
-        validate: {
-            validator: function (val) {
-                if (this.purchaseType === "RENTED") {
-                    return val != null && parseFloat(val.toString()) > 0;
-                }
-                return true;
-            },
-            message: "Per km rent must be greater than 0 for rented vehicles"
-        },
-        get: v => (v != null ? parseFloat(v.toString()) : v),
-        set: v => (v == null ? v : mongoose.Types.Decimal128.fromString(String(v)))
-    },
-
-    isInsured: {
-        type: Boolean,
-        default: false
-    },
-
-    insuranceExpiryDate: {
-        type: Date,
-        validate: {
-            validator: function (val) {
-                return !this.isInsured || !!val;
-            },
-            message: "Insurance expiry date is required when vehicle is insured"
-        }
-    },
-
-    permitValidTill: { type: Date },
-    fitnessCertificateExpiry: { type: Date },
-    pollutionCertificateExpiry: { type: Date },
-
     currentStatus: {
         type: String,
-        enum: ["Idle", "In Transit", "Maintenance"],
-        default: "Idle"
+        enum: ["idle", "in-transit", "maintenance"],
+        default: "idle"
     },
 
     location: {

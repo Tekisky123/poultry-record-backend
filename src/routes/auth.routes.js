@@ -5,9 +5,11 @@ import * as authController from '../controllers/auth.controller.js';
 import authenticateToken from '../middleware/authenticateToken.js';
 import authorize from '../middleware/authorization.js';
 
-router.post('/signup', authenticateToken, authorize(["admin"]), authController.signup);
+// Public signup; approval required for admin/supervisor
+router.post('/signup', authController.signup);
 router.post('/login', authController.login);
 router.post('/logout', authController.logout);
+router.get('/verify', authenticateToken, authController.getVerifiedUser);
 // router.patch('/forgot-password', authController.updatePassword);
 
 export default router;

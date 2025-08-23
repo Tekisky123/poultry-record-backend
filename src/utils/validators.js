@@ -14,20 +14,14 @@ export const signupValidator = (data = {}) => {
   }
 
   // 2. Role validation
-  const allowedRoles = ['admin', 'supervisor', 'driver', 'labour'];
+  const allowedRoles = ['superadmin', 'admin', 'supervisor', 'customer'];
   if (!role || !allowedRoles.includes(role)) {
     throw new AppError(`Role must be one of: ${allowedRoles.join(', ')}`, 400);
   }
 
-  // 3. Email validation (required for admin/supervisor only)
-  if (role === 'admin' || role === 'supervisor') {
-    if (!email || !validator.isEmail(email)) {
-      throw new AppError('Valid email is required for admin and supervisor', 400);
-    }
-  } else {
-    if (email && !validator.isEmail(email)) {
-      throw new AppError('Invalid email format', 400);
-    }
+  // 3. Email validation required 
+  if (!email || !validator.isEmail(email)) {
+    throw new AppError('Invalid email!', 400);
   }
 
   // 4. Mobile number validation
@@ -69,21 +63,24 @@ export const loginValidator = (data = {}) => {
     throw new AppError('Invalid request body', 400);
   }
 
-  const { email, mobileNumber, password } = data;
+  const { username, password } = data;
 
-  // Require at least one identifier
-  if ((!email || email.trim() === '') && (!mobileNumber || mobileNumber.toString().trim() === '')) {
-    throw new AppError('Email or mobile number is required', 400);
+  // Validation logic
+  if (!username) {
+    throw new AppError("Username is required", 400);
   }
 
-  // If email is provided, validate format
-  if (email && !validator.isEmail(email)) {
-    throw new AppError('Email is not valid', 400);
+  // Check if it's an email
+  if (validator.isEmail(username)) {
+    console.log("user login with email");
   }
-
-  // If mobile number is provided, validate format
-  if (mobileNumber && !validator.isMobilePhone(mobileNumber.toString(), 'any', { strictMode: true })) {
-    throw new AppError('Mobile number is not valid', 400);
+  // Check if it's a mobile number
+  else if (validator.isMobilePhone(username.toString(), "any", { strictMode: true })) {
+    console.log("user login with mobile number");
+  }
+  // Otherwise invalid
+  else {
+    throw new AppError("Username must be a valid email or mobile number", 400);
   }
 
   // Password validation
