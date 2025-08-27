@@ -6,8 +6,10 @@ import authenticateToken from '../middleware/authenticateToken.js';
 import authorize from '../middleware/authorization.js';
 
 
-router.post('/', authenticateToken, authorize(["admin"]), vehicleController.addVehicle);
-router.get('/', authenticateToken, authorize(["admin"]), vehicleController.getVehicles);
-router.get('/:id', authenticateToken, authorize(["admin"]), vehicleController.getVehicleById);
+router.post('/', authenticateToken, authorize(["superadmin","admin"]), vehicleController.addVehicle);
+router.get('/', authenticateToken, authorize(["superadmin","admin"]), vehicleController.getVehicles);
+router.get('/:id', authenticateToken, authorize(["superadmin","admin"]), vehicleController.getVehicleById);
+router.patch('/:id', authenticateToken, authorize(["superadmin","admin"]), vehicleController.updateVehicle);
+router.delete('/:id', authenticateToken, authorize(["superadmin","admin"]), vehicleController.deleteVehicle);
 
 export default router;
