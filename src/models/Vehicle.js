@@ -1,6 +1,7 @@
 // models/Vehicle.js
 import mongoose from "mongoose";
 import validator from "validator";
+import User from './User.js';
 
 const vehicleSchema = new mongoose.Schema({
     vehicleNumber: {
@@ -51,6 +52,11 @@ const vehicleSchema = new mongoose.Schema({
         default: "idle"
     },
 
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+
     location: {
         type: {
             type: String,
@@ -65,6 +71,17 @@ const vehicleSchema = new mongoose.Schema({
                 message: "Coordinates must be [longitude, latitude]"
             }
         }
+    },
+    createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
+        ref: 'User',
+        immutable: true
+    },
+    updatedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
     }
 
 }, {
