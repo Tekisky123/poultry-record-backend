@@ -8,6 +8,11 @@ const authenticateToken = async(req, res, next) => {
   const headerToken = authHeader && authHeader.split(' ')[1];
   const cookieToken = req.cookies?.token || req.cookies?.accessToken;
   const token = headerToken || cookieToken;
+
+  console.log(authHeader)
+  console.log(headerToken)
+  console.log(cookieToken)
+  console.log(token)
   
   try {
 
