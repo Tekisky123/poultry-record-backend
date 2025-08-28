@@ -93,8 +93,8 @@ export const login = async (req, res, next) => {
     // Set cookie
     res.cookie('token', token, cookieConfig);
 
-    // Send success response
-    successResponse(res, 'Login successful!!', 200, otherData);
+    // Send success response with token included
+    successResponse(res, 'Login successful!!', 200, { ...otherData, token });
 
   } catch (error) {
     next(error);
