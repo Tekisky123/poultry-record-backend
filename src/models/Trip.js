@@ -50,7 +50,7 @@ const tripSchema = new mongoose.Schema({
     expenses: [{
         category: { 
             type: String, 
-            enum: ['meals', 'toll', 'maintenance', 'tea', 'lunch', 'other'],
+            enum: ['fuel','parking','meals', 'toll', 'maintenance', 'tea', 'lunch', 'other'],
             required: true
         },
         amount: { type: Number, required: true },
