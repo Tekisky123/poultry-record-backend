@@ -265,6 +265,83 @@ export const addSale = async (req, res, next) => {
     }
 };
 
+// Add death birds to trip (Supervisor)
+export const addDeathBirds = async (req, res, next) => {
+    try {
+        const { quantity, weight, rate, reason, date } = req.body;
+
+        // Validate required fields
+        if (!quantity || !weight || !rate || !date) {
+            return errorResponse(res, "Quantity, weight, rate, and date are required", 400);
+        }
+
+        if (quantity <= 0 || weight <= 0 || rate <= 0) {
+            return errorResponse(res, "Quantity, weight, and rate must be greater than 0", 400);
+        }
+
+        // Calculate derived fields
+        const avgWeight = Number((weight / quantity).toFixed(2));
+        const total = Number((weight * rate).toFixed(2));
+
+        const deathBirdData = {
+            quantity,
+            weight,
+            avgWeight,
+            rate,
+            total,
+            reason: reason || '',
+            date: new Date(date)
+        };
+
+        let query = { _id: req.params.id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) {
+            return errorResponse(res, "Trip not found or access denied", 404);
+        }
+
+        // Add death bird to losses array
+        trip.losses.push(deathBirdData);
+
+        // Recalculate summary
+        trip.summary.totalLosses = trip.losses.reduce((sum, loss) => sum + (loss.total || 0), 0);
+        trip.summary.totalBirdsLost = trip.losses.reduce((sum, loss) => sum + (loss.quantity || 0), 0);
+        trip.summary.totalWeightLost = trip.losses.reduce((sum, loss) => sum + (loss.weight || 0), 0);
+        trip.summary.mortality = trip.summary.totalBirdsLost;
+
+        // Calculate bird weight loss: purchased - sold - lost
+        trip.summary.birdWeightLoss = (trip.summary.totalWeightPurchased || 0) - 
+                                     (trip.summary.totalWeightSold || 0) - 
+                                     (trip.summary.totalWeightLost || 0);
+
+        // Calculate birds remaining: purchased - sold - lost
+        trip.summary.birdsRemaining = (trip.summary.totalBirdsPurchased || 0) - 
+                                     (trip.summary.totalBirdsSold || 0) - 
+                                     (trip.summary.totalBirdsLost || 0);
+
+        // Recalculate net profit (subtract losses)
+        const totalRevenue = trip.summary.totalSalesAmount || 0;
+        const totalCosts = (trip.summary.totalPurchaseAmount || 0) + (trip.summary.totalExpenses || 0) + (trip.summary.totalDieselAmount || 0);
+        const totalLosses = trip.summary.totalLosses || 0;
+        trip.summary.netProfit = totalRevenue - totalCosts - totalLosses;
+
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('supervisor', 'name email')
+            .populate('vehicle', 'vehicleNumber driverName')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Death birds added to trip", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Update trip diesel (Supervisor)
 export const updateTripDiesel = async (req, res, next) => {
     try {

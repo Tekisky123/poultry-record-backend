@@ -17,6 +17,7 @@ router.post('/:id/purchase', authenticateToken, authorize(['supervisor']), tripC
 router.post('/:id/sale', authenticateToken, authorize(['supervisor']), tripController.addSale);
 router.put('/:id/diesel', authenticateToken, authorize(['supervisor']), tripController.updateTripDiesel);
 router.put('/:id/expenses', authenticateToken, authorize(['supervisor']), tripController.updateTripExpenses);
+router.put('/:id/death-birds', authenticateToken, authorize(['supervisor']), tripController.addDeathBirds);
 router.put('/:id/complete', authenticateToken, authorize(['supervisor']), tripController.completeTrip);
 
 // Trip statistics (Admin/Supervisor)
