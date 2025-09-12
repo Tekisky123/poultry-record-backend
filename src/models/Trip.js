@@ -9,6 +9,11 @@ const tripSchema = new mongoose.Schema({
             return 'TRP-' + Date.now();
         }
     },
+    // sequence: { 
+    //     type: Number, 
+    //     required: true,
+    //     unique: true
+    // },
     date: { type: Date, required: true },
     place: { type: String, required: true }, // SNK, etc.
     vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true },
@@ -50,7 +55,7 @@ const tripSchema = new mongoose.Schema({
     expenses: [{
         category: { 
             type: String, 
-            enum: ['fuel','parking','meals', 'toll', 'maintenance', 'tea', 'lunch', 'other'],
+            enum: ['parking','meals', 'toll', 'maintenance', 'tea', 'lunch', 'other'],
             required: true
         },
         amount: { type: Number, required: true },
@@ -61,7 +66,7 @@ const tripSchema = new mongoose.Schema({
 
     // Bird Purchases
     purchases: [{
-        supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', required: true },
+        supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' },
         dcNumber: { type: String, required: true },
         birds: { type: Number, required: true },
         weight: { type: Number, required: true },
@@ -75,13 +80,15 @@ const tripSchema = new mongoose.Schema({
 
     // Bird Sales
     sales: [{
-        client: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
+        client: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
         billNumber: { type: String, required: true },
         birds: { type: Number, required: true },
         weight: { type: Number, required: true },
         avgWeight: { type: Number }, // Calculated field
         rate: { type: Number, required: true },
         amount: { type: Number, required: true },
+        profitMargin: { type: Number, default: 0 }, // Calculated: (saleRate - avgPurchaseRate)
+        profitAmount: { type: Number, default: 0 }, // Calculated: profitMargin * weight
         paymentMode: { type: String, enum: ['cash', 'online', 'credit'], default: 'cash' },
         paymentStatus: { type: String, enum: ['paid', 'pending', 'partial'], default: 'pending' },
         receivedAmount: { type: Number, default: 0 },
@@ -102,6 +109,17 @@ const tripSchema = new mongoose.Schema({
         timestamp: { type: Date, default: Date.now }
     }],
 
+    // Stock Management - Multiple Stock Entries
+    stocks: [{
+        birds: { type: Number, required: true },
+        weight: { type: Number, required: true },
+        avgWeight: { type: Number, default: 0 },
+        value: { type: Number, default: 0 }, // Not counted in profit
+        rate: { type: Number, required: true }, // Purchase rate for this stock
+        addedAt: { type: Date, default: Date.now },
+        notes: { type: String, default: '' }
+    }],
+
     // Trip Summary
     summary: {
         totalPurchaseAmount: { type: Number, default: 0 },
@@ -115,12 +133,14 @@ const tripSchema = new mongoose.Schema({
         totalWeightPurchased: { type: Number, default: 0 },
         totalWeightSold: { type: Number, default: 0 },
         totalWeightLost: { type: Number, default: 0 }, // Total weight lost
-        birdWeightLoss: { type: Number, default: 0 }, // Calculated: purchased - sold - lost
+        birdWeightLoss: { type: Number, default: 0 }, // Calculated: purchased - sold - stock - death
         birdsRemaining: { type: Number, default: 0 }, // Birds left after sales
         mortality: { type: Number, default: 0 }, // Birds that died
         netProfit: { type: Number, default: 0 },
+        totalProfitMargin: { type: Number, default: 0 }, // Total profit from sales only
         profitPerKg: { type: Number, default: 0 },
-        fuelEfficiency: { type: Number, default: 0 }
+        fuelEfficiency: { type: Number, default: 0 },
+        avgPurchaseRate: { type: Number, default: 0 } // Average purchase rate for calculations
     },
 
     status: { 
@@ -156,7 +176,17 @@ const tripSchema = new mongoose.Schema({
 });
 
 // Pre-save middleware to calculate derived fields
-tripSchema.pre('save', function(next) {
+tripSchema.pre('save', async function(next) {
+    // Generate sequence number if not provided
+    // if (this.isNew && !this.sequence) {
+    //     try {
+    //         const lastTrip = await this.constructor.findOne({}, {}, { sort: { sequence: -1 } });
+    //         this.sequence = lastTrip ? lastTrip.sequence + 1 : 1;
+    //     } catch (error) {
+    //         return next(error);
+    //     }
+    // }
+
     // Calculate average weights
     if (this.purchases && this.purchases.length > 0) {
         this.purchases.forEach(purchase => {
@@ -167,10 +197,18 @@ tripSchema.pre('save', function(next) {
     }
 
     if (this.sales && this.sales.length > 0) {
+        // Calculate average purchase rate for profit calculations
+        const avgPurchaseRate = this.summary.totalWeightPurchased > 0 ? 
+            this.summary.totalPurchaseAmount / this.summary.totalWeightPurchased : 0;
+        this.summary.avgPurchaseRate = Number(avgPurchaseRate.toFixed(2));
+
         this.sales.forEach(sale => {
             if (sale.birds && sale.weight) {
                 sale.avgWeight = Number((sale.weight / sale.birds).toFixed(2));
             }
+            // Calculate profit margin and profit amount
+            sale.profitMargin = Number((sale.rate - avgPurchaseRate).toFixed(2));
+            sale.profitAmount = Number((sale.profitMargin * sale.weight).toFixed(2));
             // Calculate balance
             sale.balance = sale.amount - sale.receivedAmount - sale.discount;
         });
@@ -178,13 +216,14 @@ tripSchema.pre('save', function(next) {
 
     // Calculate losses fields
     if (this.losses && this.losses.length > 0) {
+        const avgPurchaseRate = this.summary.avgPurchaseRate || 0;
         this.losses.forEach(loss => {
             if (loss.quantity && loss.weight) {
                 loss.avgWeight = Number((loss.weight / loss.quantity).toFixed(2));
             }
-            // Calculate total loss
-            if (loss.weight && loss.rate) {
-                loss.total = Number((loss.weight * loss.rate).toFixed(2));
+            // Calculate total loss using average purchase rate
+            if (loss.weight && avgPurchaseRate > 0) {
+                loss.total = Number((loss.weight * avgPurchaseRate).toFixed(2));
             }
         });
     }
@@ -200,6 +239,7 @@ tripSchema.pre('save', function(next) {
         this.summary.totalSalesAmount = this.sales.reduce((sum, sale) => sum + (sale.amount || 0), 0);
         this.summary.totalBirdsSold = this.sales.reduce((sum, sale) => sum + (sale.birds || 0), 0);
         this.summary.totalWeightSold = this.sales.reduce((sum, sale) => sum + (sale.weight || 0), 0);
+        this.summary.totalProfitMargin = this.sales.reduce((sum, sale) => sum + (sale.profitAmount || 0), 0);
     }
 
     if (this.expenses && this.expenses.length > 0) {
@@ -217,23 +257,28 @@ tripSchema.pre('save', function(next) {
         this.summary.mortality = this.summary.totalBirdsLost;
     }
 
-    // Calculate bird weight loss: purchased - sold - lost
+    // Calculate total stock birds and weight from stocks array
+    const totalStockBirds = this.stocks.reduce((sum, stock) => sum + (stock.birds || 0), 0);
+    const totalStockWeight = this.stocks.reduce((sum, stock) => sum + (stock.weight || 0), 0);
+    const totalStockValue = this.stocks.reduce((sum, stock) => sum + (stock.value || 0), 0);
+
+    // Calculate bird weight loss: purchased - sold - stock - death
     this.summary.birdWeightLoss = (this.summary.totalWeightPurchased || 0) - 
                                  (this.summary.totalWeightSold || 0) - 
+                                 totalStockWeight - 
                                  (this.summary.totalWeightLost || 0);
 
-    // Calculate birds remaining: purchased - sold - lost
+    // Calculate birds remaining: purchased - sold - stock - lost
     this.summary.birdsRemaining = (this.summary.totalBirdsPurchased || 0) - 
                                  (this.summary.totalBirdsSold || 0) - 
+                                 totalStockBirds - 
                                  (this.summary.totalBirdsLost || 0);
 
-    // Calculate net profit
-    const totalRevenue = this.summary.totalSalesAmount || 0;
-    const totalCosts = (this.summary.totalPurchaseAmount || 0) + 
-                      (this.summary.totalExpenses || 0) + 
-                      (this.summary.totalDieselAmount || 0);
+    // Calculate net profit from sales profit margin minus expenses and diesel
+    const salesProfit = this.summary.totalProfitMargin || 0;
+    const totalExpenses = (this.summary.totalExpenses || 0) + (this.summary.totalDieselAmount || 0);
     const totalLosses = this.summary.totalLosses || 0;
-    this.summary.netProfit = totalRevenue - totalCosts - totalLosses;
+    this.summary.netProfit = salesProfit - totalExpenses - totalLosses;
 
     // Calculate total distance if both readings are available
     if (this.vehicleReadings.opening && this.vehicleReadings.closing) {

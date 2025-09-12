@@ -265,6 +265,95 @@ export const addSale = async (req, res, next) => {
     }
 };
 
+// Edit purchase in trip (Supervisor)
+export const editPurchase = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+        const purchaseData = req.body;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found', 404);
+
+        // Validate index
+        const purchaseIndex = parseInt(index);
+        if (purchaseIndex < 0 || purchaseIndex >= trip.purchases.length) {
+            throw new AppError('Invalid purchase index', 400);
+        }
+
+        // Update purchase
+        trip.purchases[purchaseIndex] = { ...trip.purchases[purchaseIndex], ...purchaseData };
+
+        // Update summary
+        trip.summary.totalPurchaseAmount = trip.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
+        trip.summary.totalBirdsPurchased = trip.purchases.reduce((sum, p) => sum + (p.birds || 0), 0);
+        trip.summary.totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
+
+        trip.updatedBy = req.user._id;
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Purchase updated successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Edit sale in trip (Supervisor)
+export const editSale = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+        const saleData = req.body;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found', 404);
+
+        // Validate index
+        const saleIndex = parseInt(index);
+        if (saleIndex < 0 || saleIndex >= trip.sales.length) {
+            throw new AppError('Invalid sale index', 400);
+        }
+
+        // Update sale
+        trip.sales[saleIndex] = { ...trip.sales[saleIndex], ...saleData };
+
+        // Update summary
+        trip.summary.totalSalesAmount = trip.sales.reduce((sum, s) => sum + (s.amount || 0), 0);
+        trip.summary.totalBirdsSold = trip.sales.reduce((sum, s) => sum + (s.birds || 0), 0);
+        trip.summary.totalWeightSold = trip.sales.reduce((sum, s) => sum + (s.weight || 0), 0);
+
+        // Calculate remaining birds
+        trip.summary.birdsRemaining = trip.summary.totalBirdsPurchased - trip.summary.totalBirdsSold;
+
+        trip.updatedBy = req.user._id;
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Sale updated successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Add death birds to trip (Supervisor)
 export const addDeathBirds = async (req, res, next) => {
     try {
@@ -397,10 +486,96 @@ export const updateTripExpenses = async (req, res, next) => {
     }
 }
 
+// Edit expense in trip (Supervisor)
+export const editExpense = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+        const expenseData = req.body;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found', 404);
+
+        // Validate index
+        const expenseIndex = parseInt(index);
+        if (expenseIndex < 0 || expenseIndex >= trip.expenses.length) {
+            throw new AppError('Invalid expense index', 400);
+        }
+
+        // Update expense
+        trip.expenses[expenseIndex] = { ...trip.expenses[expenseIndex], ...expenseData };
+
+        // Update summary
+        trip.summary.totalExpenses = trip.expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+
+        trip.updatedBy = req.user._id;
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Expense updated successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+}
+
+// Edit diesel station in trip (Supervisor)
+export const editDieselStation = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+        const stationData = req.body;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found', 404);
+
+        // Validate index
+        const stationIndex = parseInt(index);
+        if (stationIndex < 0 || stationIndex >= trip.diesel.stations.length) {
+            throw new AppError('Invalid diesel station index', 400);
+        }
+
+        // Update diesel station
+        trip.diesel.stations[stationIndex] = { ...trip.diesel.stations[stationIndex], ...stationData };
+
+        // Update diesel totals
+        trip.diesel.totalVolume = trip.diesel.stations.reduce((sum, station) => sum + (station.volume || 0), 0);
+        trip.diesel.totalAmount = trip.diesel.stations.reduce((sum, station) => sum + (station.amount || 0), 0);
+
+        // Update summary
+        trip.summary.totalDieselAmount = trip.diesel.totalAmount;
+
+        trip.updatedBy = req.user._id;
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Diesel station updated successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+}
+
 // Complete trip (Supervisor)
 export const completeTrip = async (req, res, next) => {
     try {
-        const { closingOdometer, finalRemarks, birdsRemaining, mortality } = req.body;
+        const { closingOdometer, finalRemarks, mortality } = req.body;
         
         let query = { _id: req.params.id };
         if (req.user.role === 'supervisor') {
@@ -425,17 +600,45 @@ export const completeTrip = async (req, res, next) => {
             supervisorSignature: req.user.name
         };
 
-        // Update summary
-        trip.summary.birdsRemaining = birdsRemaining || 0;
+        // Add death birds record if mortality is provided
+        if (mortality && mortality > 0) {
+            // Calculate average weight for death birds
+            const totalBirdsPurchased = trip.summary?.totalBirdsPurchased || 0;
+            const totalWeightPurchased = trip.summary?.totalWeightPurchased || 0;
+            const avgWeight = totalBirdsPurchased > 0 ? totalWeightPurchased / totalBirdsPurchased : 0;
+            
+            // Calculate death weight based on average weight
+            const deathWeight = mortality * avgWeight;
+            
+            // Get average purchase rate for death bird value calculation
+            const avgPurchaseRate = trip.summary?.avgPurchaseRate || 0;
+            const deathValue = deathWeight * avgPurchaseRate;
+
+            // Add death birds record
+            trip.losses.push({
+                quantity: mortality,
+                weight: deathWeight,
+                avgWeight: avgWeight,
+                rate: avgPurchaseRate,
+                total: deathValue,
+                reason: 'Natural death - Trip completion',
+                date: new Date(),
+                timestamp: new Date()
+            });
+        }
+
+        // Update summary - mortality represents remaining birds (death birds)
+        trip.summary.birdsRemaining = 0; // No birds remaining after completion
         trip.summary.mortality = mortality || 0;
         trip.summary.totalExpenses = trip.expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
         trip.summary.totalDieselAmount = trip.diesel.totalAmount;
 
-        // Calculate final profit
+        // Calculate final profit including death losses
         trip.summary.netProfit = trip.summary.totalSalesAmount -
             trip.summary.totalPurchaseAmount -
             trip.summary.totalExpenses -
-            trip.summary.totalDieselAmount;
+            trip.summary.totalDieselAmount -
+            trip.summary.totalLosses;
 
         if (trip.summary.totalWeightSold > 0) {
             trip.summary.profitPerKg = Number((trip.summary.netProfit / trip.summary.totalWeightSold).toFixed(2));
@@ -467,6 +670,129 @@ export const completeTrip = async (req, res, next) => {
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Trip completed successfully!", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Update stock (Supervisor)
+// Add new stock entry (Supervisor)
+export const addStock = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const stockData = req.body;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found!', 404);
+
+        // Calculate avgWeight and value
+        const avgWeight = stockData.birds > 0 ? stockData.weight / stockData.birds : 0;
+        const value = stockData.weight * stockData.rate;
+
+        // Add new stock entry
+        const newStock = {
+            birds: stockData.birds,
+            weight: stockData.weight,
+            avgWeight: avgWeight,
+            value: value,
+            rate: stockData.rate,
+            addedAt: new Date(),
+            notes: stockData.notes || ''
+        };
+
+        trip.stocks.push(newStock);
+
+        // Save the trip to trigger pre-save middleware for recalculations
+        await trip.save();
+
+        // Populate the trip with references
+        await trip.populate('supervisor vehicle');
+
+        successResponse(res, "Stock added successfully", 200, trip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Update existing stock entry (Supervisor)
+export const updateStock = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+        const stockData = req.body;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found!', 404);
+
+        const stockIndex = parseInt(index);
+        if (stockIndex < 0 || stockIndex >= trip.stocks.length) {
+            throw new AppError('Invalid stock index!', 400);
+        }
+
+        // Calculate avgWeight and value
+        const avgWeight = stockData.birds > 0 ? stockData.weight / stockData.birds : 0;
+        const value = stockData.weight * stockData.rate;
+
+        // Update stock entry
+        trip.stocks[stockIndex] = {
+            ...trip.stocks[stockIndex],
+            birds: stockData.birds,
+            weight: stockData.weight,
+            avgWeight: avgWeight,
+            value: value,
+            rate: stockData.rate,
+            notes: stockData.notes || ''
+        };
+
+        // Save the trip to trigger pre-save middleware for recalculations
+        await trip.save();
+
+        // Populate the trip with references
+        await trip.populate('supervisor vehicle');
+
+        successResponse(res, "Stock updated successfully", 200, trip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete stock entry (Supervisor)
+export const deleteStock = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found!', 404);
+
+        const stockIndex = parseInt(index);
+        if (stockIndex < 0 || stockIndex >= trip.stocks.length) {
+            throw new AppError('Invalid stock index!', 400);
+        }
+
+        // Remove stock entry
+        trip.stocks.splice(stockIndex, 1);
+
+        // Save the trip to trigger pre-save middleware for recalculations
+        await trip.save();
+
+        // Populate the trip with references
+        await trip.populate('supervisor vehicle');
+
+        successResponse(res, "Stock deleted successfully", 200, trip);
     } catch (error) {
         next(error);
     }
