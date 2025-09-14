@@ -26,6 +26,11 @@ export const addTrip = async (req, res, next) => {
         
         console.log('Final trip data:', tripData);
 
+        // Validate opening odometer reading
+        if (!tripData.vehicleReadings?.opening || tripData.vehicleReadings.opening < 0) {
+            throw new AppError('Valid opening odometer reading is required', 400);
+        }
+
         // Check if vehicle is available
         const vehicle = await Vehicle.findById(tripData.vehicle);
         if (!vehicle) {
@@ -292,6 +297,59 @@ export const editPurchase = async (req, res, next) => {
         trip.summary.totalPurchaseAmount = trip.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
         trip.summary.totalBirdsPurchased = trip.purchases.reduce((sum, p) => sum + (p.birds || 0), 0);
         trip.summary.totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
+
+        // Recalculate average purchase rate
+        const avgPurchaseRate = trip.summary.totalWeightPurchased > 0 ? 
+            trip.summary.totalPurchaseAmount / trip.summary.totalWeightPurchased : 0;
+        trip.summary.avgPurchaseRate = Number(avgPurchaseRate.toFixed(2));
+
+        // Recalculate losses that depend on purchase rate
+        if (trip.losses && trip.losses.length > 0) {
+            trip.losses.forEach(loss => {
+                if (loss.quantity && loss.weight) {
+                    loss.avgWeight = Number((loss.weight / loss.quantity).toFixed(2));
+                }
+                // Recalculate total loss using updated average purchase rate
+                loss.total = Number((loss.weight * avgPurchaseRate).toFixed(2));
+            });
+            // Update total losses summary
+            trip.summary.totalLosses = trip.losses.reduce((sum, loss) => sum + (loss.total || 0), 0);
+        }
+
+        // Recalculate stocks that depend on purchase rate
+        if (trip.stocks && trip.stocks.length > 0) {
+            trip.stocks.forEach(stock => {
+                if (stock.birds && stock.weight) {
+                    stock.avgWeight = Number((stock.weight / stock.birds).toFixed(2));
+                }
+                // Update stock rate to match current average purchase rate
+                stock.rate = Number(avgPurchaseRate.toFixed(2));
+                // Recalculate stock value using updated average purchase rate
+                stock.value = Number((stock.weight * avgPurchaseRate).toFixed(2));
+            });
+        }
+
+        // Recalculate sales profit margins that depend on purchase rate
+        if (trip.sales && trip.sales.length > 0) {
+            trip.sales.forEach(sale => {
+                if (sale.birds && sale.weight) {
+                    sale.avgWeight = Number((sale.weight / sale.birds).toFixed(2));
+                }
+                // Recalculate profit margin and profit amount
+                sale.profitMargin = Number((sale.rate - avgPurchaseRate).toFixed(2));
+                sale.profitAmount = Number((sale.profitMargin * sale.weight).toFixed(2));
+                // Calculate balance
+                sale.balance = sale.amount - sale.receivedAmount - sale.discount;
+            });
+            // Update total profit margin
+            trip.summary.totalProfitMargin = trip.sales.reduce((sum, s) => sum + (s.profitAmount || 0), 0);
+        }
+
+        // Recalculate net profit
+        const totalRevenue = trip.summary.totalSalesAmount || 0;
+        const totalCosts = (trip.summary.totalPurchaseAmount || 0) + (trip.summary.totalExpenses || 0) + (trip.summary.totalDieselAmount || 0);
+        const totalLosses = trip.summary.totalLosses || 0;
+        trip.summary.netProfit = totalRevenue - totalCosts - totalLosses;
 
         trip.updatedBy = req.user._id;
         await trip.save();
@@ -586,7 +644,11 @@ export const completeTrip = async (req, res, next) => {
 
         if (!trip) throw new AppError('Trip not found!', 404);
 
-        // Update vehicle readings
+        // Validate and update vehicle readings
+        if (trip.vehicleReadings.opening && closingOdometer < trip.vehicleReadings.opening) {
+            throw new AppError('Closing odometer reading must be greater than opening reading', 400);
+        }
+        
         trip.vehicleReadings.closing = closingOdometer;
         if (trip.vehicleReadings.opening) {
             trip.vehicleReadings.totalDistance = closingOdometer - trip.vehicleReadings.opening;

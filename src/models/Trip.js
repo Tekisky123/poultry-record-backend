@@ -280,8 +280,11 @@ tripSchema.pre('save', async function(next) {
     const totalLosses = this.summary.totalLosses || 0;
     this.summary.netProfit = salesProfit - totalExpenses - totalLosses;
 
-    // Calculate total distance if both readings are available
+    // Validate vehicle readings if closing reading is provided
     if (this.vehicleReadings.opening && this.vehicleReadings.closing) {
+        if (this.vehicleReadings.closing < this.vehicleReadings.opening) {
+            return next(new Error('Closing odometer reading must be greater than opening reading'));
+        }
         this.vehicleReadings.totalDistance = this.vehicleReadings.closing - this.vehicleReadings.opening;
     }
 
