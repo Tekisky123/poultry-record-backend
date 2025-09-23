@@ -24,26 +24,40 @@ const vehicleSchema = new mongoose.Schema({
         default: "truck",
     },
 
-    capacityKg: {
-        type: Number,
-        min: [100, "Capacity should be at least 100kg"]
-    },
-
     fuelType: {
         type: String,
         enum: ["diesel", "petrol", "cng", "electric"],
     },
 
-    fuelEfficiency: { type: Number, default: 6 }, // km per liter
+    insuranceEndDate: {
+        type: Date,
+        required: [true, 'Insurance end date is required']
+    },
 
-    dcSections: {
+    pucEndDate: {
+        type: Date,
+        required: [true, 'PUC end date is required']
+    },
+
+    roadTaxEndDate: {
+        type: Date,
+        required: [true, 'Road tax end date is required']
+    },
+
+    fitnessEndDate: {
+        type: Date,
+        required: [true, 'Fitness end date is required']
+    },
+
+    nationalPermitEndDate: {
+        type: Date,
+        required: [true, 'National permit end date is required']
+    },
+
+    rentPerKm: {
         type: Number,
-        required: true,
-        min: [1, 'dcSections must be at least 1'],
-        validate: {
-            validator: Number.isInteger,
-            message: 'dcSections must be an integer'
-        }
+        required: [true, 'Rent per KM is required'],
+        min: [0, 'Rent per KM cannot be negative']
     },
 
     currentStatus: {

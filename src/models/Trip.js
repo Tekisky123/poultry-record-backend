@@ -51,6 +51,11 @@ const tripSchema = new mongoose.Schema({
         totalAmount: { type: Number, default: 0 }
     },
 
+    // Rent and Distance
+    rentPerKm: { type: Number, default: 0 }, // Rent per kilometer from vehicle
+    totalKm: { type: Number, default: 0 }, // Total kilometers traveled
+    dieselAmount: { type: Number, default: 0 }, // Total diesel amount spent
+
     // Trip Expenses
     expenses: [{
         category: { 

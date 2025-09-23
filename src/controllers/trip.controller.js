@@ -40,6 +40,9 @@ export const addTrip = async (req, res, next) => {
             throw new AppError('Vehicle is not available for new trip', 400);
         }
 
+        // Set rent per KM from vehicle
+        tripData.rentPerKm = vehicle.rentPerKm || 0;
+
         const trip = new Trip(tripData);
         await trip.save();
 
@@ -652,7 +655,12 @@ export const completeTrip = async (req, res, next) => {
         trip.vehicleReadings.closing = closingOdometer;
         if (trip.vehicleReadings.opening) {
             trip.vehicleReadings.totalDistance = closingOdometer - trip.vehicleReadings.opening;
+            // Set totalKm for financial calculations
+            trip.totalKm = trip.vehicleReadings.totalDistance;
         }
+        
+        // Calculate total diesel amount
+        trip.dieselAmount = trip.diesel.totalAmount || 0;
 
         // Update completion details
         trip.completionDetails = {
