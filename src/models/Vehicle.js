@@ -11,7 +11,7 @@ const vehicleSchema = new mongoose.Schema({
         trim: true,
         uppercase: true,
         minlength: [2, 'Vehicle number too short'],
-        maxlength: [20, 'Vehicle number too long'],
+        maxlength: [50, 'Vehicle number too long'],
         validate: {
             validator: v => /^[A-Z0-9-\s]+$/.test(v),
             message: props => `${props.value} is not a valid vehicle number`

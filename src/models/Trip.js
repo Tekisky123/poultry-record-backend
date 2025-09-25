@@ -78,8 +78,8 @@ const tripSchema = new mongoose.Schema({
         avgWeight: { type: Number }, // Calculated field
         rate: { type: Number, required: true },
         amount: { type: Number, required: true },
-        paymentMode: { type: String, enum: ['cash', 'credit', 'advance'], default: 'cash' },
-        paymentStatus: { type: String, enum: ['paid', 'pending', 'partial'], default: 'pending' },
+        // paymentMode: { type: String, enum: ['cash', 'credit', 'advance'], default: 'cash' },
+        // paymentStatus: { type: String, enum: ['paid', 'pending', 'partial'], default: 'pending' },
         timestamp: { type: Date, default: Date.now }
     }],
 
@@ -94,8 +94,8 @@ const tripSchema = new mongoose.Schema({
         amount: { type: Number, required: true },
         profitMargin: { type: Number, default: 0 }, // Calculated: (saleRate - avgPurchaseRate)
         profitAmount: { type: Number, default: 0 }, // Calculated: profitMargin * weight
-        paymentMode: { type: String, enum: ['cash', 'online', 'credit'], default: 'cash' },
-        paymentStatus: { type: String, enum: ['paid', 'pending', 'partial'], default: 'pending' },
+        // paymentMode: { type: String, enum: ['cash', 'online', 'credit'], default: 'cash' },
+        // paymentStatus: { type: String, enum: ['paid', 'pending', 'partial'], default: 'pending' },
         receivedAmount: { type: Number, default: 0 },
         discount: { type: Number, default: 0 },
         balance: { type: Number, default: 0 }, // Calculated field
