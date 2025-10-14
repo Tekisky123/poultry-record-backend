@@ -32,6 +32,11 @@ export const addTrip = async (req, res, next) => {
             throw new AppError('Valid opening odometer reading is required', 400);
         }
 
+        // Validate route locations
+        if (!tripData.route?.from || !tripData.route?.to) {
+            throw new AppError('Start location and end location are required', 400);
+        }
+
         // Check if vehicle is available
         const vehicle = await Vehicle.findById(tripData.vehicle);
         if (!vehicle) {
@@ -967,12 +972,7 @@ export const transferTrip = async (req, res, next) => {
         const { 
             supervisorId, 
             vehicleId, 
-            driver, 
-            labours, 
-            place,
-            vehicleReadings,
             reason,
-            notes,
             transferBirds // Custom bird count entered by supervisor
         } = req.body;
 
@@ -1030,18 +1030,19 @@ export const transferTrip = async (req, res, next) => {
         const avgPurchaseRate = transferBirds.rate || originalTrip.summary?.avgPurchaseRate || 0;
         const transferAmount = transferBirds.weight * avgPurchaseRate;
 
-        // Create new transferred trip
+        // Create new transferred trip - receiving supervisor will complete details
         const newTripData = {
             tripId: 'TRP-' + Date.now(),
             type: 'transferred',
             date: new Date(),
-            place: place,
+            place: '', // To be filled by receiving supervisor
+            route: { from: 'TBD', to: 'TBD' }, // To be filled by receiving supervisor
             vehicle: vehicleId,
             supervisor: supervisorId,
-            driver: driver,
-            labours: labours || [],
+            driver: 'TBD - To be assigned by receiving supervisor', // To be filled by receiving supervisor
+            labour: 'TBD', // To be filled by receiving supervisor
             vehicleReadings: {
-                opening: vehicleReadings?.opening || 0
+                opening: 0 // To be filled by receiving supervisor
             },
             rentPerKm: vehicle.rentPerKm || 0,
             transferredFrom: originalTrip._id,
@@ -1152,6 +1153,62 @@ export const getTripTransferHistory = async (req, res, next) => {
         };
 
         successResponse(res, "Trip transfer history fetched successfully", 200, transferInfo);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Complete initial trip details for transferred trips (Supervisor)
+export const completeTripDetails = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { driver, labour, route, place, vehicleReadings } = req.body;
+
+        // Only supervisor can complete their own trip details
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        // Validate it's a transferred trip
+        if (trip.type !== 'transferred') {
+            throw new AppError('This endpoint is only for completing transferred trip details', 400);
+        }
+
+        // Validate required fields
+        if (!driver || !route?.from || !route?.to || !vehicleReadings?.opening) {
+            throw new AppError('Driver, route locations, and opening odometer are required', 400);
+        }
+
+        if (vehicleReadings.opening <= 0) {
+            throw new AppError('Opening odometer reading must be greater than 0', 400);
+        }
+
+        // Update trip details
+        trip.driver = driver;
+        trip.labour = labour || '';
+        trip.route = {
+            from: route.from,
+            to: route.to,
+            distance: route.distance || 0
+        };
+        trip.place = place || '';
+        trip.vehicleReadings.opening = vehicleReadings.opening;
+        trip.updatedBy = req.user._id;
+
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact')
+            .populate('transferredFrom', 'tripId');
+
+        successResponse(res, "Trip details completed successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }

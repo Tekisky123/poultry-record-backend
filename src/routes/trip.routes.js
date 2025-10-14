@@ -27,6 +27,7 @@ router.put('/:id/stock/:index', authenticateToken, authorize(['admin', 'superadm
 router.delete('/:id/stock/:index', authenticateToken, authorize(['supervisor']), tripController.deleteStock);
 router.put('/:id/death-birds', authenticateToken, authorize(['supervisor']), tripController.addDeathBirds);
 router.put('/:id/complete', authenticateToken, authorize(['supervisor']), tripController.completeTrip);
+router.put('/:id/complete-details', authenticateToken, authorize(['supervisor']), tripController.completeTripDetails);
 router.put('/:id/status', authenticateToken, authorize(['supervisor']), tripController.updateTripStatus);
 
 // Trip transfer routes (Supervisor)

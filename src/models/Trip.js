@@ -15,18 +15,14 @@ const tripSchema = new mongoose.Schema({
     //     unique: true
     // },
     date: { type: Date, required: true },
-    place: { type: String, required: true }, // SNK, etc.
+    place: { type: String }, // Optional general reference (e.g., SNK area)
     vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true },
     supervisor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     driver: { type: String, required: true },
-    labours: {
-        type: [{ type: String }],
-        required: true,
-        validate: [arr => arr.length > 0, 'At least one labour is required']
-    },
+    labour: { type: String, default: '' }, // Optional labour worker name
     route: {
-        from: String,
-        to: String,
+        from: { type: String, required: true }, // Start location
+        to: { type: String, required: true }, // End location
         distance: Number
     },
 
@@ -60,7 +56,7 @@ const tripSchema = new mongoose.Schema({
     expenses: [{
         category: { 
             type: String, 
-            enum: ['parking','meals', 'toll', 'maintenance', 'tea', 'lunch', 'other'],
+            enum: ['parking','meals', 'toll', 'maintenance', 'tea', 'lunch', 'loading/unloading', 'other'],
             required: true
         },
         amount: { type: Number, required: true },
@@ -98,6 +94,8 @@ const tripSchema = new mongoose.Schema({
         // paymentStatus: { type: String, enum: ['paid', 'pending', 'partial'], default: 'pending' },
         receivedAmount: { type: Number, default: 0 },
         discount: { type: Number, default: 0 },
+        cashPaid: { type: Number, default: 0 },
+        onlinePaid: { type: Number, default: 0 },
         balance: { type: Number, default: 0 }, // Calculated field
         timestamp: { type: Date, default: Date.now }
     }],
@@ -145,6 +143,10 @@ const tripSchema = new mongoose.Schema({
         weightTransferred: { type: Number, default: 0 }, // Weight transferred to other trips
         netProfit: { type: Number, default: 0 },
         totalProfitMargin: { type: Number, default: 0 }, // Total profit from sales only
+        totalCashPaid: { type: Number, default: 0 }, // Total cash payments received
+        totalOnlinePaid: { type: Number, default: 0 }, // Total online payments received
+        totalDiscount: { type: Number, default: 0 }, // Total discounts given
+        totalReceivedAmount: { type: Number, default: 0 }, // Total amount received (cash + online)
         profitPerKg: { type: Number, default: 0 },
         fuelEfficiency: { type: Number, default: 0 },
         avgPurchaseRate: { type: Number, default: 0 } // Average purchase rate for calculations
@@ -242,8 +244,10 @@ tripSchema.pre('save', async function(next) {
             // Calculate profit margin and profit amount
             sale.profitMargin = Number((sale.rate - avgPurchaseRate).toFixed(2));
             sale.profitAmount = Number((sale.profitMargin * sale.weight).toFixed(2));
+            // Calculate receivedAmount from cashPaid + onlinePaid
+            sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
             // Calculate balance
-            sale.balance = sale.amount - sale.receivedAmount - sale.discount;
+            sale.balance = sale.amount - sale.receivedAmount - (sale.discount || 0);
         });
     }
 
@@ -273,6 +277,10 @@ tripSchema.pre('save', async function(next) {
         this.summary.totalBirdsSold = this.sales.reduce((sum, sale) => sum + (sale.birds || 0), 0);
         this.summary.totalWeightSold = this.sales.reduce((sum, sale) => sum + (sale.weight || 0), 0);
         this.summary.totalProfitMargin = this.sales.reduce((sum, sale) => sum + (sale.profitAmount || 0), 0);
+        this.summary.totalCashPaid = this.sales.reduce((sum, sale) => sum + (sale.cashPaid || 0), 0);
+        this.summary.totalOnlinePaid = this.sales.reduce((sum, sale) => sum + (sale.onlinePaid || 0), 0);
+        this.summary.totalDiscount = this.sales.reduce((sum, sale) => sum + (sale.discount || 0), 0);
+        this.summary.totalReceivedAmount = this.sales.reduce((sum, sale) => sum + (sale.receivedAmount || 0), 0);
     }
 
     if (this.expenses && this.expenses.length > 0) {
