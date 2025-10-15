@@ -8,7 +8,11 @@ import bcrypt from 'bcrypt';
 
 export const getUsers = async (req, res, next) => {
     try {
-        const users = await User.find({ isActive: true, approvalStatus: 'approved' })
+        const users = await User.find({ 
+            isActive: true, 
+            approvalStatus: 'approved',
+            role: { $ne: 'customer' } // Exclude customers from users list
+        })
             .select('-password')
             .sort({ createdAt: -1 });
         successResponse(res, "users", 200, users)
