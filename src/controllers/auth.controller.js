@@ -37,7 +37,7 @@ export const signup = async (req, res, next) => {
     const user = new User({
       ...req.body,
       password: hashPassword,
-      approvalStatus: role === 'customer' ? 'approved' : 'pending'
+      approvalStatus: 'pending' // All users start as pending, including customers
     });
 
     const savedUser = await user.save();
@@ -73,7 +73,7 @@ export const login = async (req, res, next) => {
     if (!user) throw new AppError('Invalid credentials', 401);
 
     // Require approval for admin/supervisor before allowing login
-    if ((user.role === 'admin' || user.role === 'supervisor') && user.approvalStatus !== 'approved') {
+    if ((user.role === 'admin' || user.role === 'supervisor' || user.role === 'customer') && user.approvalStatus !== 'approved') {
       throw new AppError(`Account approval is ${user.approvalStatus || "pending"}`, 403);
     }
 

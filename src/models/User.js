@@ -96,6 +96,13 @@ const userSchema = new mongoose.Schema({
 
     lastLogin: {
         type: Date
+    },
+
+    // Reference to Customer profile (for customer role users)
+    customer: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Customer',
+        required: false // Optional, only for customer role users
     }
 }, {
     timestamps: true

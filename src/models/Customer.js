@@ -52,6 +52,12 @@ const customerSchema = new mongoose.Schema({
     ref: "User", 
     required: true 
   },
+  // Reference to User account for login credentials
+  user: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: "User", 
+    required: false // Optional for backward compatibility
+  },
 }, {
   timestamps: true,
   toJSON: {

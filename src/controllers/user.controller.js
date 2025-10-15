@@ -1,4 +1,5 @@
 import User from "../models/User.js";
+import Customer from "../models/Customer.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import { signupValidator } from "../utils/validators.js";
@@ -66,13 +67,13 @@ export const getUserById = async (req, res, next) => {
 
 export const getPendingApprovals = async (req, res, next) => {
     try {
-        // superadmin sees pending admins, admin sees pending supervisors
+        // superadmin sees pending admins, supervisors, and customers; admin sees pending supervisors and customers
         const role = req.user.role;
         let query = { approvalStatus: 'pending' };
         if (role === 'superadmin') {
-            query.role = { $in: ['admin', 'supervisor'] };
+            query.role = { $in: ['admin', 'supervisor', 'customer'] };
         } else if (role === 'admin') {
-            query.role = 'supervisor';
+            query.role = { $in: ['supervisor', 'customer'] };
         } else {
             return successResponse(res, "pending approvals", 200, []);
         }
@@ -96,9 +97,10 @@ export const approveUser = async (req, res, next) => {
         const approverIsAdmin = approver.role === 'admin';
         const targetIsAdmin = user.role === 'admin';
         const targetIsSupervisor = user.role === 'supervisor';
+        const targetIsCustomer = user.role === 'customer';
 
-        if (!((approverIsSuperAdmin && (targetIsAdmin || targetIsSupervisor)) ||
-            (approverIsAdmin && targetIsSupervisor))) {
+        if (!((approverIsSuperAdmin && (targetIsAdmin || targetIsSupervisor || targetIsCustomer)) ||
+            (approverIsAdmin && (targetIsSupervisor || targetIsCustomer)))) {
             return next(new AppError('Insufficient privileges', 403));
         }
 
@@ -106,6 +108,25 @@ export const approveUser = async (req, res, next) => {
         user.approvedBy = approver._id;
         user.approvedAt = new Date();
         await user.save();
+
+        // If approved user is a customer, create customer record
+        if (targetIsCustomer && !user.customer) {
+            const customer = new Customer({
+                shopName: user.name, // Use user name as shop name initially
+                ownerName: user.name,
+                contact: user.mobileNumber, // Sync mobile number from user
+                address: user.address || '',
+                user: user._id,
+                createdBy: approver._id,
+                updatedBy: approver._id
+            });
+
+            const savedCustomer = await customer.save();
+            
+            // Update user with customer reference
+            user.customer = savedCustomer._id;
+            await user.save();
+        }
 
         const { password, ...publicUser } = user.toObject();
         successResponse(res, "user approved", 200, publicUser);
