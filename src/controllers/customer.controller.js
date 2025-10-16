@@ -1,14 +1,16 @@
 import Customer from "../models/Customer.js";
 import User from "../models/User.js";
+import Trip from "../models/Trip.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import bcrypt from 'bcrypt';
 import validator from 'validator';
+import mongoose from "mongoose";
 
 export const addCustomer = async (req, res, next) => {
     try {
         const { email, password, ...customerData } = req.body;
-        
+
         // Validate required fields for user creation
         if (!password || !email) {
             throw new AppError('Email and password are required for customer login', 400);
@@ -114,7 +116,7 @@ export const updateCustomer = async (req, res, next) => {
     const { id } = req?.params;
     try {
         const { password, email, ...customerData } = req.body;
-        
+
         // Find the customer first
         const customer = await Customer.findById(id);
         if (!customer) {
@@ -124,14 +126,14 @@ export const updateCustomer = async (req, res, next) => {
         // If user credentials are being updated
         if (customer.user && (password || email)) {
             const userUpdateData = {};
-            
+
             if (email) {
                 if (!validator.isEmail(email)) {
                     throw new AppError('Invalid email format', 400);
                 }
                 userUpdateData.email = email;
             }
-            
+
             if (password) {
                 if (!validator.isStrongPassword(password, {
                     minLength: 6,
@@ -159,15 +161,15 @@ export const updateCustomer = async (req, res, next) => {
             ...customerData,
             updatedBy: req.user._id
         };
-        
+
         const updatedCustomer = await Customer.findByIdAndUpdate(
             id,
             updateData,
             { new: true, runValidators: true }
         ).populate('user', 'name email mobileNumber role approvalStatus')
-         .populate('createdBy', 'name')
-         .populate('updatedBy', 'name');
-        
+            .populate('createdBy', 'name')
+            .populate('updatedBy', 'name');
+
         successResponse(res, "Customer updated successfully", 200, updatedCustomer);
     } catch (error) {
         next(error);
@@ -182,12 +184,121 @@ export const deleteCustomer = async (req, res, next) => {
             { isActive: false, updatedBy: req.user._id },
             { new: true }
         );
-        
+
         if (!customer) {
             return res.status(404).json({ message: "Customer not found" });
         }
-        
+
         successResponse(res, "Customer deleted successfully", 200, customer);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getCustomerSales = async (req, res, next) => {
+    try {
+        const { id } = req.params; // user ID
+
+        const customer = await Customer.findOne({ user: id, isActive: true });
+        if (!customer) {
+            throw new AppError('Customer profile not found', 404);
+        }
+
+        // Ensure ID type is ObjectId
+        const customerId = new mongoose.Types.ObjectId(customer._id);
+
+        const trips = await Trip.find({ 'sales.client': customerId })
+            .populate('sales.client', 'shopName ownerName')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('vehicle', 'vehicleNumber')
+            .sort({ createdAt: -1 });
+        // Filter only sales of this customer
+        const customerSales = [];
+        trips.forEach(trip => {
+            trip.sales.forEach(sale => {
+                if (sale.client && sale.client._id.toString() === customer._id.toString()) {
+                    customerSales.push({
+                        _id: sale._id,
+                        tripId: trip.tripId,
+                        billNumber: sale.billNumber,
+                        birds: sale.birds,
+                        weight: sale.weight,
+                        rate: sale.rate,
+                        amount: sale.amount,
+                        cashPaid: sale.cashPaid || 0,
+                        onlinePaid: sale.onlinePaid || 0,
+                        discount: sale.discount || 0,
+                        balance: sale.balance || 0,
+                        timestamp: sale.timestamp,
+                        trip: {
+                            tripId: trip.tripId,
+                            supervisor: trip.supervisor,
+                            vehicle: trip.vehicle,
+                            date: trip.date
+                        }
+                    });
+                }
+            });
+        });
+
+        successResponse(res, "Customer sales retrieved successfully", 200, customerSales);
+    } catch (error) {
+        next(error);
+    }
+};
+
+
+export const getCustomerProfile = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID for customer panel
+
+        const customer = await Customer.findOne({
+            user: id,
+            isActive: true
+        })
+            .populate('user', 'name email mobileNumber role approvalStatus createdAt lastLogin')
+            .populate('createdBy', 'name')
+            .populate('updatedBy', 'name');
+
+        if (!customer) {
+            throw new AppError('Customer profile not found', 404);
+        }
+
+        successResponse(res, "Customer profile retrieved successfully", 200, customer);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updateCustomerProfile = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID for customer panel
+        const updateData = req.body;
+
+        // Find customer by user ID
+        const customer = await Customer.findOne({ user: id, isActive: true });
+        if (!customer) {
+            throw new AppError('Customer not found', 404);
+        }
+
+        // Update customer data
+        const updatedCustomer = await Customer.findByIdAndUpdate(
+            customer._id,
+            { ...updateData, updatedBy: req.user._id },
+            { new: true, runValidators: true }
+        ).populate('user', 'name email mobileNumber role approvalStatus');
+
+        // Update user data if provided
+        if (updateData.ownerName || updateData.email || updateData.mobileNumber) {
+            const userUpdateData = {};
+            if (updateData.ownerName) userUpdateData.name = updateData.ownerName;
+            if (updateData.email) userUpdateData.email = updateData.email;
+            if (updateData.mobileNumber) userUpdateData.mobileNumber = updateData.mobileNumber;
+
+            await User.findByIdAndUpdate(id, userUpdateData);
+        }
+
+        successResponse(res, "Customer profile updated successfully", 200, updatedCustomer);
     } catch (error) {
         next(error);
     }

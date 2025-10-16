@@ -10,6 +10,7 @@ router.post('/signup', authController.signup);
 router.post('/login', authController.login);
 router.post('/logout', authController.logout);
 router.get('/verify', authenticateToken, authController.getVerifiedUser);
+router.put('/change-password', authenticateToken, authController.changePassword);
 // router.patch('/forgot-password', authController.updatePassword);
 
 export default router;

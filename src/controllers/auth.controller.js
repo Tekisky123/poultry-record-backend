@@ -119,3 +119,44 @@ export const getVerifiedUser = async (req, res, next) => {
     next(error)
   }
 };
+
+export const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user._id;
+
+    if (!currentPassword || !newPassword) {
+      throw new AppError('Current password and new password are required', 400);
+    }
+
+    // Validate new password strength
+    if (!validator.isStrongPassword(newPassword, {
+      minLength: 6,
+      minLowercase: 1,
+      minUppercase: 1,
+      minNumbers: 1,
+      minSymbols: 0
+    })) {
+      throw new AppError('New password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
+    }
+
+    // Find user and verify current password
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isCurrentPasswordValid) {
+      throw new AppError('Current password is incorrect', 400);
+    }
+
+    // Hash new password and update
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(userId, { password: hashedNewPassword });
+
+    successResponse(res, "Password changed successfully", 200, {});
+  } catch (error) {
+    next(error);
+  }
+};
