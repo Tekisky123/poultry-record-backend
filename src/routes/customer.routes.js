@@ -13,7 +13,7 @@ router.put('/admin/:id', authenticateToken, authorize(["admin", "superadmin"]), 
 router.delete('/admin/:id', authenticateToken, authorize(["admin", "superadmin"]), customerController.deleteCustomer);
 
 // Customer panel routes (using User ID)
-router.get('/panel/:id/sales', authenticateToken, authorize(["admin", "superadmin", "customer"]), customerController.getCustomerSales);
+router.get('/panel/:id/sales', authenticateToken, authorize(["admin", "superadmin", "customer", "supervisor"]), customerController.getCustomerSales);
 router.get('/panel/:id/profile', authenticateToken, authorize(["admin", "superadmin", "customer"]), customerController.getCustomerProfile);
 router.put('/panel/:id/profile', authenticateToken, authorize(["admin", "superadmin", "customer"]), customerController.updateCustomerProfile);
 
