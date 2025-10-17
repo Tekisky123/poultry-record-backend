@@ -231,6 +231,7 @@ export const getCustomerSales = async (req, res, next) => {
                         balance: sale.balance || 0,
                         timestamp: sale.timestamp,
                         trip: {
+                            _id: trip._id,
                             tripId: trip.tripId,
                             supervisor: trip.supervisor,
                             vehicle: trip.vehicle,
