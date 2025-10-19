@@ -1,6 +1,7 @@
 import Trip from "../models/Trip.js";
 import Vehicle from "../models/Vehicle.js";
 import User from "../models/User.js";
+import Customer from "../models/Customer.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
 
@@ -264,6 +265,33 @@ export const addSale = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        // Calculate balance for the sale if customer is provided
+        if (saleData.client) {
+            try {
+                const customer = await Customer.findById(saleData.client);
+                if (customer) {
+                    const globalOpeningBalance = customer.openingBalance || 0;
+                    const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
+                    const discount = saleData.discount || 0;
+                    
+                    // Calculate the balance after this sale
+                    let balance = globalOpeningBalance + saleData.amount - totalPaid - discount;
+                    
+                    // If payment exceeds the sale amount + current opening balance, 
+                    // the extra payment reduces the balance to 0 (minimum)
+                    balance = Math.max(0, balance);
+                    
+                    // Add balance to sale data
+                    saleData.balance = balance;
+                }
+            } catch (error) {
+                console.error('Error calculating sale balance:', error);
+                saleData.balance = 0;
+            }
+        } else {
+            saleData.balance = 0;
+        }
+
         // Add sale
         trip.sales.push(saleData);
 
@@ -409,6 +437,33 @@ export const editSale = async (req, res, next) => {
         const saleIndex = parseInt(index);
         if (saleIndex < 0 || saleIndex >= trip.sales.length) {
             throw new AppError('Invalid sale index', 400);
+        }
+
+        // Calculate balance for the sale if customer is provided
+        if (saleData.client) {
+            try {
+                const customer = await Customer.findById(saleData.client);
+                if (customer) {
+                    const globalOpeningBalance = customer.openingBalance || 0;
+                    const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
+                    const discount = saleData.discount || 0;
+                    
+                    // Calculate the balance after this sale
+                    let balance = globalOpeningBalance + saleData.amount - totalPaid - discount;
+                    
+                    // If payment exceeds the sale amount + current opening balance, 
+                    // the extra payment reduces the balance to 0 (minimum)
+                    balance = Math.max(0, balance);
+                    
+                    // Add balance to sale data
+                    saleData.balance = balance;
+                }
+            } catch (error) {
+                console.error('Error calculating sale balance:', error);
+                saleData.balance = 0;
+            }
+        } else {
+            saleData.balance = 0;
         }
 
         // Update sale

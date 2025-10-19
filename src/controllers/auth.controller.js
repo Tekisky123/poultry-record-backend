@@ -1,4 +1,5 @@
 import User from "../models/User.js";
+import Customer from "../models/Customer.js";
 import AppError from "../utils/AppError.js";
 import validator from 'validator';
 import { loginValidator, signupValidator } from '../utils/validators.js';
@@ -18,7 +19,7 @@ export const signup = async (req, res, next) => {
   try {
     signupValidator(req.body);
 
-    const { mobileNumber, role, email, password: inputPassword } = req.body;
+    const { mobileNumber, role, email, password: inputPassword, gstOrPanNumber, ...otherFields } = req.body;
 
     // Check if user already exists (email or mobile)
     const existingUser = await User.findOne({
@@ -41,6 +42,26 @@ export const signup = async (req, res, next) => {
     });
 
     const savedUser = await user.save();
+
+    // If role is customer, create Customer record with GST/PAN information
+    if (role === 'customer') {
+      const customer = new Customer({
+        shopName: savedUser.name, // Use user name as shop name initially
+        ownerName: savedUser.name,
+        contact: savedUser.mobileNumber,
+        address: otherFields.address || '',
+        gstOrPanNumber: gstOrPanNumber,
+        createdBy: savedUser._id, // Self-created during signup
+        updatedBy: savedUser._id,
+        user: savedUser._id
+      });
+
+      const savedCustomer = await customer.save();
+
+      // Update User with customer reference
+      savedUser.customer = savedCustomer._id;
+      await savedUser.save();
+    }
 
     const { password, ...otherData } = savedUser.toObject();
 

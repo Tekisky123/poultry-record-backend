@@ -228,7 +228,7 @@ export const getCustomerSales = async (req, res, next) => {
                         cashPaid: sale.cashPaid || 0,
                         onlinePaid: sale.onlinePaid || 0,
                         discount: sale.discount || 0,
-                        balance: sale.balance || 0,
+                        openingBalance: sale.openingBalance || 0,
                         timestamp: sale.timestamp,
                         trip: {
                             _id: trip._id,
@@ -300,6 +300,162 @@ export const updateCustomerProfile = async (req, res, next) => {
         }
 
         successResponse(res, "Customer profile updated successfully", 200, updatedCustomer);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getCustomerDashboardStats = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID
+
+        const customer = await Customer.findOne({ user: id, isActive: true });
+        if (!customer) {
+            throw new AppError('Customer profile not found', 404);
+        }
+
+        // Ensure ID type is ObjectId
+        const customerId = new mongoose.Types.ObjectId(customer._id);
+
+        const trips = await Trip.find({ 'sales.client': customerId })
+            .populate('sales.client', 'shopName ownerName')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('vehicle', 'vehicleNumber')
+            .sort({ createdAt: -1 });
+
+        // Calculate stats from sales data
+        let totalPurchases = 0;
+        let totalAmount = 0;
+        let totalPaid = 0;
+        let totalBirds = 0;
+        let totalWeight = 0;
+        let pendingPayments = 0;
+
+        trips.forEach(trip => {
+            trip.sales.forEach(sale => {
+                if (sale.client && sale.client._id.toString() === customer._id.toString()) {
+                    totalPurchases += 1;
+                    totalAmount += sale.amount || 0;
+                    totalPaid += (sale.cashPaid || 0) + (sale.onlinePaid || 0);
+                    totalBirds += sale.birds || 0;
+                    totalWeight += sale.weight || 0;
+                    pendingPayments += sale.openingBalance || 0;
+                }
+            });
+        });
+
+        const stats = {
+            totalPurchases,
+            totalAmount,
+            totalPaid,
+            totalBalance: totalAmount - totalPaid,
+            totalBirds,
+            totalWeight,
+            pendingPayments,
+            openingBalance: customer.openingBalance || 0
+        };
+
+        successResponse(res, "Customer dashboard stats retrieved successfully", 200, stats);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updateCustomerPassword = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            throw new AppError('Current password and new password are required', 400);
+        }
+
+        // Validate new password strength
+        if (!validator.isStrongPassword(newPassword, {
+            minLength: 6,
+            minLowercase: 1,
+            minUppercase: 1,
+            minNumbers: 1,
+            minSymbols: 0
+        })) {
+            throw new AppError('New password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
+        }
+
+        // Find user
+        const user = await User.findById(id);
+        if (!user) {
+            throw new AppError('User not found', 404);
+        }
+
+        // Verify current password
+        const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+        if (!isCurrentPasswordValid) {
+            throw new AppError('Current password is incorrect', 400);
+        }
+
+        // Hash new password
+        const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+
+        // Update password
+        await User.findByIdAndUpdate(id, { password: hashedNewPassword });
+
+        successResponse(res, "Password updated successfully", 200, null);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getCustomerOpeningBalance = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID
+
+        const customer = await Customer.findOne({ user: id, isActive: true });
+        if (!customer) {
+            throw new AppError('Customer profile not found', 404);
+        }
+
+        successResponse(res, "Customer opening balance retrieved successfully", 200, {
+            customerId: customer._id,
+            shopName: customer.shopName,
+            openingBalance: customer.openingBalance || 0
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const updateCustomerOpeningBalance = async (req, res, next) => {
+    try {
+        const { customerId } = req.params;
+        const { newOpeningBalance } = req.body;
+
+        if (typeof newOpeningBalance !== 'number') {
+            throw new AppError('New opening balance must be a number', 400);
+        }
+
+        const customer = await Customer.findById(customerId);
+        if (!customer) {
+            throw new AppError('Customer not found', 404);
+        }
+
+        const oldBalance = customer.openingBalance || 0;
+        const newBalance = Math.max(0, newOpeningBalance); // Ensure balance doesn't go negative
+        
+        // Use findByIdAndUpdate to avoid triggering full document validation
+        const updatedCustomer = await Customer.findByIdAndUpdate(
+            customerId,
+            { openingBalance: newBalance },
+            { new: true, runValidators: false } // Skip validators to avoid gstOrPanNumber validation
+        );
+
+        console.log(`Updated customer ${updatedCustomer.shopName} opening balance from ${oldBalance} to ${newBalance}`);
+
+        successResponse(res, "Customer opening balance updated successfully", 200, {
+            customerId: updatedCustomer._id,
+            shopName: updatedCustomer.shopName,
+            oldBalance,
+            newBalance: newBalance
+        });
     } catch (error) {
         next(error);
     }

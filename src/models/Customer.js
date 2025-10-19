@@ -15,7 +15,7 @@ const customerSchema = new mongoose.Schema({
     maxlength: [100, "Owner name cannot exceed 100 characters"]
   },
   contact: { 
-    type: String, 
+    type: String,
     required: [true, "Contact number is required"],
     trim: true,
     validate: {
@@ -30,6 +30,7 @@ const customerSchema = new mongoose.Schema({
   },
   gstOrPanNumber: { 
     type: String, 
+    required: [true, "GST or PAN number is required"],
     trim: true,
     maxlength: [100, "GST or PAN number cannot exceed 100 characters"]
   },
@@ -57,6 +58,12 @@ const customerSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId, 
     ref: "User", 
     required: false // Optional for backward compatibility
+  },
+  // Global Opening Balance for customer (acts as outstanding balance)
+  openingBalance: {
+    type: Number,
+    default: 0,
+    min: [0, "Opening balance cannot be negative"]
   },
 }, {
   timestamps: true,

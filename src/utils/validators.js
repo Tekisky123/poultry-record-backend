@@ -6,7 +6,7 @@ export const signupValidator = (data = {}) => {
     throw new AppError('Invalid request body', 400);
   }
 
-  const { name, role, email, mobileNumber, age, password, address } = data;
+  const { name, role, email, mobileNumber, age, password, address, gstOrPanNumber } = data;
 
   // 1. Name validation
   if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 50) {
@@ -53,6 +53,34 @@ export const signupValidator = (data = {}) => {
   // 7. Address validation (optional, max 200 chars)
   if (address && address.length > 200) {
     throw new AppError('Address cannot exceed 200 characters', 400);
+  }
+
+  // 8. GST/PAN validation for customers
+  if (role === 'customer') {
+    if (!gstOrPanNumber || typeof gstOrPanNumber !== 'string' || !gstOrPanNumber.trim()) {
+      throw new AppError('GST/PAN number is required for customer registration', 400);
+    }
+    
+    const gstPanValue = gstOrPanNumber.trim();
+    // Basic length validation - GST is 15 chars, PAN is 10 chars
+    if (gstPanValue.length < 10 || gstPanValue.length > 15) {
+      throw new AppError('GST/PAN number must be between 10-15 characters', 400);
+    }
+    
+    // Optional: Enhanced validation for GST/PAN format
+    // GST format: 2 chars state code + 10 chars PAN + 1 char entity + 1 char Z + 1 char checksum
+    // PAN format: 5 chars + 4 chars + 1 char
+    if (gstPanValue.length === 15) {
+      // GST validation - basic format check
+      if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$/.test(gstPanValue)) {
+        throw new AppError('Invalid GST number format', 400);
+      }
+    } else if (gstPanValue.length === 10) {
+      // PAN validation - basic format check
+      if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(gstPanValue)) {
+        throw new AppError('Invalid PAN number format', 400);
+      }
+    }
   }
 
   return true; // passes all checks

@@ -96,7 +96,7 @@ const tripSchema = new mongoose.Schema({
         discount: { type: Number, default: 0 },
         cashPaid: { type: Number, default: 0 },
         onlinePaid: { type: Number, default: 0 },
-        balance: { type: Number, default: 0 }, // Calculated field
+        balance: { type: Number, default: 0 }, // Calculated balance after this sale
         timestamp: { type: Date, default: Date.now }
     }],
 
@@ -237,7 +237,10 @@ tripSchema.pre('save', async function(next) {
             this.summary.totalPurchaseAmount / this.summary.totalWeightPurchased : 0;
         this.summary.avgPurchaseRate = Number(avgPurchaseRate.toFixed(2));
 
-        this.sales.forEach(sale => {
+        // Process sales sequentially to ensure proper async handling
+        for (let i = 0; i < this.sales.length; i++) {
+            const sale = this.sales[i];
+            
             if (sale.birds && sale.weight) {
                 sale.avgWeight = Number((sale.weight / sale.birds).toFixed(2));
             }
@@ -246,9 +249,34 @@ tripSchema.pre('save', async function(next) {
             sale.profitAmount = Number((sale.profitMargin * sale.weight).toFixed(2));
             // Calculate receivedAmount from cashPaid + onlinePaid
             sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
-            // Calculate balance
-            sale.balance = sale.amount - sale.receivedAmount - (sale.discount || 0);
-        });
+            
+            // Calculate Opening Balance using the formula:
+            // Opening Balance(current) = Opening Balance(global) + Total Amount - Online Paid - Cash Paid - Discount
+            if (sale.client) {
+                try {
+                    const Customer = mongoose.model('Customer');
+                    const customer = await Customer.findById(sale.client);
+                    if (customer) {
+                        const globalOpeningBalance = customer.openingBalance || 0;
+                        const totalPaid = (sale.onlinePaid || 0) + (sale.cashPaid || 0);
+                        const discount = sale.discount || 0;
+                        
+                        // Calculate the balance after this sale
+                        let balance = globalOpeningBalance + sale.amount - totalPaid - discount;
+                        
+                        // If payment exceeds the sale amount + current opening balance, 
+                        // the extra payment reduces the balance to 0 (minimum)
+                        balance = Math.max(0, balance);
+                        
+                        sale.balance = balance;
+                        
+                        // Note: Customer's global opening balance will be updated via API call from trip controller
+                    }
+                } catch (error) {
+                    console.error('Error calculating opening balance:', error);
+                }
+            }
+        }
     }
 
     // Calculate losses fields
