@@ -97,6 +97,7 @@ const tripSchema = new mongoose.Schema({
         cashPaid: { type: Number, default: 0 },
         onlinePaid: { type: Number, default: 0 },
         balance: { type: Number, default: 0 }, // Calculated balance after this sale
+        openingBalance: { type: Number, default: 0 }, // Customer's balance AFTER this transaction
         timestamp: { type: Date, default: Date.now }
     }],
 

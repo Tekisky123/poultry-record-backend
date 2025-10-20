@@ -255,7 +255,13 @@ export const addPurchase = async (req, res, next) => {
 export const addSale = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const saleData = req.body;
+        let saleData = req.body;
+
+        saleData = {
+            ...saleData,
+            amount:Number(saleData.amount),
+            avgWeight:Number(saleData.avgWeight),
+        }
 
         let query = { _id: id };
         if (req.user.role === 'supervisor') {
@@ -282,14 +288,17 @@ export const addSale = async (req, res, next) => {
                     balance = Math.max(0, balance);
                     
                     // Add balance to sale data
-                    saleData.balance = balance;
+                    saleData.balance = Number(balance);
+                    saleData.openingBalance = balance; // Store balance AFTER this transaction
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
+                saleData.openingBalance = 0;
             }
         } else {
             saleData.balance = 0;
+            saleData.openingBalance = 0;
         }
 
         // Add sale
@@ -457,13 +466,17 @@ export const editSale = async (req, res, next) => {
                     
                     // Add balance to sale data
                     saleData.balance = balance;
+                    saleData.openingBalance = balance; // Store balance AFTER this transaction
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
+            saleData.openingBalance = 0;
+                saleData.openingBalance = 0;
             }
         } else {
             saleData.balance = 0;
+            saleData.openingBalance = 0;
         }
 
         // Update sale

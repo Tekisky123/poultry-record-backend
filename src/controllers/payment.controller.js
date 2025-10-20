@@ -17,36 +17,21 @@ export const submitPayment = async (req, res, next) => {
             throw new AppError('Customer profile not found', 404);
         }
 
-        // Find the sale in trips
-        const trip = await Trip.findOne({
-            'sales._id': saleId,
-            'sales.client': customer._id,
-        });
-
-        if (!trip) {
-            throw new AppError('Sale record not found', 404);
-        }
-
-        // Find the specific sale
-        const sale = trip.sales.find(s => s._id.toString() === saleId);
-        if (!sale) {
-            throw new AppError('Sale record not found', 404);
-        }
-
         // Validate payment amount
-        if (amount > sale.balance) {
-            throw new AppError('Payment amount cannot exceed outstanding balance', 400);
-        }
-
         if (amount <= 0) {
             throw new AppError('Payment amount must be greater than zero', 400);
+        }
+
+        // Validate against opening balance
+        if (amount > customer.openingBalance) {
+            throw new AppError('Payment amount cannot exceed opening balance', 400);
         }
 
         // Create payment record
         const payment = new Payment({
             customer: customer._id,
-            sale: saleId,
-            trip: trip._id,
+            sale: null, // Opening balance payments don't have specific sales
+            trip: null, // Opening balance payments don't have specific trips
             amount,
             paymentMethod,
             customerDetails: {
@@ -61,10 +46,9 @@ export const submitPayment = async (req, res, next) => {
 
         await payment.save();
 
-        // Populate the payment with customer and trip details
+        // Populate the payment with customer details
         await payment.populate([
             { path: 'customer', select: 'shopName ownerName contact' },
-            { path: 'trip', select: 'tripId date' },
             { path: 'submittedBy', select: 'name email' }
         ]);
 
@@ -172,28 +156,44 @@ export const verifyPayment = async (req, res, next) => {
 
         await payment.save();
 
-        // If verified, update the sale balance
+        // If verified, update the customer's opening balance
         if (status === 'verified') {
-            const trip = await Trip.findById(payment.trip);
-            if (trip) {
-                const sale = trip.sales.find(s => s._id.toString() === payment.sale.toString());
-                if (sale) {
-                    // Update sale payment details
-                    sale.cashPaid = (sale.cashPaid || 0) + payment.amount;
-                    sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
-                    sale.balance = sale.amount - sale.receivedAmount - (sale.discount || 0);
-                    
-                    await trip.save();
+            // Find the customer
+            const customer = await Customer.findById(payment.customer);
+            if (customer) {
+                // Deduct the payment amount from opening balance
+                customer.openingBalance = Math.max(0, (customer.openingBalance || 0) - payment.amount);
+                await customer.save();
+            }
+
+            // If this is a sale payment (has trip and sale), also update the sale balance
+            if (payment.trip && payment.sale) {
+                const trip = await Trip.findById(payment.trip);
+                if (trip) {
+                    const sale = trip.sales.find(s => s._id.toString() === payment.sale.toString());
+                    if (sale) {
+                        // Update sale payment details
+                        sale.cashPaid = (sale.cashPaid || 0) + payment.amount;
+                        sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
+                        sale.balance = sale.amount - sale.receivedAmount - (sale.discount || 0);
+                        
+                        await trip.save();
+                    }
                 }
             }
         }
 
         // Populate the updated payment
-        await payment.populate([
+        const populateFields = [
             { path: 'customer', select: 'shopName ownerName contact' },
-            { path: 'trip', select: 'tripId date' },
             { path: 'verifiedBy', select: 'name email' }
-        ]);
+        ];
+        
+        if (payment.trip) {
+            populateFields.push({ path: 'trip', select: 'tripId date' });
+        }
+
+        await payment.populate(populateFields);
 
         successResponse(res, `Payment ${status} successfully`, 200, payment);
     } catch (error) {

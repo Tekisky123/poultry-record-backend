@@ -361,14 +361,307 @@ export const getCustomerDashboardStats = async (req, res, next) => {
     }
 };
 
+export const getCustomerPurchaseLedger = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID
+        const { page = 1, limit = 50 } = req.query;
+
+        const customer = await Customer.findOne({ user: id, isActive: true });
+        if (!customer) {
+            throw new AppError('Customer profile not found', 404);
+        }
+
+        // Ensure ID type is ObjectId
+        const customerId = new mongoose.Types.ObjectId(customer._id);
+
+        const trips = await Trip.find({ 'sales.client': customerId })
+            .populate('sales.client', 'shopName ownerName')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('vehicle', 'vehicleNumber')
+            .sort({ createdAt: -1 });
+
+        // Transform sales into ledger entries
+        const ledgerEntries = [];
+
+        ledgerEntries.push(
+            {
+                _id: 'opening_balance',
+                date: customer.createdAt, // Use customer creation date
+                vehiclesNo: '',
+                driverName: '',
+                supervisor: '',
+                product: '',
+                particulars: 'OP BAL',
+                invoiceNo: '',
+                birds: 0,
+                weight: 0,
+                avgWeight: 0,
+                rate: 0,
+                amount: 0,
+                openingBalance: 0,
+                trip: null
+            }
+        );
+        
+        trips.forEach(trip => {
+            trip.sales.forEach(sale => {
+                if (sale.client && sale.client._id.toString() === customer._id.toString()) {
+                    const totalPaid = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
+                    
+                    // Determine particulars based on sale type
+                    let particulars = '';
+                    if (sale.birds > 0) {
+                        particulars = 'SALES';
+                    } else if (sale.birds == 0 && sale.weight == 0 && sale.amount == 0) {
+                        // This is a receipt entry (payment only)
+                        particulars = 'RECEIPT';
+                    } else if (sale.birds == 0 && sale.weight == 0 && sale.balance > 0) {
+                        // This is an opening balance payment entry
+                        particulars = 'OP BAL';
+                    } else {
+                        particulars = 'OTHER';
+                    }
+
+                    let byCash = '';
+                    let byOnline = '';
+
+                    
+                    if(
+                        (particulars == 'SALES' || particulars == 'RECEIPT' || particulars == 'OP BAL') 
+                        && 
+                        (sale.cashPaid > 0 || sale.onlinePaid > 0)
+                    ){
+                        byCash = sale.cashPaid > 0 ? 'BY CASH RECEIPT' : '';
+                        byOnline = sale.onlinePaid > 0 ? 'BY BANK RECEIPT' : '';
+                    }
+
+
+                    // Create main entry (SALES or RECEIPT)
+                    ledgerEntries.push({
+                        _id: sale._id,
+                        date: sale.timestamp,
+                        vehiclesNo: trip.vehicle?.vehicleNumber || '',
+                        driverName: trip.driver || '',
+                        supervisor: trip.supervisor?.name || '',
+                        product: trip.purchases[0]?.supplier?.vendorName || '', // Get vendor name from first purchase
+                        particulars: particulars,
+                        invoiceNo: sale.billNumber,
+                        birds: sale.birds || 0,
+                        weight: sale.weight || 0,
+                        avgWeight: sale.avgWeight || 0,
+                        rate: sale.rate || 0,
+                        amount: sale.amount || 0,
+                        openingBalance: sale.openingBalance || 0,
+                        trip: {
+                            _id: trip._id,
+                            tripId: trip.tripId,
+                            supervisor: trip.supervisor,
+                            vehicle: trip.vehicle,
+                            date: trip.date
+                        }
+                    });
+
+                    const byCashEntry = {
+                        _id: sale._id,
+                        date: sale.timestamp,
+                        vehiclesNo: trip.vehicle?.vehicleNumber || '',
+                        driverName: trip.driver || '',
+                        supervisor: trip.supervisor?.name || '',
+                        product: trip.purchases[0]?.supplier?.vendorName || '', // Get vendor name from first purchase
+                        particulars: byCash,
+                        invoiceNo: sale.billNumber,
+                        birds: 0,
+                        weight: 0,
+                        avgWeight: 0,
+                        rate: 0,
+                        amount: sale.cashPaid || 0,
+                        openingBalance: sale.openingBalance || 0,
+                        trip: {
+                            _id: trip._id,
+                            tripId: trip.tripId,
+                            supervisor: trip.supervisor,
+                            vehicle: trip.vehicle,
+                            date: trip.date
+                        }
+                    };
+                    const byOnlineEntry ={
+                        _id: sale._id,
+                        date: sale.timestamp,
+                        vehiclesNo: trip.vehicle?.vehicleNumber || '',
+                        driverName: trip.driver || '',
+                        supervisor: trip.supervisor?.name || '',
+                        product: trip.purchases[0]?.supplier?.vendorName || '', // Get vendor name from first purchase
+                        particulars: byOnline,
+                        invoiceNo: sale.billNumber,
+                        birds: 0,
+                        weight: 0,
+                        avgWeight: 0,
+                        rate: 0,
+                        amount: sale.onlinePaid || 0,
+                        openingBalance: sale.openingBalance || 0,
+                        trip: {
+                            _id: trip._id,
+                            tripId: trip.tripId,
+                            supervisor: trip.supervisor,
+                            vehicle: trip.vehicle,
+                            date: trip.date
+                        }
+                    }
+
+                    if(byCash != '' && byOnline != ''){ // Both cash and online paid
+                        ledgerEntries.push(byCashEntry, byOnlineEntry);
+                    }else if(byCash != '' && byOnline == ''){ // Only cash paid
+                        ledgerEntries.push(byCashEntry);
+                    }else if(byCash == '' && byOnline != ''){ // Only online paid
+                        ledgerEntries.push(byOnlineEntry);
+                    }else{}
+
+
+                    // If sale has discount, create separate DISCOUNT entry
+                    if (sale.discount > 0) {
+                        ledgerEntries.push({
+                            _id: `${sale._id}_discount`,
+                            date: sale.timestamp,
+                            vehiclesNo: trip.vehicle?.vehicleNumber || '',
+                            driverName: trip.driver || '',
+                            supervisor: trip.supervisor?.name || '',
+                            product: trip.purchases[0]?.supplier?.vendorName || '',
+                            particulars: 'DISCOUNT',
+                            invoiceNo: sale.billNumber,
+                            birds: 0,
+                            weight: 0,
+                            avgWeight: 0,
+                            rate: 0,
+                            amount: sale.discount, // Discount amount goes in amount column
+                            openingBalance: sale.openingBalance || 0,
+                            trip: {
+                                _id: trip._id,
+                                tripId: trip.tripId,
+                                supervisor: trip.supervisor,
+                                vehicle: trip.vehicle,
+                                date: trip.date
+                            }
+                        });
+                    }
+                }
+            });
+        });
+
+        // Sort by date ascending (oldest first for chronological ledger)
+        ledgerEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Add opening balance entry if customer has opening balance
+        // if (customer.openingBalance > 0) {
+        //     ledgerEntries.unshift({
+        //         _id: 'opening_balance',
+        //         date: customer.createdAt, // Use customer creation date
+        //         vehiclesNo: '',
+        //         driverName: '',
+        //         supervisor: '',
+        //         product: '',
+        //         particulars: 'OP BAL',
+        //         invoiceNo: '',
+        //         birds: 0,
+        //         weight: 0,
+        //         avgWeight: 0,
+        //         rate: 0,
+        //         amount: customer.openingBalance,
+        //         openingBalance: customer.openingBalance,
+        //         trip: null
+        //     });
+        // }
+
+        // Calculate running balance for each entry
+        // let runningBalance = 0; // Start with 0, OP BAL will set the initial balance
+        // ledgerEntries.forEach(entry => {
+        //     if (entry.particulars === 'OP BAL') {
+        //         // For opening balance: set the balance to the amount
+        //         runningBalance = entry.amount;
+        //     } else if (entry.particulars === 'SALES') {
+        //         // For sales: balance = previous balance + amount
+        //         runningBalance += entry.amount;
+        //     } else if (entry.particulars === 'RECEIPT') {
+        //         // For receipts: balance = previous balance - amount (payment reduces balance)
+        //         runningBalance -= entry.amount;
+        //     } else if (entry.particulars === 'DISCOUNT') {
+        //         // For discounts: balance = previous balance - amount (discount reduces balance)
+        //         runningBalance -= entry.amount;
+        //     }
+        //     entry.openingBalance = runningBalance;
+        // });
+
+        // Apply pagination
+        const startIndex = (page - 1) * limit;
+        const endIndex = startIndex + parseInt(limit);
+        const paginatedEntries = ledgerEntries.slice(startIndex, endIndex);
+
+        // Calculate totals
+        const totals = {
+            totalBirds: ledgerEntries.reduce((sum, entry) => sum + entry.birds, 0),
+            totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
+            totalAmount: ledgerEntries.reduce((sum, entry) => sum + entry.amount, 0),
+            currentBalance: ledgerEntries[ledgerEntries.length - 1]?.openingBalance || 0 // Use the final running balance
+        };
+
+        successResponse(res, "Customer purchase ledger retrieved successfully", 200, {
+            ledger: paginatedEntries,
+            totals,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(ledgerEntries.length / limit),
+                totalItems: ledgerEntries.length,
+                itemsPerPage: parseInt(limit)
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getCustomerPayments = async (req, res, next) => {
+    try {
+        const { id } = req.params; // User ID
+        const { page = 1, limit = 15 } = req.query;
+
+        const customer = await Customer.findOne({ user: id, isActive: true });
+        if (!customer) {
+            throw new AppError('Customer profile not found', 404);
+        }
+
+        // Import Payment model
+        const Payment = (await import('../models/Payment.js')).default;
+
+        // Build query
+        const query = { customer: customer._id };
+        
+        // Get payments with pagination
+        const payments = await Payment.find(query)
+            .populate('trip', 'tripId date')
+            .populate('verifiedBy', 'name')
+            .sort({ createdAt: -1 })
+            .limit(limit * 1)
+            .skip((page - 1) * limit);
+
+        const total = await Payment.countDocuments(query);
+
+        successResponse(res, "Customer payments retrieved successfully", 200, {
+            payments,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(total / limit),
+                totalItems: total,
+                itemsPerPage: parseInt(limit)
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const updateCustomerPassword = async (req, res, next) => {
     try {
         const { id } = req.params; // User ID
         const { currentPassword, newPassword } = req.body;
-
-        if (!currentPassword || !newPassword) {
-            throw new AppError('Current password and new password are required', 400);
-        }
 
         // Validate new password strength
         if (!validator.isStrongPassword(newPassword, {

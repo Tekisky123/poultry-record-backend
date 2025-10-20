@@ -11,12 +11,12 @@ const paymentSchema = new mongoose.Schema({
   sale: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Trip.sales',
-    required: true
+    required: false // Optional for balance payments
   },
   trip: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Trip',
-    required: true
+    required: false // Optional for balance payments
   },
   
   // Payment details
