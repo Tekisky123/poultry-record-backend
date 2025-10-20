@@ -50,7 +50,7 @@ app.all('/*splat', (req, res) => {
 app.use(globalErrorHandler);
 
 // Only start server if not in Vercel environment
-if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
   connectDB()
     .then(() => {
       console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);

@@ -1,9 +1,13 @@
 import mongoose from 'mongoose';
 import {config} from 'dotenv';
 
-// Only load .env in development
-if (process.env.NODE_ENV !== 'production') {
-  config({ path: `${process.cwd()}/src/.env` });
+// Load environment variables - Vercel will use its own env vars in production
+if (process.env.NODE_ENV !== 'production' || !process.env.DATABASE_URI) {
+  try {
+    config({ path: `${process.cwd()}/src/.env` });
+  } catch (error) {
+    console.log('No local .env file found, using environment variables');
+  }
 }
 
 const connectDB = async () =>
