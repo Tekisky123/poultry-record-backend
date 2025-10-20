@@ -25,7 +25,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(apiLogger);
 
@@ -48,16 +49,31 @@ app.all('/*splat', (req, res) => {
 
 app.use(globalErrorHandler);
 
-connectDB()
-  .then(() => {
-    console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
-    server.listen(port, () =>
-      console.log(
-        `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
-      )
-    );
-  })
-  .catch((err) => {
-    console.error("❌ Database connection failed!!");
-    console.error(err.message);
-  });
+// Only start server if not in Vercel environment
+if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
+  connectDB()
+    .then(() => {
+      console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
+      server.listen(port, () =>
+        console.log(
+          `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
+        )
+      );
+    })
+    .catch((err) => {
+      console.error("❌ Database connection failed!!");
+      console.error(err.message);
+    });
+} else {
+  // For Vercel, just connect to database
+  connectDB()
+    .then(() => {
+      console.log(`✔️  Database connected for Vercel!! ${process.env.DATABASE_USER || ''}`);
+    })
+    .catch((err) => {
+      console.error("❌ Database connection failed!!");
+      console.error(err.message);
+    });
+}
+
+export default app;
