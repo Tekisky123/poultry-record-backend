@@ -364,7 +364,7 @@ export const getCustomerDashboardStats = async (req, res, next) => {
 export const getCustomerPurchaseLedger = async (req, res, next) => {
     try {
         const { id } = req.params; // User ID
-        const { page = 1, limit = 50 } = req.query;
+        const { page = 1, limit = 10 } = req.query;
 
         const customer = await Customer.findOne({ user: id, isActive: true });
         if (!customer) {
@@ -382,32 +382,10 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Transform sales into ledger entries
         const ledgerEntries = [];
-
-        ledgerEntries.push(
-            {
-                _id: 'opening_balance',
-                date: customer.createdAt, // Use customer creation date
-                vehiclesNo: '',
-                driverName: '',
-                supervisor: '',
-                product: '',
-                particulars: 'OP BAL',
-                invoiceNo: '',
-                birds: 0,
-                weight: 0,
-                avgWeight: 0,
-                rate: 0,
-                amount: 0,
-                openingBalance: 0,
-                trip: null
-            }
-        );
         
         trips.forEach(trip => {
             trip.sales.forEach(sale => {
-                if (sale.client && sale.client._id.toString() === customer._id.toString()) {
-                    const totalPaid = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
-                    
+                if (sale.client && sale.client._id.toString() === customer._id.toString()) {                    
                     // Determine particulars based on sale type
                     let particulars = '';
                     if (sale.birds > 0) {
@@ -547,48 +525,34 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             });
         });
 
+        // Add OP BAL entry at the beginning (always first entry)
+        ledgerEntries.unshift({
+            _id: 'opening_balance',
+            date: customer.createdAt, // Use customer creation date
+            vehiclesNo: '',
+            driverName: '',
+            supervisor: '',
+            product: '',
+            particulars: 'OP BAL',
+            invoiceNo: '',
+            birds: 0,
+            weight: 0,
+            avgWeight: 0,
+            rate: 0,
+            amount: 0,
+            openingBalance: 0,
+            trip: null
+        });
+
         // Sort by date ascending (oldest first for chronological ledger)
-        ledgerEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-        // Add opening balance entry if customer has opening balance
-        // if (customer.openingBalance > 0) {
-        //     ledgerEntries.unshift({
-        //         _id: 'opening_balance',
-        //         date: customer.createdAt, // Use customer creation date
-        //         vehiclesNo: '',
-        //         driverName: '',
-        //         supervisor: '',
-        //         product: '',
-        //         particulars: 'OP BAL',
-        //         invoiceNo: '',
-        //         birds: 0,
-        //         weight: 0,
-        //         avgWeight: 0,
-        //         rate: 0,
-        //         amount: customer.openingBalance,
-        //         openingBalance: customer.openingBalance,
-        //         trip: null
-        //     });
-        // }
-
-        // Calculate running balance for each entry
-        // let runningBalance = 0; // Start with 0, OP BAL will set the initial balance
-        // ledgerEntries.forEach(entry => {
-        //     if (entry.particulars === 'OP BAL') {
-        //         // For opening balance: set the balance to the amount
-        //         runningBalance = entry.amount;
-        //     } else if (entry.particulars === 'SALES') {
-        //         // For sales: balance = previous balance + amount
-        //         runningBalance += entry.amount;
-        //     } else if (entry.particulars === 'RECEIPT') {
-        //         // For receipts: balance = previous balance - amount (payment reduces balance)
-        //         runningBalance -= entry.amount;
-        //     } else if (entry.particulars === 'DISCOUNT') {
-        //         // For discounts: balance = previous balance - amount (discount reduces balance)
-        //         runningBalance -= entry.amount;
-        //     }
-        //     entry.openingBalance = runningBalance;
-        // });
+        // But ensure OP BAL always stays first
+        ledgerEntries.sort((a, b) => {
+            // OP BAL entry always comes first
+            if (a._id === 'opening_balance') return -1;
+            if (b._id === 'opening_balance') return 1;
+            // Sort other entries by date
+            return new Date(a.date) - new Date(b.date);
+        });
 
         // Apply pagination
         const startIndex = (page - 1) * limit;
