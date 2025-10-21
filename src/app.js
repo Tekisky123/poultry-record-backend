@@ -49,31 +49,18 @@ app.all('/*splat', (req, res) => {
 
 app.use(globalErrorHandler);
 
-// Only start server if not in Vercel environment
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  connectDB()
-    .then(() => {
-      console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
-      server.listen(port, () =>
-        console.log(
-          `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
-        )
-      );
-    })
-    .catch((err) => {
-      console.error("❌ Database connection failed!!");
-      console.error(err.message);
-    });
-} else {
-  // For Vercel, just connect to database
-  connectDB()
-    .then(() => {
-      console.log(`✔️  Database connected for Vercel!! ${process.env.DATABASE_USER || ''}`);
-    })
-    .catch((err) => {
-      console.error("❌ Database connection failed!!");
-      console.error(err.message);
-    });
-}
+connectDB()
+  .then(() => {
+    console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
+    server.listen(port, () =>
+      console.log(
+        `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
+      )
+    );
+  })
+  .catch((err) => {
+    console.error("❌ Database connection failed!!");
+    console.error(err.message);
+  });
 
 export default app;
