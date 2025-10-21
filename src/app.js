@@ -63,4 +63,3 @@ connectDB()
     console.error(err.message);
   });
 
-export default app;
