@@ -332,17 +332,18 @@ tripSchema.pre('save', async function(next) {
     const totalStockWeight = this.stocks.reduce((sum, stock) => sum + (stock.weight || 0), 0);
     const totalStockValue = this.stocks.reduce((sum, stock) => sum + (stock.value || 0), 0);
 
-    // Calculate bird weight loss: purchased - sold - stock - death
-    this.summary.birdWeightLoss = (this.summary.totalWeightPurchased || 0) - 
-                                 (this.summary.totalWeightSold || 0) - 
-                                 totalStockWeight - 
-                                 (this.summary.totalWeightLost || 0);
-
     // Calculate total transferred birds from transfer history
     const totalTransferredBirds = this.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.birds || 0), 0);
     const totalTransferredWeight = this.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.weight || 0), 0);
     this.summary.birdsTransferred = totalTransferredBirds;
     this.summary.weightTransferred = totalTransferredWeight;
+
+    // Calculate bird weight loss: purchased - sold - stock - death - transferred
+    this.summary.birdWeightLoss = (this.summary.totalWeightPurchased || 0) - 
+                                 (this.summary.totalWeightSold || 0) - 
+                                 totalStockWeight - 
+                                 (this.summary.totalWeightLost || 0) - 
+                                 totalTransferredWeight;
 
     // Calculate birds remaining: purchased - sold - stock - lost - transferred
     this.summary.birdsRemaining = (this.summary.totalBirdsPurchased || 0) - 

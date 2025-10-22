@@ -552,15 +552,23 @@ export const addDeathBirds = async (req, res, next) => {
         trip.summary.totalWeightLost = trip.losses.reduce((sum, loss) => sum + (loss.weight || 0), 0);
         trip.summary.mortality = trip.summary.totalBirdsLost;
 
-        // Calculate bird weight loss: purchased - sold - lost
+        // Calculate bird weight loss: purchased - sold - stock - lost - transferred
+        const totalStockWeight = trip.stocks.reduce((sum, stock) => sum + (stock.weight || 0), 0);
+        const totalTransferredWeight = trip.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.weight || 0), 0);
         trip.summary.birdWeightLoss = (trip.summary.totalWeightPurchased || 0) - 
                                      (trip.summary.totalWeightSold || 0) - 
-                                     (trip.summary.totalWeightLost || 0);
+                                     totalStockWeight - 
+                                     (trip.summary.totalWeightLost || 0) - 
+                                     totalTransferredWeight;
 
-        // Calculate birds remaining: purchased - sold - lost
+        // Calculate birds remaining: purchased - sold - stock - lost - transferred
+        const totalStockBirds = trip.stocks.reduce((sum, stock) => sum + (stock.birds || 0), 0);
+        const totalTransferredBirds = trip.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.birds || 0), 0);
         trip.summary.birdsRemaining = (trip.summary.totalBirdsPurchased || 0) - 
                                      (trip.summary.totalBirdsSold || 0) - 
-                                     (trip.summary.totalBirdsLost || 0);
+                                     totalStockBirds - 
+                                     (trip.summary.totalBirdsLost || 0) - 
+                                     totalTransferredBirds;
 
         // Recalculate net profit (subtract losses)
         const totalRevenue = trip.summary.totalSalesAmount || 0;
