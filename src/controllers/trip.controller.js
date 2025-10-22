@@ -407,6 +407,16 @@ export const editPurchase = async (req, res, next) => {
             trip.summary.totalProfitMargin = trip.sales.reduce((sum, s) => sum + (s.profitAmount || 0), 0);
         }
 
+        // Calculate gross rent: rentPerKm * totalDistance
+        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
+        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
+
+        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
+        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
+                                  (trip.summary.totalPurchaseAmount || 0) - 
+                                  (trip.summary.totalExpenses || 0) - 
+                                  trip.summary.grossRent;
+
         // Recalculate net profit
         const totalRevenue = trip.summary.totalSalesAmount || 0;
         const totalCosts = (trip.summary.totalPurchaseAmount || 0) + (trip.summary.totalExpenses || 0) + (trip.summary.totalDieselAmount || 0);
@@ -490,6 +500,16 @@ export const editSale = async (req, res, next) => {
         // Calculate remaining birds
         trip.summary.birdsRemaining = trip.summary.totalBirdsPurchased - trip.summary.totalBirdsSold;
 
+        // Calculate gross rent: rentPerKm * totalDistance
+        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
+        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
+
+        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
+        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
+                                  (trip.summary.totalPurchaseAmount || 0) - 
+                                  (trip.summary.totalExpenses || 0) - 
+                                  trip.summary.grossRent;
+
         trip.updatedBy = req.user._id;
         await trip.save();
 
@@ -569,6 +589,16 @@ export const addDeathBirds = async (req, res, next) => {
                                      totalStockBirds - 
                                      (trip.summary.totalBirdsLost || 0) - 
                                      totalTransferredBirds;
+
+        // Calculate gross rent: rentPerKm * totalDistance
+        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
+        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
+
+        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
+        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
+                                  (trip.summary.totalPurchaseAmount || 0) - 
+                                  (trip.summary.totalExpenses || 0) - 
+                                  trip.summary.grossRent;
 
         // Recalculate net profit (subtract losses)
         const totalRevenue = trip.summary.totalSalesAmount || 0;
@@ -800,6 +830,16 @@ export const completeTrip = async (req, res, next) => {
         trip.summary.mortality = mortality || 0;
         trip.summary.totalExpenses = trip.expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
         trip.summary.totalDieselAmount = trip.diesel.totalAmount;
+
+        // Calculate gross rent: rentPerKm * totalDistance
+        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
+        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
+
+        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
+        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
+                                  (trip.summary.totalPurchaseAmount || 0) - 
+                                  (trip.summary.totalExpenses || 0) - 
+                                  trip.summary.grossRent;
 
         // Calculate final profit including death losses
         trip.summary.netProfit = trip.summary.totalSalesAmount -

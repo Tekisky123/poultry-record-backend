@@ -150,7 +150,9 @@ const tripSchema = new mongoose.Schema({
         totalReceivedAmount: { type: Number, default: 0 }, // Total amount received (cash + online)
         profitPerKg: { type: Number, default: 0 },
         fuelEfficiency: { type: Number, default: 0 },
-        avgPurchaseRate: { type: Number, default: 0 } // Average purchase rate for calculations
+        avgPurchaseRate: { type: Number, default: 0 }, // Average purchase rate for calculations
+        birdsProfit: { type: Number, default: 0 }, // Birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
+        grossRent: { type: Number, default: 0 } // Gross rent: rentPerKm * totalDistance
     },
 
     status: { 
@@ -351,6 +353,16 @@ tripSchema.pre('save', async function(next) {
                                  totalStockBirds - 
                                  (this.summary.totalBirdsLost || 0) -
                                  totalTransferredBirds;
+
+    // Calculate gross rent: rentPerKm * totalDistance
+    const totalDistance = this.vehicleReadings?.totalDistance || 0;
+    this.summary.grossRent = (this.rentPerKm || 0) * totalDistance;
+
+    // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
+    this.summary.birdsProfit = (this.summary.totalSalesAmount || 0) - 
+                              (this.summary.totalPurchaseAmount || 0) - 
+                              (this.summary.totalExpenses || 0) - 
+                              this.summary.grossRent;
 
     // Calculate net profit from sales profit margin minus expenses and diesel
     const salesProfit = this.summary.totalProfitMargin || 0;
