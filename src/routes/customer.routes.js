@@ -20,7 +20,7 @@ router.get('/panel/:id/dashboard-stats', authenticateToken, authorize(["admin", 
 router.get('/panel/:id/purchase-ledger', authenticateToken, authorize(["admin", "superadmin", "customer"]), customerController.getCustomerPurchaseLedger);
 router.get('/panel/:id/payments', authenticateToken, authorize(["admin", "superadmin", "customer"]), customerController.getCustomerPayments);
 router.put('/panel/:id/password', authenticateToken, authorize(["admin", "superadmin", "customer"]), customerController.updateCustomerPassword);
-router.get('/panel/:id/opening-balance', authenticateToken, authorize(["admin", "superadmin", "customer", "supervisor"]), customerController.getCustomerOpeningBalance);
-router.put('/:customerId/opening-balance', authenticateToken, authorize(["admin", "superadmin", "supervisor"]), customerController.updateCustomerOpeningBalance);
+router.get('/panel/:id/outstanding-balance', authenticateToken, authorize(["admin", "superadmin", "customer", "supervisor"]), customerController.getCustomerOutstandingBalance);
+router.put('/:customerId/outstanding-balance', authenticateToken, authorize(["admin", "superadmin", "supervisor"]), customerController.updateCustomerOutstandingBalance);
 
 export default router;

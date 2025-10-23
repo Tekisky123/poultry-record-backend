@@ -53,7 +53,10 @@ export const signup = async (req, res, next) => {
         gstOrPanNumber: gstOrPanNumber,
         createdBy: savedUser._id, // Self-created during signup
         updatedBy: savedUser._id,
-        user: savedUser._id
+        user: savedUser._id,
+        // Set both balances to 0 for signup customers
+        openingBalance: 0,
+        outstandingBalance: 0
       });
 
       const savedCustomer = await customer.save();

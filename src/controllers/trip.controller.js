@@ -276,29 +276,29 @@ export const addSale = async (req, res, next) => {
             try {
                 const customer = await Customer.findById(saleData.client);
                 if (customer) {
-                    const globalOpeningBalance = customer.openingBalance || 0;
+                    const globalOutstandingBalance = customer.outstandingBalance || 0;
                     const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
                     const discount = saleData.discount || 0;
                     
                     // Calculate the balance after this sale
-                    let balance = globalOpeningBalance + saleData.amount - totalPaid - discount;
+                    let balance = globalOutstandingBalance + saleData.amount - totalPaid - discount;
                     
-                    // If payment exceeds the sale amount + current opening balance, 
+                    // If payment exceeds the sale amount + current outstanding balance, 
                     // the extra payment reduces the balance to 0 (minimum)
                     balance = Math.max(0, balance);
                     
                     // Add balance to sale data
                     saleData.balance = Number(balance);
-                    saleData.openingBalance = balance; // Store balance AFTER this transaction
+                    saleData.outstandingBalance = balance; // Store balance AFTER this transaction
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
-                saleData.openingBalance = 0;
+                saleData.outstandingBalance = 0;
             }
         } else {
             saleData.balance = 0;
-            saleData.openingBalance = 0;
+            saleData.outstandingBalance = 0;
         }
 
         // Add sale
@@ -463,30 +463,30 @@ export const editSale = async (req, res, next) => {
             try {
                 const customer = await Customer.findById(saleData.client);
                 if (customer) {
-                    const globalOpeningBalance = customer.openingBalance || 0;
+                    const globalOutstandingBalance = customer.outstandingBalance || 0;
                     const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
                     const discount = saleData.discount || 0;
                     
                     // Calculate the balance after this sale
-                    let balance = globalOpeningBalance + saleData.amount - totalPaid - discount;
+                    let balance = globalOutstandingBalance + saleData.amount - totalPaid - discount;
                     
-                    // If payment exceeds the sale amount + current opening balance, 
+                    // If payment exceeds the sale amount + current outstanding balance, 
                     // the extra payment reduces the balance to 0 (minimum)
                     balance = Math.max(0, balance);
                     
                     // Add balance to sale data
                     saleData.balance = balance;
-                    saleData.openingBalance = balance; // Store balance AFTER this transaction
+                    saleData.outstandingBalance = balance; // Store balance AFTER this transaction
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
-            saleData.openingBalance = 0;
-                saleData.openingBalance = 0;
+            saleData.outstandingBalance = 0;
+                saleData.outstandingBalance = 0;
             }
         } else {
             saleData.balance = 0;
-            saleData.openingBalance = 0;
+            saleData.outstandingBalance = 0;
         }
 
         // Update sale

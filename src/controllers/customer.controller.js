@@ -65,7 +65,10 @@ export const addCustomer = async (req, res, next) => {
             ...customerData,
             user: savedUser._id,
             createdBy: req.user._id,
-            updatedBy: req.user._id
+            updatedBy: req.user._id,
+            // Set both openingBalance and outstandingBalance to the same initial value
+            openingBalance: customerData.openingBalance || 0,
+            outstandingBalance: customerData.openingBalance || 0
         });
 
         const savedCustomer = await customer.save();
@@ -89,7 +92,7 @@ export const addCustomer = async (req, res, next) => {
 export const getCustomers = async (req, res, next) => {
     try {
         const customers = await Customer.find({ isActive: true })
-            .populate('user', 'name email mobileNumber role approvalStatus openingBalance')
+            .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ shopName: 1 });
@@ -162,6 +165,10 @@ export const updateCustomer = async (req, res, next) => {
             updatedBy: req.user._id
         };
 
+        // Remove openingBalance from update data to prevent accidental updates
+        // openingBalance should only be set during customer creation
+        delete updateData.openingBalance;
+
         const updatedCustomer = await Customer.findByIdAndUpdate(
             id,
             updateData,
@@ -228,7 +235,7 @@ export const getCustomerSales = async (req, res, next) => {
                         cashPaid: sale.cashPaid || 0,
                         onlinePaid: sale.onlinePaid || 0,
                         discount: sale.discount || 0,
-                        openingBalance: sale.openingBalance || 0,
+                        outstandingBalance: sale.outstandingBalance || 0,
                         timestamp: sale.timestamp,
                         trip: {
                             _id: trip._id,
@@ -339,7 +346,7 @@ export const getCustomerDashboardStats = async (req, res, next) => {
                     totalPaid += (sale.cashPaid || 0) + (sale.onlinePaid || 0);
                     totalBirds += sale.birds || 0;
                     totalWeight += sale.weight || 0;
-                    pendingPayments += sale.openingBalance || 0;
+                    pendingPayments += sale.outstandingBalance || 0;
                 }
             });
         });
@@ -352,7 +359,8 @@ export const getCustomerDashboardStats = async (req, res, next) => {
             totalBirds,
             totalWeight,
             pendingPayments,
-            openingBalance: customer.openingBalance || 0
+            openingBalance: customer.openingBalance || 0,
+            outstandingBalance: customer.outstandingBalance || 0
         };
 
         successResponse(res, "Customer dashboard stats retrieved successfully", 200, stats);
@@ -394,7 +402,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         // This is a receipt entry (payment only)
                         particulars = 'RECEIPT';
                     } else if (sale.birds == 0 && sale.weight == 0 && sale.balance > 0) {
-                        // This is an opening balance payment entry
+                        // This is an outstanding balance payment entry
                         particulars = 'OP BAL';
                     } else {
                         particulars = 'OTHER';
@@ -429,7 +437,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: sale.avgWeight || 0,
                         rate: sale.rate || 0,
                         amount: sale.amount || 0,
-                        openingBalance: sale.openingBalance || 0,
+                        outstandingBalance: sale.outstandingBalance || 0,
                         trip: {
                             _id: trip._id,
                             tripId: trip.tripId,
@@ -453,7 +461,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: 0,
                         rate: 0,
                         amount: sale.cashPaid || 0,
-                        openingBalance: sale.openingBalance || 0,
+                        outstandingBalance: sale.outstandingBalance || 0,
                         trip: {
                             _id: trip._id,
                             tripId: trip.tripId,
@@ -476,7 +484,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: 0,
                         rate: 0,
                         amount: sale.onlinePaid || 0,
-                        openingBalance: sale.openingBalance || 0,
+                        outstandingBalance: sale.outstandingBalance || 0,
                         trip: {
                             _id: trip._id,
                             tripId: trip.tripId,
@@ -511,7 +519,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                             avgWeight: 0,
                             rate: 0,
                             amount: sale.discount, // Discount amount goes in amount column
-                            openingBalance: sale.openingBalance || 0,
+                            outstandingBalance: sale.outstandingBalance || 0,
                             trip: {
                                 _id: trip._id,
                                 tripId: trip.tripId,
@@ -540,7 +548,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             avgWeight: 0,
             rate: 0,
             amount: 0,
-            openingBalance: 0,
+            outstandingBalance: customer.openingBalance || 0,
             trip: null
         });
 
@@ -564,7 +572,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             totalBirds: ledgerEntries.reduce((sum, entry) => sum + entry.birds, 0),
             totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
             totalAmount: ledgerEntries.reduce((sum, entry) => sum + entry.amount, 0),
-            currentBalance: ledgerEntries[ledgerEntries.length - 1]?.openingBalance || 0 // Use the final running balance
+            currentBalance: ledgerEntries[ledgerEntries.length - 1]?.outstandingBalance || 0 // Use the final running balance
         };
 
         successResponse(res, "Customer purchase ledger retrieved successfully", 200, {
@@ -662,7 +670,7 @@ export const updateCustomerPassword = async (req, res, next) => {
     }
 };
 
-export const getCustomerOpeningBalance = async (req, res, next) => {
+export const getCustomerOutstandingBalance = async (req, res, next) => {
     try {
         const { id } = req.params; // User ID
 
@@ -671,23 +679,23 @@ export const getCustomerOpeningBalance = async (req, res, next) => {
             throw new AppError('Customer profile not found', 404);
         }
 
-        successResponse(res, "Customer opening balance retrieved successfully", 200, {
+        successResponse(res, "Customer outstanding balance retrieved successfully", 200, {
             customerId: customer._id,
             shopName: customer.shopName,
-            openingBalance: customer.openingBalance || 0
+            outstandingBalance: customer.outstandingBalance || 0
         });
     } catch (error) {
         next(error);
     }
 };
 
-export const updateCustomerOpeningBalance = async (req, res, next) => {
+export const updateCustomerOutstandingBalance = async (req, res, next) => {
     try {
         const { customerId } = req.params;
-        const { newOpeningBalance } = req.body;
+        const { newOutstandingBalance } = req.body;
 
-        if (typeof newOpeningBalance !== 'number') {
-            throw new AppError('New opening balance must be a number', 400);
+        if (typeof newOutstandingBalance !== 'number') {
+            throw new AppError('New outstanding balance must be a number', 400);
         }
 
         const customer = await Customer.findById(customerId);
@@ -695,19 +703,19 @@ export const updateCustomerOpeningBalance = async (req, res, next) => {
             throw new AppError('Customer not found', 404);
         }
 
-        const oldBalance = customer.openingBalance || 0;
-        const newBalance = Math.max(0, newOpeningBalance); // Ensure balance doesn't go negative
+        const oldBalance = customer.outstandingBalance || 0;
+        const newBalance = Math.max(0, newOutstandingBalance); // Ensure balance doesn't go negative
         
         // Use findByIdAndUpdate to avoid triggering full document validation
         const updatedCustomer = await Customer.findByIdAndUpdate(
             customerId,
-            { openingBalance: newBalance },
+            { outstandingBalance: newBalance },
             { new: true, runValidators: false } // Skip validators to avoid gstOrPanNumber validation
         );
 
-        console.log(`Updated customer ${updatedCustomer.shopName} opening balance from ${oldBalance} to ${newBalance}`);
+        console.log(`Updated customer ${updatedCustomer.shopName} outstanding balance from ${oldBalance} to ${newBalance}`);
 
-        successResponse(res, "Customer opening balance updated successfully", 200, {
+        successResponse(res, "Customer outstanding balance updated successfully", 200, {
             customerId: updatedCustomer._id,
             shopName: updatedCustomer.shopName,
             oldBalance,

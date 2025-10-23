@@ -59,11 +59,17 @@ const customerSchema = new mongoose.Schema({
     ref: "User", 
     required: false // Optional for backward compatibility
   },
-  // Global Opening Balance for customer (acts as outstanding balance)
+  // Global Opening Balance for customer (static initial balance - never changes)
   openingBalance: {
     type: Number,
     default: 0,
     min: [0, "Opening balance cannot be negative"]
+  },
+  // Global Outstanding Balance for customer (dynamic balance - changes with transactions)
+  outstandingBalance: {
+    type: Number,
+    default: 0,
+    min: [0, "Outstanding balance cannot be negative"]
   },
 }, {
   timestamps: true,

@@ -97,7 +97,7 @@ const tripSchema = new mongoose.Schema({
         cashPaid: { type: Number, default: 0 },
         onlinePaid: { type: Number, default: 0 },
         balance: { type: Number, default: 0 }, // Calculated balance after this sale
-        openingBalance: { type: Number, default: 0 }, // Customer's balance AFTER this transaction
+        outstandingBalance: { type: Number, default: 0 }, // Customer's balance AFTER this transaction
         timestamp: { type: Date, default: Date.now }
     }],
 
@@ -253,30 +253,30 @@ tripSchema.pre('save', async function(next) {
             // Calculate receivedAmount from cashPaid + onlinePaid
             sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
             
-            // Calculate Opening Balance using the formula:
-            // Opening Balance(current) = Opening Balance(global) + Total Amount - Online Paid - Cash Paid - Discount
+            // Calculate Outstanding Balance using the formula:
+            // Outstanding Balance(current) = Outstanding Balance(global) + Total Amount - Online Paid - Cash Paid - Discount
             if (sale.client) {
                 try {
                     const Customer = mongoose.model('Customer');
                     const customer = await Customer.findById(sale.client);
                     if (customer) {
-                        const globalOpeningBalance = customer.openingBalance || 0;
+                        const globalOutstandingBalance = customer.outstandingBalance || 0;
                         const totalPaid = (sale.onlinePaid || 0) + (sale.cashPaid || 0);
                         const discount = sale.discount || 0;
                         
                         // Calculate the balance after this sale
-                        let balance = globalOpeningBalance + sale.amount - totalPaid - discount;
+                        let balance = globalOutstandingBalance + sale.amount - totalPaid - discount;
                         
-                        // If payment exceeds the sale amount + current opening balance, 
+                        // If payment exceeds the sale amount + current outstanding balance, 
                         // the extra payment reduces the balance to 0 (minimum)
                         balance = Math.max(0, balance);
                         
                         sale.balance = balance;
                         
-                        // Note: Customer's global opening balance will be updated via API call from trip controller
+                        // Note: Customer's global outstanding balance will be updated via API call from trip controller
                     }
                 } catch (error) {
-                    console.error('Error calculating opening balance:', error);
+                    console.error('Error calculating outstanding balance:', error);
                 }
             }
         }

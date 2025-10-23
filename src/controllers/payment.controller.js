@@ -23,7 +23,7 @@ export const submitPayment = async (req, res, next) => {
         }
 
         // Validate against opening balance
-        if (amount > customer.openingBalance) {
+        if (amount > customer.outstandingBalance) {
             throw new AppError('Payment amount cannot exceed opening balance', 400);
         }
 
@@ -162,7 +162,7 @@ export const verifyPayment = async (req, res, next) => {
             const customer = await Customer.findById(payment.customer);
             if (customer) {
                 // Deduct the payment amount from opening balance
-                customer.openingBalance = Math.max(0, (customer.openingBalance || 0) - payment.amount);
+                customer.outstandingBalance = Math.max(0, (customer.outstandingBalance || 0) - payment.amount);
                 await customer.save();
             }
 
