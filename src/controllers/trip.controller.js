@@ -143,7 +143,13 @@ export const getTripById = async (req, res, next) => {
             .populate('transferredFrom', 'tripId supervisor vehicle')
             .populate('transferredFrom.supervisor', 'name mobileNumber')
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
-            .populate('transferHistory.transferredTo', 'tripId');
+            .populate({
+                path: 'transferHistory.transferredTo',
+                populate: {
+                    path: 'vehicle',
+                    select: 'vehicleNumber'
+                }
+            });
 
         if (!trip) throw new AppError('Trip not found', 404);
 
@@ -1151,7 +1157,7 @@ export const transferTrip = async (req, res, next) => {
             tripId: 'TRP-' + Date.now(),
             type: 'transferred',
             date: new Date(),
-            place: '', // To be filled by receiving supervisor
+            // place: '', // To be filled by receiving supervisor
             route: { from: 'TBD', to: 'TBD' }, // To be filled by receiving supervisor
             vehicle: vehicleId,
             supervisor: supervisorId,
@@ -1220,7 +1226,13 @@ export const transferTrip = async (req, res, next) => {
             .populate('purchases.supplier', 'vendorName contactNumber')
             .populate('sales.client', 'shopName ownerName contact')
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
-            .populate('transferHistory.transferredTo', 'tripId');
+            .populate({
+                path: 'transferHistory.transferredTo',
+                populate: {
+                    path: 'vehicle',
+                    select: 'vehicleNumber'
+                }
+            });
 
         const populatedNewTrip = await Trip.findById(newTrip._id)
             .populate('vehicle', 'vehicleNumber type')
@@ -1254,7 +1266,13 @@ export const getTripTransferHistory = async (req, res, next) => {
 
         const trip = await Trip.findOne(query)
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
-            .populate('transferHistory.transferredTo', 'tripId vehicle')
+            .populate({
+                path: 'transferHistory.transferredTo',
+                populate: {
+                    path: 'vehicle',
+                    select: 'vehicleNumber'
+                }
+            })
             .populate('transferredFrom', 'tripId supervisor')
             .populate('transferredTo', 'tripId supervisor');
 
@@ -1278,7 +1296,7 @@ export const getTripTransferHistory = async (req, res, next) => {
 export const completeTripDetails = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { driver, labour, route, place, vehicleReadings } = req.body;
+        const { driver, labour, route, vehicleReadings } = req.body;
 
         // Only supervisor can complete their own trip details
         let query = { _id: id };
@@ -1311,7 +1329,7 @@ export const completeTripDetails = async (req, res, next) => {
             to: route.to,
             distance: route.distance || 0
         };
-        trip.place = place || '';
+        // trip.place = place || '';
         trip.vehicleReadings.opening = vehicleReadings.opening;
         trip.updatedBy = req.user._id;
 

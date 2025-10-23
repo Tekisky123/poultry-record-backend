@@ -15,7 +15,6 @@ const tripSchema = new mongoose.Schema({
     //     unique: true
     // },
     date: { type: Date, required: true },
-    place: { type: String }, // Optional general reference (e.g., SNK area)
     vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true },
     supervisor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     driver: { type: String, required: true },
