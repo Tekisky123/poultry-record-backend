@@ -19,7 +19,7 @@ export const signup = async (req, res, next) => {
   try {
     signupValidator(req.body);
 
-    const { mobileNumber, role, email, password: inputPassword, gstOrPanNumber, ...otherFields } = req.body;
+    const { mobileNumber, role, email, password: inputPassword, gstOrPanNumber, area, ...otherFields } = req.body;
 
     // Check if user already exists (email or mobile)
     const existingUser = await User.findOne({
@@ -51,6 +51,7 @@ export const signup = async (req, res, next) => {
         contact: savedUser.mobileNumber,
         address: otherFields.address || '',
         gstOrPanNumber: gstOrPanNumber,
+        area: area || '',
         createdBy: savedUser._id, // Self-created during signup
         updatedBy: savedUser._id,
         user: savedUser._id,

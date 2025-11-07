@@ -6,7 +6,7 @@ export const signupValidator = (data = {}) => {
     throw new AppError('Invalid request body', 400);
   }
 
-  const { name, role, email, mobileNumber, age, password, address, gstOrPanNumber } = data;
+  const { name, role, email, mobileNumber, age, password, address, gstOrPanNumber, area } = data;
 
   // 1. Name validation
   if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 50) {
@@ -80,6 +80,16 @@ export const signupValidator = (data = {}) => {
       if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(gstPanValue)) {
         throw new AppError('Invalid PAN number format', 400);
       }
+    }
+
+    // 9. Area validation for customers
+    if (!area || typeof area !== 'string' || !area.trim()) {
+      throw new AppError('Area is required for customer registration', 400);
+    }
+    
+    const areaValue = area.trim();
+    if (areaValue.length > 100) {
+      throw new AppError('Area name cannot exceed 100 characters', 400);
     }
   }
 

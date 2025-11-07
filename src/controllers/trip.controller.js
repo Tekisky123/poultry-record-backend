@@ -277,6 +277,16 @@ export const addSale = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        // Get vendor name from first purchase if purchases exist
+        if (trip.purchases && trip.purchases.length > 0) {
+            // Populate supplier if not already populated
+            await trip.populate('purchases.supplier', 'vendorName name');
+            const firstPurchase = trip.purchases[0];
+            if (firstPurchase.supplier) {
+                saleData.product = firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
+            }
+        }
+
         // Calculate balance for the sale if customer is provided
         if (saleData.client) {
             try {
@@ -286,38 +296,83 @@ export const addSale = async (req, res, next) => {
                     const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
                     const discount = saleData.discount || 0;
                     
-                    // Calculate the balance after this sale
-                    let balance = globalOutstandingBalance + saleData.amount - totalPaid - discount;
+                    // Check if this is a receipt entry (birds = 0, weight = 0, amount typically 0)
+                    const isReceipt = (saleData.birds === 0 || !saleData.birds) && 
+                                      (saleData.weight === 0 || !saleData.weight) && 
+                                      (saleData.amount === 0 || !saleData.amount);
+                    
+                    // Calculate sequential balances for each particular
+                    // Starting balance (before sale/receipt)
+                    const startingBalance = globalOutstandingBalance;
+                    
+                    if (isReceipt) {
+                        // For receipts: No amount is added, only payments are subtracted
+                        // Step 1: RECEIPT particular balance (starting balance, no change since amount=0)
+                        saleData.balanceForSale = Number(startingBalance.toFixed(2));
+                        
+                        // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
+                        const balanceForCashPaid = startingBalance - (saleData.cashPaid || 0);
+                        saleData.balanceForCashPaid = Number(Math.max(0, balanceForCashPaid).toFixed(2));
+                        
+                        // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
+                        const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
+                        saleData.balanceForOnlinePaid = Number(Math.max(0, balanceForOnlinePaid).toFixed(2));
+                        
+                        // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
+                        const balanceForDiscount = balanceForOnlinePaid - discount;
+                        saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
+                    } else {
+                        // For regular sales: Add sale amount, then subtract payments
+                        // Step 1: Add sale amount → Balance for SALE particular
+                        const balanceForSale = startingBalance + saleData.amount;
+                        saleData.balanceForSale = Number(balanceForSale.toFixed(2));
+                        
+                        // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
+                        const balanceForCashPaid = balanceForSale - (saleData.cashPaid || 0);
+                        saleData.balanceForCashPaid = Number(balanceForCashPaid.toFixed(2));
+                        
+                        // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
+                        const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
+                        saleData.balanceForOnlinePaid = Number(balanceForOnlinePaid.toFixed(2));
+                        
+                        // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
+                        const balanceForDiscount = balanceForOnlinePaid - discount;
+                        saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
+                    }
+                    
+                    // Calculate the final balance after this sale/receipt (same as balanceForDiscount)
+                    let balance = saleData.balanceForDiscount;
                     
                     // If payment exceeds the sale amount + current outstanding balance, 
                     // the extra payment reduces the balance to 0 (minimum)
                     balance = Math.max(0, balance);
                     
                     // Add balance to sale data
-                    saleData.balance = Number(balance);
+                    saleData.balance = Number(balance.toFixed(2));
                     saleData.outstandingBalance = balance; // Store balance AFTER this transaction
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
                 saleData.outstandingBalance = 0;
+                saleData.balanceForSale = 0;
+                saleData.balanceForCashPaid = 0;
+                saleData.balanceForOnlinePaid = 0;
+                saleData.balanceForDiscount = 0;
             }
         } else {
             saleData.balance = 0;
             saleData.outstandingBalance = 0;
+            saleData.balanceForSale = 0;
+            saleData.balanceForCashPaid = 0;
+            saleData.balanceForOnlinePaid = 0;
+            saleData.balanceForDiscount = 0;
         }
 
         // Add sale
         trip.sales.push(saleData);
 
-        // Update summary
-        trip.summary.totalSalesAmount = trip.sales.reduce((sum, s) => sum + (s.amount || 0), 0);
-        trip.summary.totalBirdsSold = trip.sales.reduce((sum, s) => sum + (s.birds || 0), 0);
-        trip.summary.totalWeightSold = trip.sales.reduce((sum, s) => sum + (s.weight || 0), 0);
-
-        // Calculate remaining birds
-        trip.summary.birdsRemaining = trip.summary.totalBirdsPurchased - trip.summary.totalBirdsSold;
-
+        // Summary will be recalculated by pre-save middleware including stock and transfers
         trip.updatedBy = req.user._id;
         await trip.save();
 
@@ -377,6 +432,10 @@ export const editPurchase = async (req, res, next) => {
                 if (loss.quantity && loss.weight) {
                     loss.avgWeight = Number((loss.weight / loss.quantity).toFixed(2));
                 }
+                // Ensure rate uses average purchase rate (formula: total purchase cost / total purchase weight)
+                if (avgPurchaseRate > 0) {
+                    loss.rate = Number(avgPurchaseRate.toFixed(2));
+                }
                 // Recalculate total loss using updated average purchase rate
                 loss.total = Number((loss.weight * avgPurchaseRate).toFixed(2));
             });
@@ -397,38 +456,8 @@ export const editPurchase = async (req, res, next) => {
             });
         }
 
-        // Recalculate sales profit margins that depend on purchase rate
-        if (trip.sales && trip.sales.length > 0) {
-            trip.sales.forEach(sale => {
-                if (sale.birds && sale.weight) {
-                    sale.avgWeight = Number((sale.weight / sale.birds).toFixed(2));
-                }
-                // Recalculate profit margin and profit amount
-                sale.profitMargin = Number((sale.rate - avgPurchaseRate).toFixed(2));
-                sale.profitAmount = Number((sale.profitMargin * sale.weight).toFixed(2));
-                // Calculate balance
-                sale.balance = sale.amount - sale.receivedAmount - sale.discount;
-            });
-            // Update total profit margin
-            trip.summary.totalProfitMargin = trip.sales.reduce((sum, s) => sum + (s.profitAmount || 0), 0);
-        }
-
-        // Calculate gross rent: rentPerKm * totalDistance
-        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
-        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
-
-        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
-        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
-                                  (trip.summary.totalPurchaseAmount || 0) - 
-                                  (trip.summary.totalExpenses || 0) - 
-                                  trip.summary.grossRent;
-
-        // Recalculate net profit
-        const totalRevenue = trip.summary.totalSalesAmount || 0;
-        const totalCosts = (trip.summary.totalPurchaseAmount || 0) + (trip.summary.totalExpenses || 0) + (trip.summary.totalDieselAmount || 0);
-        const totalLosses = trip.summary.totalLosses || 0;
-        trip.summary.netProfit = totalRevenue - totalCosts - totalLosses;
-
+        // Summary will be recalculated by pre-save middleware including stock and transfers
+        // Sales profit margins will be recalculated in the middleware
         trip.updatedBy = req.user._id;
         await trip.save();
 
@@ -473,49 +502,83 @@ export const editSale = async (req, res, next) => {
                     const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
                     const discount = saleData.discount || 0;
                     
-                    // Calculate the balance after this sale
-                    let balance = globalOutstandingBalance + saleData.amount - totalPaid - discount;
+                    // Check if this is a receipt entry (birds = 0, weight = 0, amount typically 0)
+                    const isReceipt = (saleData.birds === 0 || !saleData.birds) && 
+                                      (saleData.weight === 0 || !saleData.weight) && 
+                                      (saleData.amount === 0 || !saleData.amount);
+                    
+                    // Calculate sequential balances for each particular
+                    // Starting balance (before sale/receipt)
+                    const startingBalance = globalOutstandingBalance;
+                    
+                    if (isReceipt) {
+                        // For receipts: No amount is added, only payments are subtracted
+                        // Step 1: RECEIPT particular balance (starting balance, no change since amount=0)
+                        saleData.balanceForSale = Number(startingBalance.toFixed(2));
+                        
+                        // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
+                        const balanceForCashPaid = startingBalance - (saleData.cashPaid || 0);
+                        saleData.balanceForCashPaid = Number(Math.max(0, balanceForCashPaid).toFixed(2));
+                        
+                        // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
+                        const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
+                        saleData.balanceForOnlinePaid = Number(Math.max(0, balanceForOnlinePaid).toFixed(2));
+                        
+                        // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
+                        const balanceForDiscount = balanceForOnlinePaid - discount;
+                        saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
+                    } else {
+                        // For regular sales: Add sale amount, then subtract payments
+                        // Step 1: Add sale amount → Balance for SALE particular
+                        const balanceForSale = startingBalance + saleData.amount;
+                        saleData.balanceForSale = Number(balanceForSale.toFixed(2));
+                        
+                        // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
+                        const balanceForCashPaid = balanceForSale - (saleData.cashPaid || 0);
+                        saleData.balanceForCashPaid = Number(balanceForCashPaid.toFixed(2));
+                        
+                        // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
+                        const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
+                        saleData.balanceForOnlinePaid = Number(balanceForOnlinePaid.toFixed(2));
+                        
+                        // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
+                        const balanceForDiscount = balanceForOnlinePaid - discount;
+                        saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
+                    }
+                    
+                    // Calculate the final balance after this sale/receipt (same as balanceForDiscount)
+                    let balance = saleData.balanceForDiscount;
                     
                     // If payment exceeds the sale amount + current outstanding balance, 
                     // the extra payment reduces the balance to 0 (minimum)
                     balance = Math.max(0, balance);
                     
                     // Add balance to sale data
-                    saleData.balance = balance;
+                    saleData.balance = Number(balance.toFixed(2));
                     saleData.outstandingBalance = balance; // Store balance AFTER this transaction
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
-            saleData.outstandingBalance = 0;
                 saleData.outstandingBalance = 0;
+                saleData.balanceForSale = 0;
+                saleData.balanceForCashPaid = 0;
+                saleData.balanceForOnlinePaid = 0;
+                saleData.balanceForDiscount = 0;
             }
         } else {
             saleData.balance = 0;
             saleData.outstandingBalance = 0;
+            saleData.balanceForSale = 0;
+            saleData.balanceForCashPaid = 0;
+            saleData.balanceForOnlinePaid = 0;
+            saleData.balanceForDiscount = 0;
         }
 
         // Update sale
         trip.sales[saleIndex] = { ...trip.sales[saleIndex], ...saleData };
 
-        // Update summary
-        trip.summary.totalSalesAmount = trip.sales.reduce((sum, s) => sum + (s.amount || 0), 0);
-        trip.summary.totalBirdsSold = trip.sales.reduce((sum, s) => sum + (s.birds || 0), 0);
-        trip.summary.totalWeightSold = trip.sales.reduce((sum, s) => sum + (s.weight || 0), 0);
-
-        // Calculate remaining birds
-        trip.summary.birdsRemaining = trip.summary.totalBirdsPurchased - trip.summary.totalBirdsSold;
-
-        // Calculate gross rent: rentPerKm * totalDistance
-        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
-        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
-
-        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
-        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
-                                  (trip.summary.totalPurchaseAmount || 0) - 
-                                  (trip.summary.totalExpenses || 0) - 
-                                  trip.summary.grossRent;
-
+        // Summary will be recalculated by pre-save middleware including stock and transfers
         trip.updatedBy = req.user._id;
         await trip.save();
 
@@ -534,30 +597,16 @@ export const editSale = async (req, res, next) => {
 // Add death birds to trip (Supervisor)
 export const addDeathBirds = async (req, res, next) => {
     try {
-        const { quantity, weight, rate, reason, date } = req.body;
+        const { quantity, weight, reason, date } = req.body;
 
-        // Validate required fields
-        if (!quantity || !weight || !rate || !date) {
-            return errorResponse(res, "Quantity, weight, rate, and date are required", 400);
+        // Validate required fields (rate is no longer required, will be calculated)
+        if (!quantity || !weight || !date) {
+            return errorResponse(res, "Quantity, weight, and date are required", 400);
         }
 
-        if (quantity <= 0 || weight <= 0 || rate <= 0) {
-            return errorResponse(res, "Quantity, weight, and rate must be greater than 0", 400);
+        if (quantity <= 0 || weight <= 0) {
+            return errorResponse(res, "Quantity and weight must be greater than 0", 400);
         }
-
-        // Calculate derived fields
-        const avgWeight = Number((weight / quantity).toFixed(2));
-        const total = Number((weight * rate).toFixed(2));
-
-        const deathBirdData = {
-            quantity,
-            weight,
-            avgWeight,
-            rate,
-            total,
-            reason: reason || '',
-            date: new Date(date)
-        };
 
         let query = { _id: req.params.id };
         if (req.user.role === 'supervisor') {
@@ -568,6 +617,32 @@ export const addDeathBirds = async (req, res, next) => {
         if (!trip) {
             return errorResponse(res, "Trip not found or access denied", 404);
         }
+
+        // Calculate purchase totals to determine avgPurchaseRate
+        const totalPurchaseAmount = trip.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
+        const totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
+        
+        // Calculate average purchase rate using formula: total purchase cost / total purchase weight
+        const avgPurchaseRate = totalWeightPurchased > 0 ? 
+            totalPurchaseAmount / totalWeightPurchased : 0;
+
+        if (avgPurchaseRate <= 0) {
+            return errorResponse(res, "Cannot add death birds: No purchases found or invalid purchase data", 400);
+        }
+
+        // Calculate derived fields using avgPurchaseRate
+        const avgWeight = Number((weight / quantity).toFixed(2));
+        const total = Number((weight * avgPurchaseRate).toFixed(2));
+
+        const deathBirdData = {
+            quantity,
+            weight,
+            avgWeight,
+            rate: Number(avgPurchaseRate.toFixed(2)), // Use calculated avgPurchaseRate
+            total,
+            reason: reason || '',
+            date: new Date(date)
+        };
 
         // Add death bird to losses array
         trip.losses.push(deathBirdData);
@@ -587,31 +662,7 @@ export const addDeathBirds = async (req, res, next) => {
                                      (trip.summary.totalWeightLost || 0) - 
                                      totalTransferredWeight;
 
-        // Calculate birds remaining: purchased - sold - stock - lost - transferred
-        const totalStockBirds = trip.stocks.reduce((sum, stock) => sum + (stock.birds || 0), 0);
-        const totalTransferredBirds = trip.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.birds || 0), 0);
-        trip.summary.birdsRemaining = (trip.summary.totalBirdsPurchased || 0) - 
-                                     (trip.summary.totalBirdsSold || 0) - 
-                                     totalStockBirds - 
-                                     (trip.summary.totalBirdsLost || 0) - 
-                                     totalTransferredBirds;
-
-        // Calculate gross rent: rentPerKm * totalDistance
-        const totalDistance = trip.vehicleReadings?.totalDistance || 0;
-        trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
-
-        // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
-        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
-                                  (trip.summary.totalPurchaseAmount || 0) - 
-                                  (trip.summary.totalExpenses || 0) - 
-                                  trip.summary.grossRent;
-
-        // Recalculate net profit (subtract losses)
-        const totalRevenue = trip.summary.totalSalesAmount || 0;
-        const totalCosts = (trip.summary.totalPurchaseAmount || 0) + (trip.summary.totalExpenses || 0) + (trip.summary.totalDieselAmount || 0);
-        const totalLosses = trip.summary.totalLosses || 0;
-        trip.summary.netProfit = totalRevenue - totalCosts - totalLosses;
-
+        // Summary will be recalculated by pre-save middleware including stock and transfers
         await trip.save();
 
         const populatedTrip = await Trip.findById(trip._id)
@@ -853,6 +904,9 @@ export const completeTrip = async (req, res, next) => {
             trip.summary.totalExpenses -
             trip.summary.totalDieselAmount -
             trip.summary.totalLosses;
+
+        // Calculate trip profit: netProfit + birdsProfit
+        trip.summary.tripProfit = Number(((trip.summary.netProfit || 0) + (trip.summary.birdsProfit || 0)).toFixed(2));
 
         if (trip.summary.totalWeightSold > 0) {
             trip.summary.profitPerKg = Number((trip.summary.netProfit / trip.summary.totalWeightSold).toFixed(2));
@@ -1104,8 +1158,18 @@ export const transferTrip = async (req, res, next) => {
             query.supervisor = req.user._id;
         }
 
-        const originalTrip = await Trip.findOne(query);
+        const originalTrip = await Trip.findOne(query)
+            .populate('purchases.supplier', 'vendorName name');
         if (!originalTrip) throw new AppError('Trip not found', 404);
+
+        // Get vendor name from first purchase of original trip
+        let vendorNameFromOriginalTrip = '';
+        if (originalTrip.purchases && originalTrip.purchases.length > 0) {
+            const firstPurchase = originalTrip.purchases[0];
+            if (firstPurchase.supplier) {
+                vendorNameFromOriginalTrip = firstPurchase.supplier?.vendorName || firstPurchase.supplier?.name || '';
+            }
+        }
 
         // Calculate remaining birds available for transfer
         const totalPurchased = originalTrip.summary?.totalBirdsPurchased || 0;
@@ -1171,6 +1235,7 @@ export const transferTrip = async (req, res, next) => {
             // Add transferred birds as purchase record
             purchases: [{
                 supplier: null, // No actual supplier - this is transferred stock
+                vendorName: vendorNameFromOriginalTrip, // Store vendor name from original trip's first purchase
                 dcNumber: `TRANSFER-${originalTrip.tripId}`,
                 birds: transferBirds.birds,
                 weight: transferBirds.weight,

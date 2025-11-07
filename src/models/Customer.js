@@ -36,6 +36,7 @@ const customerSchema = new mongoose.Schema({
   },
   area: { 
     type: String, 
+    required: [true, "Area is required"],
     trim: true,
     maxlength: [100, "Area name too long"]
   },

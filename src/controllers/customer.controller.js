@@ -382,18 +382,30 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         // Ensure ID type is ObjectId
         const customerId = new mongoose.Types.ObjectId(customer._id);
 
-        const trips = await Trip.find({ 'sales.client': customerId })
+        const trips = await Trip.find({ "sales.client": customerId })
             .populate('sales.client', 'shopName ownerName')
             .populate('supervisor', 'name mobileNumber')
             .populate('vehicle', 'vehicleNumber')
             .sort({ createdAt: -1 });
+
+        // Fetch verified payments for this customer
+        // Include all verified payments from Submit Payment popup
+        // These are separate payment records that should appear in the ledger
+        const Payment = (await import('../models/Payment.js')).default;
+        const payments = await Payment.find({
+            customer: customerId,
+            status: 'verified', // Only include verified payments
+            isActive: true
+        })
+        .populate('trip', 'tripId date')
+        .sort({ createdAt: 1 }); // Sort ascending to maintain chronological order
 
         // Transform sales into ledger entries
         const ledgerEntries = [];
         
         trips.forEach(trip => {
             trip.sales.forEach(sale => {
-                if (sale.client && sale.client._id.toString() === customer._id.toString()) {                    
+                if (sale.client && sale.client._id.toString() == customer._id.toString()) {                    
                     // Determine particulars based on sale type
                     let particulars = '';
                     if (sale.birds > 0) {
@@ -423,13 +435,20 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
 
                     // Create main entry (SALES or RECEIPT)
+                    // For RECEIPT entries, use balanceForSale (starting balance) since amount=0
+                    // For SALES entries, use balanceForSale (balance after adding sale amount)
+                    const mainEntryBalance = (particulars === 'RECEIPT') 
+                        ? (sale.balanceForSale || sale.outstandingBalance || 0) // Receipt: starting balance
+                        : (sale.balanceForSale || sale.outstandingBalance || 0); // Sale: balance after adding amount
+                    
+                    // Use unique IDs for each entry type to prevent duplicates
                     ledgerEntries.push({
-                        _id: sale._id,
+                        _id: `sale_${sale._id}_${particulars}`,
                         date: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
                         driverName: trip.driver || '',
                         supervisor: trip.supervisor?.name || '',
-                        product: trip.purchases[0]?.supplier?.vendorName || '', // Get vendor name from first purchase
+                        product: sale.product || '', // Get vendor name from first purchase
                         particulars: particulars,
                         invoiceNo: sale.billNumber,
                         birds: sale.birds || 0,
@@ -437,7 +456,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: sale.avgWeight || 0,
                         rate: sale.rate || 0,
                         amount: sale.amount || 0,
-                        outstandingBalance: sale.outstandingBalance || 0,
+                        outstandingBalance: mainEntryBalance,
                         trip: {
                             _id: trip._id,
                             tripId: trip.tripId,
@@ -448,12 +467,12 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     });
 
                     const byCashEntry = {
-                        _id: sale._id,
+                        _id: `sale_${sale._id}_cash`,
                         date: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
                         driverName: trip.driver || '',
                         supervisor: trip.supervisor?.name || '',
-                        product: trip.purchases[0]?.supplier?.vendorName || '', // Get vendor name from first purchase
+                        product: sale.product || '', // Get vendor name from first purchase
                         particulars: byCash,
                         invoiceNo: sale.billNumber,
                         birds: 0,
@@ -461,7 +480,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: 0,
                         rate: 0,
                         amount: sale.cashPaid || 0,
-                        outstandingBalance: sale.outstandingBalance || 0,
+                        outstandingBalance: sale.balanceForCashPaid || sale.outstandingBalance || 0, // Use balanceForCashPaid for BY CASH RECEIPT particular
                         trip: {
                             _id: trip._id,
                             tripId: trip.tripId,
@@ -471,12 +490,12 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         }
                     };
                     const byOnlineEntry ={
-                        _id: sale._id,
+                        _id: `sale_${sale._id}_online`,
                         date: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
                         driverName: trip.driver || '',
                         supervisor: trip.supervisor?.name || '',
-                        product: trip.purchases[0]?.supplier?.vendorName || '', // Get vendor name from first purchase
+                        product: sale.product || '', // Get vendor name from first purchase
                         particulars: byOnline,
                         invoiceNo: sale.billNumber,
                         birds: 0,
@@ -484,7 +503,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: 0,
                         rate: 0,
                         amount: sale.onlinePaid || 0,
-                        outstandingBalance: sale.outstandingBalance || 0,
+                        outstandingBalance: sale.balanceForOnlinePaid || sale.outstandingBalance || 0, // Use balanceForOnlinePaid for BY BANK RECEIPT particular
                         trip: {
                             _id: trip._id,
                             tripId: trip.tripId,
@@ -511,7 +530,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                             vehiclesNo: trip.vehicle?.vehicleNumber || '',
                             driverName: trip.driver || '',
                             supervisor: trip.supervisor?.name || '',
-                            product: trip.purchases[0]?.supplier?.vendorName || '',
+                            product: sale.product || '',
                             particulars: 'DISCOUNT',
                             invoiceNo: sale.billNumber,
                             birds: 0,
@@ -519,7 +538,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                             avgWeight: 0,
                             rate: 0,
                             amount: sale.discount, // Discount amount goes in amount column
-                            outstandingBalance: sale.outstandingBalance || 0,
+                            outstandingBalance: sale.balanceForDiscount || sale.outstandingBalance || 0, // Use balanceForDiscount for DISCOUNT particular
                             trip: {
                                 _id: trip._id,
                                 tripId: trip.tripId,
@@ -530,6 +549,43 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         });
                     }
                 }
+            });
+        });
+
+        // Add verified payments to ledger entries
+        payments.forEach(payment => {
+            // Determine particulars based on payment method
+            // If paymentMethod is 'cash', it's "BY CASH RECEIPT", otherwise "BY BANK RECEIPT"
+            const particulars = payment.paymentMethod === 'cash' ? 'BY CASH RECEIPT' : 'BY BANK RECEIPT';
+            
+            // Use referenceNumber, transactionId, or payment ID as invoice number
+            const invoiceNo = payment.verificationDetails?.referenceNumber || 
+                            payment.verificationDetails?.transactionId || 
+                            `PAY-${payment._id.toString().slice(-6)}`;
+
+            ledgerEntries.push({
+                _id: `payment_${payment._id}`,
+                date: payment.createdAt || payment.verifiedAt || new Date(),
+                vehiclesNo: payment.trip?.vehicle?.vehicleNumber || '',
+                driverName: '',
+                supervisor: '',
+                product: '',
+                particulars: particulars,
+                invoiceNo: invoiceNo,
+                birds: 0,
+                weight: 0,
+                avgWeight: 0,
+                rate: 0,
+                amount: payment.amount || 0,
+                outstandingBalance: 0, // Will be calculated below
+                trip: payment.trip ? {
+                    _id: payment.trip._id,
+                    tripId: payment.trip.tripId,
+                    supervisor: null,
+                    vehicle: null,
+                    date: payment.trip.date
+                } : null,
+                isPayment: true // Flag to identify payment entries
             });
         });
 
@@ -554,12 +610,76 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Sort by date ascending (oldest first for chronological ledger)
         // But ensure OP BAL always stays first
+        // Use stable sorting with secondary sort keys to prevent duplicates
         ledgerEntries.sort((a, b) => {
             // OP BAL entry always comes first
             if (a._id === 'opening_balance') return -1;
             if (b._id === 'opening_balance') return 1;
-            // Sort other entries by date
-            return new Date(a.date) - new Date(b.date);
+            
+            // Sort by date first
+            const dateA = new Date(a.date).getTime();
+            const dateB = new Date(b.date).getTime();
+            if (dateA !== dateB) {
+                return dateA - dateB;
+            }
+            
+            // If dates are equal, sort by particulars order to maintain consistent sequence:
+            // SALES -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> RECEIPT -> other
+            const order = {
+                'SALES': 1,
+                'BY CASH RECEIPT': 2,
+                'BY BANK RECEIPT': 3,
+                'DISCOUNT': 4,
+                'RECEIPT': 5,
+                'OP BAL': 0
+            };
+            const orderA = order[a.particulars] || 99;
+            const orderB = order[b.particulars] || 99;
+            if (orderA !== orderB) {
+                return orderA - orderB;
+            }
+            
+            // If still equal, sort by _id to ensure stable sort
+            return a._id.localeCompare(b._id);
+        });
+
+        // Recalculate sequential balances for all entries chronologically
+        // This ensures payments and sales are properly interleaved in the ledger
+        let runningBalance = customer.openingBalance || 0;
+        ledgerEntries.forEach((entry, index) => {
+            if (entry._id === 'opening_balance') {
+                // Opening balance is already set, use it as starting point
+                runningBalance = entry.outstandingBalance;
+                return;
+            }
+
+            // For sales entries, they already have pre-calculated balances from the sale transaction
+            // But we need to recalculate to account for payments that may have been made
+            // So we'll recalculate all balances sequentially
+            
+            // Update balance based on entry type and amount
+            if (entry.particulars === 'SALES') {
+                // Add sale amount
+                runningBalance = runningBalance + (entry.amount || 0);
+                entry.outstandingBalance = runningBalance;
+            } else if (entry.particulars === 'BY CASH RECEIPT' || entry.particulars === 'BY BANK RECEIPT') {
+                // Subtract payment amount (both from sales and standalone payments)
+                runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                entry.outstandingBalance = runningBalance;
+            } else if (entry.particulars === 'DISCOUNT') {
+                // Subtract discount
+                runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                entry.outstandingBalance = runningBalance;
+            } else if (entry.particulars === 'RECEIPT') {
+                // Receipt entries (from sales) don't change balance (amount is 0)
+                entry.outstandingBalance = runningBalance;
+            } else if (entry.particulars === 'OP BAL') {
+                // OP BAL is already set, but maintain running balance
+                entry.outstandingBalance = runningBalance;
+            } else {
+                // For other entries, maintain current balance
+                entry.outstandingBalance = runningBalance;
+            }
         });
 
         // Apply pagination

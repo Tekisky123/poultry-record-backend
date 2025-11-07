@@ -67,6 +67,7 @@ const tripSchema = new mongoose.Schema({
     // Bird Purchases
     purchases: [{
         supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' },
+        vendorName: { type: String, default: '' }, // Vendor name stored for transferred trips
         dcNumber: { type: String, required: true },
         birds: { type: Number, required: true },
         weight: { type: Number, required: true },
@@ -87,6 +88,7 @@ const tripSchema = new mongoose.Schema({
         avgWeight: { type: Number }, // Calculated field
         rate: { type: Number, required: true },
         amount: { type: Number, required: true },
+        product: { type: String, default: '' }, // Vendor name from first purchase
         profitMargin: { type: Number, default: 0 }, // Calculated: (saleRate - avgPurchaseRate)
         profitAmount: { type: Number, default: 0 }, // Calculated: profitMargin * weight
         // paymentMode: { type: String, enum: ['cash', 'online', 'credit'], default: 'cash' },
@@ -97,6 +99,11 @@ const tripSchema = new mongoose.Schema({
         onlinePaid: { type: Number, default: 0 },
         balance: { type: Number, default: 0 }, // Calculated balance after this sale
         outstandingBalance: { type: Number, default: 0 }, // Customer's balance AFTER this transaction
+        // Balance for each particular (for accurate customer purchase ledger)
+        balanceForSale: { type: Number, default: 0 }, // Balance after adding sale amount
+        balanceForCashPaid: { type: Number, default: 0 }, // Balance after subtracting cashPaid
+        balanceForOnlinePaid: { type: Number, default: 0 }, // Balance after subtracting onlinePaid
+        balanceForDiscount: { type: Number, default: 0 }, // Balance after subtracting discount
         timestamp: { type: Date, default: Date.now }
     }],
 
@@ -126,7 +133,10 @@ const tripSchema = new mongoose.Schema({
     // Trip Summary
     summary: {
         totalPurchaseAmount: { type: Number, default: 0 },
-        totalSalesAmount: { type: Number, default: 0 },
+        totalSalesAmount: { type: Number, default: 0 }, // Customer + Stock + Transfers (for financial calculations)
+        customerSalesAmount: { type: Number, default: 0 }, // Only customer sales (for display in SALES DETAILS)
+        customerBirdsSold: { type: Number, default: 0 }, // Only customer sales birds (for display)
+        customerWeightSold: { type: Number, default: 0 }, // Only customer sales weight (for display)
         totalExpenses: { type: Number, default: 0 },
         totalDieselAmount: { type: Number, default: 0 },
         totalLosses: { type: Number, default: 0 }, // Total losses from death birds
@@ -151,7 +161,8 @@ const tripSchema = new mongoose.Schema({
         fuelEfficiency: { type: Number, default: 0 },
         avgPurchaseRate: { type: Number, default: 0 }, // Average purchase rate for calculations
         birdsProfit: { type: Number, default: 0 }, // Birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
-        grossRent: { type: Number, default: 0 } // Gross rent: rentPerKm * totalDistance
+        grossRent: { type: Number, default: 0 }, // Gross rent: rentPerKm * totalDistance
+        tripProfit: { type: Number, default: 0 } // Trip profit: netProfit + birdsProfit
     },
 
     status: { 
@@ -233,11 +244,47 @@ tripSchema.pre('save', async function(next) {
         });
     }
 
+    // Calculate summary statistics FIRST (before avgPurchaseRate calculation)
+    if (this.purchases && this.purchases.length > 0) {
+        this.summary.totalPurchaseAmount = this.purchases.reduce((sum, purchase) => sum + (purchase.amount || 0), 0);
+        this.summary.totalBirdsPurchased = this.purchases.reduce((sum, purchase) => sum + (purchase.birds || 0), 0);
+        this.summary.totalWeightPurchased = this.purchases.reduce((sum, purchase) => sum + (purchase.weight || 0), 0);
+    }
+
+    // Calculate average purchase rate for profit calculations (needed for sales, stock, and transfers)
+    // Formula: avg rate = total purchase cost / total purchase weight
+    const avgPurchaseRate = this.summary.totalWeightPurchased > 0 ? 
+        this.summary.totalPurchaseAmount / this.summary.totalWeightPurchased : 0;
+    this.summary.avgPurchaseRate = Number(avgPurchaseRate.toFixed(2));
+
     if (this.sales && this.sales.length > 0) {
-        // Calculate average purchase rate for profit calculations
-        const avgPurchaseRate = this.summary.totalWeightPurchased > 0 ? 
-            this.summary.totalPurchaseAmount / this.summary.totalWeightPurchased : 0;
-        this.summary.avgPurchaseRate = Number(avgPurchaseRate.toFixed(2));
+        // Get vendor name from first purchase (if purchases exist)
+        let firstVendorName = '';
+        if (this.purchases && this.purchases.length > 0) {
+            const firstPurchase = this.purchases[0];
+            
+            // For transferred trips, check if vendorName is stored in purchase record
+            if (this.type === 'transferred' && firstPurchase.vendorName) {
+                firstVendorName = firstPurchase.vendorName;
+            } else if (firstPurchase.supplier) {
+                // Check if supplier is populated (object with vendorName property)
+                if (typeof firstPurchase.supplier === 'object' && firstPurchase.supplier.vendorName) {
+                    // Supplier is already populated
+                    firstVendorName = firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
+                } else if (typeof firstPurchase.supplier === 'object' && firstPurchase.supplier.toString) {
+                    // Supplier is an ObjectId, need to fetch it
+                    try {
+                        const Vendor = mongoose.model('Vendor');
+                        const vendor = await Vendor.findById(firstPurchase.supplier);
+                        if (vendor) {
+                            firstVendorName = vendor.vendorName || vendor.name || '';
+                        }
+                    } catch (error) {
+                        console.error('Error fetching vendor in pre-save middleware:', error);
+                    }
+                }
+            }
+        }
 
         // Process sales sequentially to ensure proper async handling
         for (let i = 0; i < this.sales.length; i++) {
@@ -246,14 +293,21 @@ tripSchema.pre('save', async function(next) {
             if (sale.birds && sale.weight) {
                 sale.avgWeight = Number((sale.weight / sale.birds).toFixed(2));
             }
+            
+            // Set product (vendor name) from first purchase if not already set
+            if (!sale.product && firstVendorName) {
+                sale.product = firstVendorName;
+            }
+            
             // Calculate profit margin and profit amount
             sale.profitMargin = Number((sale.rate - avgPurchaseRate).toFixed(2));
             sale.profitAmount = Number((sale.profitMargin * sale.weight).toFixed(2));
             // Calculate receivedAmount from cashPaid + onlinePaid
             sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
             
-            // Calculate Outstanding Balance using the formula:
-            // Outstanding Balance(current) = Outstanding Balance(global) + Total Amount - Online Paid - Cash Paid - Discount
+            // Calculate Outstanding Balance - preserve sequential balances if already calculated
+            // Sequential balances (balanceForSale, balanceForCashPaid, balanceForOnlinePaid, balanceForDiscount)
+            // are calculated in the controller for proper sequential accounting
             if (sale.client) {
                 try {
                     const Customer = mongoose.model('Customer');
@@ -263,8 +317,40 @@ tripSchema.pre('save', async function(next) {
                         const totalPaid = (sale.onlinePaid || 0) + (sale.cashPaid || 0);
                         const discount = sale.discount || 0;
                         
-                        // Calculate the balance after this sale
-                        let balance = globalOutstandingBalance + sale.amount - totalPaid - discount;
+                        // Check if this is a receipt entry (birds = 0, weight = 0, amount typically 0)
+                        const isReceipt = (sale.birds === 0 || !sale.birds) && 
+                                          (sale.weight === 0 || !sale.weight) && 
+                                          (sale.amount === 0 || !sale.amount);
+                        
+                        // If sequential balances are not already set, calculate them
+                        // (This happens when data is loaded from DB and saved again)
+                        if (sale.balanceForSale === undefined || sale.balanceForSale === null) {
+                            if (isReceipt) {
+                                // For receipts: No amount is added, only payments are subtracted
+                                sale.balanceForSale = Number(globalOutstandingBalance.toFixed(2));
+                                const balanceForCashPaid = globalOutstandingBalance - (sale.cashPaid || 0);
+                                sale.balanceForCashPaid = Number(Math.max(0, balanceForCashPaid).toFixed(2));
+                                const balanceForOnlinePaid = balanceForCashPaid - (sale.onlinePaid || 0);
+                                sale.balanceForOnlinePaid = Number(Math.max(0, balanceForOnlinePaid).toFixed(2));
+                                const balanceForDiscount = balanceForOnlinePaid - discount;
+                                sale.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
+                            } else {
+                                // For regular sales: Add sale amount, then subtract payments
+                                const balanceForSale = globalOutstandingBalance + sale.amount;
+                                sale.balanceForSale = Number(balanceForSale.toFixed(2));
+                                const balanceForCashPaid = balanceForSale - (sale.cashPaid || 0);
+                                sale.balanceForCashPaid = Number(balanceForCashPaid.toFixed(2));
+                                const balanceForOnlinePaid = balanceForCashPaid - (sale.onlinePaid || 0);
+                                sale.balanceForOnlinePaid = Number(balanceForOnlinePaid.toFixed(2));
+                                const balanceForDiscount = balanceForOnlinePaid - discount;
+                                sale.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
+                            }
+                        }
+                        
+                        // Calculate the final balance after this sale/receipt (use balanceForDiscount if available)
+                        let balance = sale.balanceForDiscount !== undefined && sale.balanceForDiscount !== null 
+                                     ? sale.balanceForDiscount 
+                                     : (globalOutstandingBalance + sale.amount - totalPaid - discount);
                         
                         // If payment exceeds the sale amount + current outstanding balance, 
                         // the extra payment reduces the balance to 0 (minimum)
@@ -288,6 +374,10 @@ tripSchema.pre('save', async function(next) {
             if (loss.quantity && loss.weight) {
                 loss.avgWeight = Number((loss.weight / loss.quantity).toFixed(2));
             }
+            // Ensure rate uses average purchase rate (formula: total purchase cost / total purchase weight)
+            if (avgPurchaseRate > 0) {
+                loss.rate = Number(avgPurchaseRate.toFixed(2));
+            }
             // Calculate total loss using average purchase rate
             if (loss.weight && avgPurchaseRate > 0) {
                 loss.total = Number((loss.weight * avgPurchaseRate).toFixed(2));
@@ -295,22 +385,25 @@ tripSchema.pre('save', async function(next) {
         });
     }
 
-    // Calculate summary statistics
-    if (this.purchases && this.purchases.length > 0) {
-        this.summary.totalPurchaseAmount = this.purchases.reduce((sum, purchase) => sum + (purchase.amount || 0), 0);
-        this.summary.totalBirdsPurchased = this.purchases.reduce((sum, purchase) => sum + (purchase.birds || 0), 0);
-        this.summary.totalWeightPurchased = this.purchases.reduce((sum, purchase) => sum + (purchase.weight || 0), 0);
-    }
+    // Calculate customer sales totals
+    let customerSalesAmount = 0;
+    let customerBirdsSold = 0;
+    let customerWeightSold = 0;
+    let customerProfitMargin = 0;
+    let customerCashPaid = 0;
+    let customerOnlinePaid = 0;
+    let customerDiscount = 0;
+    let customerReceivedAmount = 0;
 
     if (this.sales && this.sales.length > 0) {
-        this.summary.totalSalesAmount = this.sales.reduce((sum, sale) => sum + (sale.amount || 0), 0);
-        this.summary.totalBirdsSold = this.sales.reduce((sum, sale) => sum + (sale.birds || 0), 0);
-        this.summary.totalWeightSold = this.sales.reduce((sum, sale) => sum + (sale.weight || 0), 0);
-        this.summary.totalProfitMargin = this.sales.reduce((sum, sale) => sum + (sale.profitAmount || 0), 0);
-        this.summary.totalCashPaid = this.sales.reduce((sum, sale) => sum + (sale.cashPaid || 0), 0);
-        this.summary.totalOnlinePaid = this.sales.reduce((sum, sale) => sum + (sale.onlinePaid || 0), 0);
-        this.summary.totalDiscount = this.sales.reduce((sum, sale) => sum + (sale.discount || 0), 0);
-        this.summary.totalReceivedAmount = this.sales.reduce((sum, sale) => sum + (sale.receivedAmount || 0), 0);
+        customerSalesAmount = this.sales.reduce((sum, sale) => sum + (sale.amount || 0), 0);
+        customerBirdsSold = this.sales.reduce((sum, sale) => sum + (sale.birds || 0), 0);
+        customerWeightSold = this.sales.reduce((sum, sale) => sum + (sale.weight || 0), 0);
+        customerProfitMargin = this.sales.reduce((sum, sale) => sum + (sale.profitAmount || 0), 0);
+        customerCashPaid = this.sales.reduce((sum, sale) => sum + (sale.cashPaid || 0), 0);
+        customerOnlinePaid = this.sales.reduce((sum, sale) => sum + (sale.onlinePaid || 0), 0);
+        customerDiscount = this.sales.reduce((sum, sale) => sum + (sale.discount || 0), 0);
+        customerReceivedAmount = this.sales.reduce((sum, sale) => sum + (sale.receivedAmount || 0), 0);
     }
 
     if (this.expenses && this.expenses.length > 0) {
@@ -333,25 +426,71 @@ tripSchema.pre('save', async function(next) {
     const totalStockWeight = this.stocks.reduce((sum, stock) => sum + (stock.weight || 0), 0);
     const totalStockValue = this.stocks.reduce((sum, stock) => sum + (stock.value || 0), 0);
 
-    // Calculate total transferred birds from transfer history
+    // Calculate total transferred birds, weight, and sales amount from transfer history
     const totalTransferredBirds = this.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.birds || 0), 0);
     const totalTransferredWeight = this.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.weight || 0), 0);
+    const totalTransferredSalesAmount = this.transferHistory.reduce((sum, transfer) => {
+        const stock = transfer.transferredStock;
+        if (stock && stock.rate && stock.weight) {
+            return sum + (stock.rate * stock.weight);
+        }
+        return sum;
+    }, 0);
+    
+    // Calculate transfer profit margin (rate * weight - purchase cost)
+    const totalTransferredProfitMargin = this.transferHistory.reduce((sum, transfer) => {
+        const stock = transfer.transferredStock;
+        if (stock && stock.rate && stock.weight) {
+            const profitMargin = stock.rate - avgPurchaseRate;
+            return sum + (profitMargin * stock.weight);
+        }
+        return sum;
+    }, 0);
+
     this.summary.birdsTransferred = totalTransferredBirds;
     this.summary.weightTransferred = totalTransferredWeight;
 
-    // Calculate bird weight loss: purchased - sold - stock - death - transferred
+    // Calculate stock profit margin (value - purchase cost)
+    const totalStockProfitMargin = this.stocks.reduce((sum, stock) => {
+        if (stock.value && stock.weight && avgPurchaseRate > 0) {
+            const purchaseCost = stock.weight * avgPurchaseRate;
+            return sum + (stock.value - purchaseCost);
+        }
+        return sum;
+    }, 0);
+
+    // Store customer-only sales for display in SALES DETAILS section
+    this.summary.customerSalesAmount = customerSalesAmount;
+    this.summary.customerBirdsSold = customerBirdsSold;
+    this.summary.customerWeightSold = customerWeightSold;
+    
+    // TOTAL SALES AMOUNT = Customer Sales + Stock Sales + Transfer Sales (for financial calculations)
+    this.summary.totalSalesAmount = customerSalesAmount + totalStockValue + totalTransferredSalesAmount;
+    
+    // TOTAL BIRDS SOLD = Customer Sales + Stock + Transfers (for inventory tracking)
+    this.summary.totalBirdsSold = customerBirdsSold + totalStockBirds + totalTransferredBirds;
+    
+    // TOTAL WEIGHT SOLD = Customer Sales + Stock + Transfers (for inventory tracking)
+    this.summary.totalWeightSold = customerWeightSold + totalStockWeight + totalTransferredWeight;
+    
+    // TOTAL PROFIT MARGIN = Customer Profit + Stock Profit + Transfer Profit
+    this.summary.totalProfitMargin = customerProfitMargin + totalStockProfitMargin + totalTransferredProfitMargin;
+    
+    // Payment fields (only from customer sales, not stock/transfers)
+    this.summary.totalCashPaid = customerCashPaid;
+    this.summary.totalOnlinePaid = customerOnlinePaid;
+    this.summary.totalDiscount = customerDiscount;
+    this.summary.totalReceivedAmount = customerReceivedAmount;
+
+    // Calculate bird weight loss: purchased - sold (includes customer + stock + transfers) - death
     this.summary.birdWeightLoss = (this.summary.totalWeightPurchased || 0) - 
                                  (this.summary.totalWeightSold || 0) - 
-                                 totalStockWeight - 
-                                 (this.summary.totalWeightLost || 0) - 
-                                 totalTransferredWeight;
+                                 (this.summary.totalWeightLost || 0);
 
-    // Calculate birds remaining: purchased - sold - stock - lost - transferred
+    // Calculate birds remaining: purchased - sold (includes customer + stock + transfers) - lost
     this.summary.birdsRemaining = (this.summary.totalBirdsPurchased || 0) - 
                                  (this.summary.totalBirdsSold || 0) - 
-                                 totalStockBirds - 
-                                 (this.summary.totalBirdsLost || 0) -
-                                 totalTransferredBirds;
+                                 (this.summary.totalBirdsLost || 0);
 
     // Calculate gross rent: rentPerKm * totalDistance
     const totalDistance = this.vehicleReadings?.totalDistance || 0;
@@ -368,6 +507,9 @@ tripSchema.pre('save', async function(next) {
     const totalExpenses = (this.summary.totalExpenses || 0) + (this.summary.totalDieselAmount || 0);
     const totalLosses = this.summary.totalLosses || 0;
     this.summary.netProfit = salesProfit - totalExpenses - totalLosses;
+
+    // Calculate trip profit: netProfit + birdsProfit
+    this.summary.tripProfit = Number(((this.summary.netProfit || 0) + (this.summary.birdsProfit || 0)).toFixed(2));
 
     // Validate vehicle readings if closing reading is provided
     if (this.vehicleReadings.opening && this.vehicleReadings.closing) {
