@@ -8,6 +8,7 @@ import customerRouter from './customer.routes.js';
 import tripRouter from './trip.routes.js';
 import dashboardRouter from './dashboard.routes.js';
 import indirectExpenseRouter from './indirectExpense.routes.js';
+import indirectSaleRouter from './indirectSale.routes.js';
 import paymentRouter from './payment.routes.js';
 import voucherRouter from './voucher.routes.js';
 
@@ -19,6 +20,7 @@ router.use('/customer', customerRouter);
 router.use('/trip', tripRouter);
 router.use('/dashboard', dashboardRouter);
 router.use('/indirect-expense', indirectExpenseRouter);
+router.use('/indirect-sales', indirectSaleRouter);
 router.use('/payment', paymentRouter);
 router.use('/voucher', voucherRouter);
 

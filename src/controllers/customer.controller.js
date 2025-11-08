@@ -92,7 +92,7 @@ export const addCustomer = async (req, res, next) => {
 export const getCustomers = async (req, res, next) => {
     try {
         const customers = await Customer.find({ isActive: true })
-            .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance')
+            .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance tdsApplicable')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ shopName: 1 });
