@@ -72,6 +72,10 @@ const customerSchema = new mongoose.Schema({
     default: 0,
     min: [0, "Outstanding balance cannot be negative"]
   },
+  tdsApplicable: {
+    type: Boolean,
+    default: false
+  }
 }, {
   timestamps: true,
   toJSON: {
