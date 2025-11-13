@@ -16,18 +16,16 @@ const BASE_URL = NODE_ENV === 'production'
   ? 'https://poultry-record-backend.vercel.app/api'
   : `http://localhost:${port}`;
 
-// app.use(cors({
-//   origin: [
-//     'http://localhost:5173',
-//     'http://localhost:5174',
-//     'https://poultry-record-frontend.vercel.app',
-//     'https://poultry-record-frontend.vercel.app/',
-//   ],
-//   methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
-//   credentials: true
-// }));
-
-app.use(cors('*'));
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'https://poultry-record-frontend.vercel.app',
+    'https://poultry-record-frontend.vercel.app/',
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
+  credentials: true
+}));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
