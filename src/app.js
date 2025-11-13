@@ -20,7 +20,9 @@ app.use(cors({
   origin: [
     'http://localhost:5173',
     'http://localhost:5174', 
-    'https://poultry-record-frontend.vercel.app'
+    'https://poultry-record-frontend.vercel.app',
+    'https://poultry-record-frontend.vercel.app/',
+    'https://poultry-record-frontend.vercel.app/api'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
   credentials: true
