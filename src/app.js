@@ -6,6 +6,7 @@ import apiLogger from './utils/apiLogger.js';
 import cors from 'cors';
 import globalErrorHandler from './utils/globalErrorHandler.js';
 import http from 'http';
+import initializeGroups from './utils/initializeGroups.js';
 // import initializeSocket from './utils/socket.js';
 
 const app = express();
@@ -50,8 +51,16 @@ app.all('/*splat', (req, res) => {
 app.use(globalErrorHandler);
 
 connectDB()
-  .then(() => {
+  .then(async () => {
     console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
+    
+    // Initialize predefined groups
+    try {
+      await initializeGroups();
+    } catch (err) {
+      console.error('⚠️  Failed to initialize groups:', err.message);
+    }
+    
     server.listen(port, () =>
       console.log(
         `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`

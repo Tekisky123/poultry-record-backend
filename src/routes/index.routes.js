@@ -11,6 +11,8 @@ import indirectExpenseRouter from './indirectExpense.routes.js';
 import indirectSaleRouter from './indirectSale.routes.js';
 import paymentRouter from './payment.routes.js';
 import voucherRouter from './voucher.routes.js';
+import groupRouter from './group.routes.js';
+import ledgerRouter from './ledger.routes.js';
 
 router.use('/auth', authRouter);
 router.use('/user', userRouter);
@@ -23,5 +25,7 @@ router.use('/indirect-expense', indirectExpenseRouter);
 router.use('/indirect-sales', indirectSaleRouter);
 router.use('/payment', paymentRouter);
 router.use('/voucher', voucherRouter);
+router.use('/group', groupRouter);
+router.use('/ledger', ledgerRouter);
 
 export default router;
