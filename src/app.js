@@ -17,12 +17,7 @@ const BASE_URL = NODE_ENV === 'production'
   : `http://localhost:${port}`;
 
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'https://poultry-record-frontend.vercel.app',
-    'https://poultry-record-frontend.vercel.app/',
-  ],
+  origin: "*",
   methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
   credentials: true
 }));
