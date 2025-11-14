@@ -16,6 +16,7 @@ export default function corsConfig() {
             }
         },
         methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH", "OPTIONS"],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'Access-Control-Request-Method', 'Access-Control-Request-Headers'],
         credentials: true,
     });
 }
