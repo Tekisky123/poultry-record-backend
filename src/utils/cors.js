@@ -4,6 +4,8 @@ const allowedOrigins = [
     'http://localhost:5174',
     'http://localhost:5173',
     'https://poultry-record-frontend.vercel.app',
+    'https://poultry-record-backend.vercel.app',
+    'https://poultry-record-backend.vercel.app/api'
 ];
 
 export default function corsConfig() {
