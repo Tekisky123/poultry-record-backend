@@ -8,13 +8,13 @@ import globalErrorHandler from './utils/globalErrorHandler.js';
 import http from 'http';
 import initializeGroups from './utils/initializeGroups.js';
 // import initializeSocket from './utils/socket.js';
-
-const app = express();
 const port = process.env.PORT || 8889;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const BASE_URL = NODE_ENV === 'production'
   ? 'https://poultry-record-backend.vercel.app/api'
   : `http://localhost:${port}`;
+
+const app = express();
 
 app.use(corsConfig());
 app.use(express.json({ limit: '10mb' }));
