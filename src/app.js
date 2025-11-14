@@ -3,7 +3,7 @@ import connectDB from './configs/database.js';
 import cookieParser from 'cookie-parser';
 import router from './routes/index.routes.js';
 import apiLogger from './utils/apiLogger.js';
-import cors from 'cors';
+import corsConfig from './utils/cors.js';
 import globalErrorHandler from './utils/globalErrorHandler.js';
 import http from 'http';
 import initializeGroups from './utils/initializeGroups.js';
@@ -16,12 +16,7 @@ const BASE_URL = NODE_ENV === 'production'
   ? 'https://poultry-record-backend.vercel.app/api'
   : `http://localhost:${port}`;
 
-app.use(cors({
-  origin: "*",
-  methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
-  credentials: true
-}));
-
+app.use(corsConfig());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
