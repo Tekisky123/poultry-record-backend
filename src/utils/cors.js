@@ -4,8 +4,6 @@ const allowedOrigins = [
     'http://localhost:5174',
     'http://localhost:5173',
     'https://poultry-record-frontend.vercel.app',
-    'https://poultry-record-backend.vercel.app',
-    'https://poultry-record-backend.vercel.app/api'
 ];
 
 export default function corsConfig() {
@@ -17,8 +15,7 @@ export default function corsConfig() {
                 callback(new Error('Not allowed by CORS'));
             }
         },
-        methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH", "OPTIONS"],
-        allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'Access-Control-Request-Method', 'Access-Control-Request-Headers'],
+        methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
         credentials: true,
     });
 }

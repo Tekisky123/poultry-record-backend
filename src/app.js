@@ -6,7 +6,6 @@ import apiLogger from './utils/apiLogger.js';
 import corsConfig from './utils/cors.js';
 import globalErrorHandler from './utils/globalErrorHandler.js';
 import http from 'http';
-import initializeGroups from './utils/initializeGroups.js';
 // import initializeSocket from './utils/socket.js';
 
 const app = express();
@@ -46,13 +45,6 @@ app.use(globalErrorHandler);
 connectDB()
   .then(async () => {
     console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
-    
-    // Initialize predefined groups
-    try {
-      await initializeGroups();
-    } catch (err) {
-      console.error('⚠️  Failed to initialize groups:', err.message);
-    }
     
     server.listen(port, () =>
       console.log(
