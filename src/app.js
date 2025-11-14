@@ -49,7 +49,7 @@ connectDB()
     
     // Initialize predefined groups
     try {
-      await initializeGroups();
+      // await initializeGroups();
     } catch (err) {
       console.error('⚠️  Failed to initialize groups:', err.message);
     }
