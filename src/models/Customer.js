@@ -34,11 +34,11 @@ const customerSchema = new mongoose.Schema({
     trim: true,
     maxlength: [100, "GST or PAN number cannot exceed 100 characters"]
   },
-  area: { 
+  place: { 
     type: String, 
-    required: [true, "Area is required"],
+    required: [true, "Place is required"],
     trim: true,
-    maxlength: [100, "Area name too long"]
+    maxlength: [100, "Place name too long"]
   },
   isActive: { 
     type: Boolean, 

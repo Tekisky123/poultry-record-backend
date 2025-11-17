@@ -95,7 +95,7 @@ export const createIndirectSale = async (req, res, next) => {
 
         await indirectSale.save();
         await indirectSale.populate([
-            { path: 'customer', select: 'shopName ownerName contact area tdsApplicable' },
+            { path: 'customer', select: 'shopName ownerName contact place tdsApplicable' },
             { path: 'vendor', select: 'vendorName companyName contactNumber' },
             { path: 'createdBy', select: 'name' },
             { path: 'updatedBy', select: 'name' }
@@ -117,7 +117,7 @@ export const getIndirectSales = async (req, res, next) => {
 
         const [data, total] = await Promise.all([
             IndirectSale.find(filter)
-                .populate('customer', 'shopName ownerName area tdsApplicable')
+                .populate('customer', 'shopName ownerName place tdsApplicable')
                 .populate('vendor', 'vendorName companyName')
                 .sort({ date: -1, createdAt: -1 })
                 .skip((numericPage - 1) * numericLimit)
@@ -143,7 +143,7 @@ export const getIndirectSaleById = async (req, res, next) => {
     try {
         const { id } = req.params;
         const record = await IndirectSale.findById(id)
-            .populate('customer', 'shopName ownerName contact area tdsApplicable')
+            .populate('customer', 'shopName ownerName contact place tdsApplicable')
             .populate('vendor', 'vendorName companyName contactNumber')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
@@ -197,7 +197,7 @@ export const updateIndirectSaleDetails = async (req, res, next) => {
         record.recalculateSummary();
         await record.save();
         await record.populate([
-            { path: 'customer', select: 'shopName ownerName area' },
+            { path: 'customer', select: 'shopName ownerName place' },
             { path: 'vendor', select: 'vendorName companyName' },
             { path: 'createdBy', select: 'name' },
             { path: 'updatedBy', select: 'name' }
@@ -243,7 +243,7 @@ export const addPurchase = async (req, res, next) => {
         record.recalculateSummary();
         await record.save();
         await record.populate([
-            { path: 'customer', select: 'shopName ownerName area tdsApplicable' },
+            { path: 'customer', select: 'shopName ownerName place tdsApplicable' },
             { path: 'vendor', select: 'vendorName companyName' }
         ]);
 
@@ -284,7 +284,7 @@ export const updatePurchase = async (req, res, next) => {
         record.recalculateSummary();
         await record.save();
         await record.populate([
-            { path: 'customer', select: 'shopName ownerName area tdsApplicable' },
+            { path: 'customer', select: 'shopName ownerName place tdsApplicable' },
             { path: 'vendor', select: 'vendorName companyName' }
         ]);
 
@@ -315,7 +315,7 @@ export const deletePurchase = async (req, res, next) => {
         record.recalculateSummary();
         await record.save();
         await record.populate([
-            { path: 'customer', select: 'shopName ownerName area tdsApplicable' },
+            { path: 'customer', select: 'shopName ownerName place tdsApplicable' },
             { path: 'vendor', select: 'vendorName companyName' }
         ]);
 
@@ -348,7 +348,7 @@ export const updateMortality = async (req, res, next) => {
         record.recalculateSummary();
         await record.save();
         await record.populate([
-            { path: 'customer', select: 'shopName ownerName area tdsApplicable' },
+            { path: 'customer', select: 'shopName ownerName place tdsApplicable' },
             { path: 'vendor', select: 'vendorName companyName' }
         ]);
 
@@ -382,7 +382,7 @@ export const updateSales = async (req, res, next) => {
         record.recalculateSummary();
         await record.save();
         await record.populate([
-            { path: 'customer', select: 'shopName ownerName area tdsApplicable' },
+            { path: 'customer', select: 'shopName ownerName place tdsApplicable' },
             { path: 'vendor', select: 'vendorName companyName' }
         ]);
 

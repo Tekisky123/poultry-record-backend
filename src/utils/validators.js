@@ -6,7 +6,7 @@ export const signupValidator = (data = {}) => {
     throw new AppError('Invalid request body', 400);
   }
 
-  const { name, role, email, mobileNumber, age, password, address, gstOrPanNumber, area } = data;
+  const { name, role, email, mobileNumber, age, dateOfBirth, password, address, gstOrPanNumber, place } = data;
 
   // 1. Name validation
   if (!name || typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 50) {
@@ -29,10 +29,34 @@ export const signupValidator = (data = {}) => {
     throw new AppError('Invalid mobile number', 400);
   }
 
-  // 5. Age validation (optional, but if provided must be within range)
-  if (age !== undefined) {
-    if (typeof age !== 'number' || age < 18 || age > 100) {
-      throw new AppError('Age must be a number between 18 and 100', 400);
+  // 5. Age/Date of Birth validation
+  if (role === 'customer') {
+    // For customers, dateOfBirth is required
+    if (!dateOfBirth) {
+      throw new AppError('Date of birth is required for customer registration', 400);
+    }
+    // Validate date format
+    const dobDate = new Date(dateOfBirth);
+    if (isNaN(dobDate.getTime())) {
+      throw new AppError('Invalid date of birth format', 400);
+    }
+    // Validate age (must be at least 18)
+    const today = new Date();
+    const ageYears = today.getFullYear() - dobDate.getFullYear();
+    const monthDiff = today.getMonth() - dobDate.getMonth();
+    const actualAge = monthDiff < 0 || (monthDiff === 0 && today.getDate() < dobDate.getDate()) ? ageYears - 1 : ageYears;
+    if (actualAge < 18) {
+      throw new AppError('You must be at least 18 years old to register as a customer', 400);
+    }
+    if (actualAge > 100) {
+      throw new AppError('Invalid date of birth', 400);
+    }
+  } else {
+    // For non-customers, age is optional but if provided must be within range
+    if (age !== undefined) {
+      if (typeof age !== 'number' || age < 18 || age > 100) {
+        throw new AppError('Age must be a number between 18 and 100', 400);
+      }
     }
   }
 
@@ -82,14 +106,14 @@ export const signupValidator = (data = {}) => {
       }
     }
 
-    // 9. Area validation for customers
-    if (!area || typeof area !== 'string' || !area.trim()) {
-      throw new AppError('Area is required for customer registration', 400);
+    // 9. Place validation for customers
+    if (!place || typeof place !== 'string' || !place.trim()) {
+      throw new AppError('Place is required for customer registration', 400);
     }
     
-    const areaValue = area.trim();
-    if (areaValue.length > 100) {
-      throw new AppError('Area name cannot exceed 100 characters', 400);
+    const placeValue = place.trim();
+    if (placeValue.length > 100) {
+      throw new AppError('Place name cannot exceed 100 characters', 400);
     }
   }
 

@@ -688,10 +688,17 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         const paginatedEntries = ledgerEntries.slice(startIndex, endIndex);
 
         // Calculate totals
+        const receiptParticulars = ['RECEIPT', 'BY CASH RECEIPT', 'BY BANK RECEIPT'];
         const totals = {
             totalBirds: ledgerEntries.reduce((sum, entry) => sum + entry.birds, 0),
             totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
             totalAmount: ledgerEntries.reduce((sum, entry) => sum + entry.amount, 0),
+            totalReceipt: ledgerEntries.reduce((sum, entry) => {
+                if (receiptParticulars.includes(entry.particulars)) {
+                    return sum + (entry.amount || 0);
+                }
+                return sum;
+            }, 0),
             currentBalance: ledgerEntries[ledgerEntries.length - 1]?.outstandingBalance || 0 // Use the final running balance
         };
 

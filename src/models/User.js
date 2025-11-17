@@ -51,6 +51,24 @@ const userSchema = new mongoose.Schema({
         max: [100, 'Age must not exceed 100']
     },
 
+    dateOfBirth: {
+        type: Date,
+        validate: {
+            validator: function(value) {
+                if (!value) return true; // Optional field
+                const today = new Date();
+                const birthDate = new Date(value);
+                const age = today.getFullYear() - birthDate.getFullYear();
+                const monthDiff = today.getMonth() - birthDate.getMonth();
+                if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+                    return age - 1 >= 18;
+                }
+                return age >= 18;
+            },
+            message: 'Date of birth must indicate age of at least 18 years'
+        }
+    },
+
     password: {
         type: String,
         required: [true, 'Password is required'],
