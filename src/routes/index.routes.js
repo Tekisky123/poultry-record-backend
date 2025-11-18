@@ -13,6 +13,8 @@ import paymentRouter from './payment.routes.js';
 import voucherRouter from './voucher.routes.js';
 import groupRouter from './group.routes.js';
 import ledgerRouter from './ledger.routes.js';
+import dieselStationRouter from './dieselStation.routes.js';
+import balanceSheetRouter from './balanceSheet.routes.js';
 
 router.use('/auth', authRouter);
 router.use('/user', userRouter);
@@ -27,5 +29,7 @@ router.use('/payment', paymentRouter);
 router.use('/voucher', voucherRouter);
 router.use('/group', groupRouter);
 router.use('/ledger', ledgerRouter);
+router.use('/diesel-stations', dieselStationRouter);
+router.use('/balance-sheet', balanceSheetRouter);
 
 export default router;

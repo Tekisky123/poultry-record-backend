@@ -53,9 +53,9 @@ export const signupValidator = (data = {}) => {
     }
   } else {
     // For non-customers, age is optional but if provided must be within range
-    if (age !== undefined) {
-      if (typeof age !== 'number' || age < 18 || age > 100) {
-        throw new AppError('Age must be a number between 18 and 100', 400);
+  if (age !== undefined) {
+    if (typeof age !== 'number' || age < 18 || age > 100) {
+      throw new AppError('Age must be a number between 18 and 100', 400);
       }
     }
   }
