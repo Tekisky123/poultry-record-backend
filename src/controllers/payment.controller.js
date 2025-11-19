@@ -158,12 +158,24 @@ export const verifyPayment = async (req, res, next) => {
 
         // If verified, update the customer's opening balance
         if (status === 'verified') {
-            // Find the customer
+            // Find the customer to get current outstanding balance
             const customer = await Customer.findById(payment.customer);
             if (customer) {
-                // Deduct the payment amount from opening balance
-                customer.outstandingBalance = Math.max(0, (customer.outstandingBalance || 0) - payment.amount);
-                await customer.save();
+                // Calculate new outstanding balance
+                const newOutstandingBalance = Math.max(0, (customer.outstandingBalance || 0) - payment.amount);
+                
+                // Update customer's outstanding balance without triggering full validation
+                // This prevents errors if customer has missing required fields like 'place'
+                await Customer.findByIdAndUpdate(
+                    payment.customer,
+                    { 
+                        $set: { 
+                            outstandingBalance: newOutstandingBalance,
+                            updatedBy: adminId
+                        } 
+                    },
+                    { runValidators: false } // Skip validation to avoid "Place is required" error
+                );
             }
 
             // If this is a sale payment (has trip and sale), also update the sale balance
