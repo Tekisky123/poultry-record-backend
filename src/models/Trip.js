@@ -36,6 +36,7 @@ const tripSchema = new mongoose.Schema({
     diesel: {
         stations: [{
             name: String,
+            stationName: String,
             volume: Number,
             rate: Number,
             amount: Number,
@@ -217,6 +218,18 @@ const tripSchema = new mongoose.Schema({
             ret.id = ret._id;
             delete ret._id;
             delete ret.__v;
+
+            if (ret.diesel?.stations?.length) {
+                ret.diesel.stations = ret.diesel.stations.map((station) => {
+                    const stationName = station.stationName || station.name || '';
+                    return {
+                        ...station,
+                        stationName,
+                        name: station.name || stationName
+                    };
+                });
+            }
+
             return ret;
         }
     },
@@ -240,6 +253,16 @@ tripSchema.pre('save', async function(next) {
         this.purchases.forEach(purchase => {
             if (purchase.birds && purchase.weight) {
                 purchase.avgWeight = Number((purchase.weight / purchase.birds).toFixed(2));
+            }
+        });
+    }
+
+    if (this.diesel?.stations?.length) {
+        this.diesel.stations.forEach((station) => {
+            const stationName = station.stationName || station.name || '';
+            station.stationName = stationName;
+            if (!station.name && stationName) {
+                station.name = stationName;
             }
         });
     }
