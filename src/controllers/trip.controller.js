@@ -5,6 +5,27 @@ import Customer from "../models/Customer.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
 
+const buildTransferPopulate = (depth = 3) => {
+    if (depth <= 0) return null;
+
+    const nestedPopulate = buildTransferPopulate(depth - 1);
+
+    const populateConfig = {
+        path: 'transferredFrom',
+        select: 'tripId supervisor type purchases transferredFrom',
+        populate: [
+            { path: 'supervisor', select: 'name mobileNumber' },
+            { path: 'purchases.supplier', select: 'vendorName' }
+        ]
+    };
+
+    if (nestedPopulate) {
+        populateConfig.populate.push(nestedPopulate);
+    }
+
+    return populateConfig;
+};
+
 // Create new trip (Supervisor only)
 export const addTrip = async (req, res, next) => {
     try {
@@ -99,16 +120,22 @@ export const getTrips = async (req, res, next) => {
             if (endDate) query.date.$lte = new Date(endDate);
         }
 
-        const trips = await Trip.find(query)
+        const transferPopulate = buildTransferPopulate(5);
+
+        let queryBuilder = Trip.find(query)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
             .populate('purchases.supplier', 'vendorName')
             .populate('sales.client', 'shopName')
-            .populate('transferredFrom', 'tripId supervisor')
-            .populate('transferredFrom.supervisor', 'name mobileNumber')
             .sort({ createdAt: -1 })
             .limit(limit * 1)
             .skip((page - 1) * limit);
+
+        if (transferPopulate) {
+            queryBuilder = queryBuilder.populate(transferPopulate);
+        }
+
+        const trips = await queryBuilder;
 
         const total = await Trip.countDocuments(query);
 
@@ -135,13 +162,13 @@ export const getTripById = async (req, res, next) => {
             query.supervisor = req.user._id;
         }
 
-        const trip = await Trip.findOne(query)
+        const transferPopulate = buildTransferPopulate(5);
+
+        let queryBuilder = Trip.findOne(query)
             .populate('vehicle', 'vehicleNumber type capacity')
             .populate('supervisor', 'name mobileNumber')
             .populate('purchases.supplier', 'vendorName contactNumber')
             .populate('sales.client', 'shopName ownerName contact')
-            .populate('transferredFrom', 'tripId supervisor vehicle')
-            .populate('transferredFrom.supervisor', 'name mobileNumber')
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
             .populate({
                 path: 'transferHistory.transferredTo',
@@ -150,6 +177,12 @@ export const getTripById = async (req, res, next) => {
                     select: 'vehicleNumber'
                 }
             });
+
+        if (transferPopulate) {
+            queryBuilder = queryBuilder.populate(transferPopulate);
+        }
+
+        const trip = await queryBuilder;
 
         if (!trip) throw new AppError('Trip not found', 404);
 
