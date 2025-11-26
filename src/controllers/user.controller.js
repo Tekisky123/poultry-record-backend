@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import Customer from "../models/Customer.js";
+import Group from "../models/Group.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import { signupValidator } from "../utils/validators.js";
@@ -91,6 +92,7 @@ export const getPendingApprovals = async (req, res, next) => {
 export const approveUser = async (req, res, next) => {
     try {
         const { id } = req.params;
+        const { group, openingBalance } = req.body;
         const approver = req.user;
 
         const user = await User.findById(id);
@@ -108,6 +110,19 @@ export const approveUser = async (req, res, next) => {
             return next(new AppError('Insufficient privileges', 403));
         }
 
+        // For customers, validate that group is provided and exists
+        if (targetIsCustomer) {
+            if (!group) {
+                return next(new AppError('Group is required for customer approval', 400));
+            }
+            
+            // Validate that the group exists and is active
+            const groupExists = await Group.findOne({ _id: group, isActive: true });
+            if (!groupExists) {
+                return next(new AppError('Invalid group. Group not found or inactive', 400));
+            }
+        }
+
         user.approvalStatus = 'approved';
         user.approvedBy = approver._id;
         user.approvedAt = new Date();
@@ -120,6 +135,8 @@ export const approveUser = async (req, res, next) => {
                 ownerName: user.name,
                 contact: user.mobileNumber, // Sync mobile number from user
                 address: user.address || '',
+                group: group, // Set group from approval form
+                openingBalance: openingBalance || 0, // Set opening balance from approval form
                 user: user._id,
                 createdBy: approver._id,
                 updatedBy: approver._id

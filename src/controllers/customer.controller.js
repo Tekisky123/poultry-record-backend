@@ -1,6 +1,7 @@
 import Customer from "../models/Customer.js";
 import User from "../models/User.js";
 import Trip from "../models/Trip.js";
+import Group from "../models/Group.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import bcrypt from 'bcrypt';
@@ -44,6 +45,25 @@ export const addCustomer = async (req, res, next) => {
             throw new AppError('User with this email or mobile number already exists', 400);
         }
 
+        // Automatically find and assign "Sundry Debtors" group for customers
+        let groupId = customerData.group;
+        if (!groupId) {
+            const sundryDebtorsGroup = await Group.findOne({ 
+                name: 'Sundry Debtors', 
+                isActive: true 
+            });
+            if (!sundryDebtorsGroup) {
+                throw new AppError('Sundry Debtors group not found. Please contact administrator.', 404);
+            }
+            groupId = sundryDebtorsGroup._id;
+        } else {
+            // Validate provided group exists
+            const groupDoc = await Group.findById(groupId);
+            if (!groupDoc || !groupDoc.isActive) {
+                throw new AppError('Group not found or inactive', 404);
+            }
+        }
+
         // Hash password
         const hashPassword = await bcrypt.hash(password, 10);
 
@@ -63,6 +83,7 @@ export const addCustomer = async (req, res, next) => {
         // Create Customer record with user reference
         const customer = new Customer({
             ...customerData,
+            group: groupId, // Use automatically assigned or provided group
             user: savedUser._id,
             createdBy: req.user._id,
             updatedBy: req.user._id,
@@ -80,6 +101,7 @@ export const addCustomer = async (req, res, next) => {
         // Populate customer data for response
         const populatedCustomer = await Customer.findById(savedCustomer._id)
             .populate('user', 'name email mobileNumber role approvalStatus')
+            .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
@@ -93,6 +115,7 @@ export const getCustomers = async (req, res, next) => {
     try {
         const customers = await Customer.find({ isActive: true })
             .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance tdsApplicable')
+            .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ shopName: 1 });
@@ -107,6 +130,7 @@ export const getCustomerById = async (req, res, next) => {
     try {
         const customer = await Customer.findOne({ _id: id, isActive: true })
             .populate('user', 'name email mobileNumber role approvalStatus')
+            .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
         successResponse(res, "customer", 200, customer)
@@ -159,9 +183,29 @@ export const updateCustomer = async (req, res, next) => {
             }
         }
 
+        // Automatically set group to "Sundry Debtors" if not provided
+        let groupId = customerData.group;
+        if (!groupId) {
+            const sundryDebtorsGroup = await Group.findOne({ 
+                name: 'Sundry Debtors', 
+                isActive: true 
+            });
+            if (!sundryDebtorsGroup) {
+                throw new AppError('Sundry Debtors group not found. Please contact administrator.', 404);
+            }
+            groupId = sundryDebtorsGroup._id;
+        } else {
+            // Validate provided group exists
+            const groupDoc = await Group.findById(groupId);
+            if (!groupDoc || !groupDoc.isActive) {
+                throw new AppError('Group not found or inactive', 404);
+            }
+        }
+
         // Update customer data
         const updateData = {
             ...customerData,
+            group: groupId, // Use automatically assigned or provided group
             updatedBy: req.user._id
         };
 
@@ -174,6 +218,7 @@ export const updateCustomer = async (req, res, next) => {
             updateData,
             { new: true, runValidators: true }
         ).populate('user', 'name email mobileNumber role approvalStatus')
+            .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 

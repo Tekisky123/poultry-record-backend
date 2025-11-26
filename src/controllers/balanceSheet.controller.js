@@ -10,19 +10,53 @@ const buildTree = (groups) => {
   const groupMap = new Map();
   const rootGroups = [];
 
-  // First pass: create map of all groups
+  // Helper to convert ID to string for consistent comparison
+  const getIdString = (id) => {
+    if (!id) return null;
+    if (typeof id === 'string') return id;
+    if (id.toString) return id.toString();
+    return String(id);
+  };
+
+  // First pass: create map of all groups (convert Mongoose documents to plain objects)
   groups.forEach(group => {
-    groupMap.set(group.id, { ...group, children: [], ledgers: [] });
+    // Convert Mongoose document to plain object if needed
+    const plainGroup = group.toObject ? group.toObject() : group;
+    const groupId = getIdString(plainGroup._id || plainGroup.id);
+    if (groupId) {
+      groupMap.set(groupId, { 
+        ...plainGroup,
+        _id: groupId,
+        id: groupId,
+        children: [], 
+        ledgers: [] 
+      });
+    }
   });
 
   // Second pass: build tree
   groups.forEach(group => {
-    const node = groupMap.get(group.id);
-    if (group.parentGroup && groupMap.has(group.parentGroup.id)) {
-      const parent = groupMap.get(group.parentGroup.id);
-      parent.children.push(node);
-    } else {
-      rootGroups.push(node);
+    const plainGroup = group.toObject ? group.toObject() : group;
+    const groupId = getIdString(plainGroup._id || plainGroup.id);
+    const node = groupMap.get(groupId);
+    
+    if (node) {
+      // Handle parentGroup - it might be populated or just an ID
+      let parentGroupId = null;
+      if (plainGroup.parentGroup) {
+        if (typeof plainGroup.parentGroup === 'object') {
+          parentGroupId = getIdString(plainGroup.parentGroup._id || plainGroup.parentGroup.id);
+        } else {
+          parentGroupId = getIdString(plainGroup.parentGroup);
+        }
+      }
+      
+      if (parentGroupId && groupMap.has(parentGroupId)) {
+        const parent = groupMap.get(parentGroupId);
+        parent.children.push(node);
+      } else {
+        rootGroups.push(node);
+      }
     }
   });
 
@@ -70,6 +104,8 @@ const calculateGroupBalance = async (group, asOnDate = null) => {
   let totalBalance = 0;
   let totalDebit = 0;
   let totalCredit = 0;
+  let totalOpeningBalance = 0;
+  let totalOutstandingBalance = 0;
 
   // Get all ledgers in this group
   const groupId = group.id || group._id;
@@ -79,6 +115,8 @@ const calculateGroupBalance = async (group, asOnDate = null) => {
     const ledgerBalance = await calculateLedgerBalance(ledger.name, asOnDate);
     totalDebit += ledgerBalance.debitTotal;
     totalCredit += ledgerBalance.creditTotal;
+    totalOpeningBalance += ledger.openingBalance || 0;
+    totalOutstandingBalance += ledger.outstandingBalance ?? ledger.openingBalance ?? 0;
     
     // For Assets: Debit - Credit (positive means asset)
     // For Liability: Credit - Debit (positive means liability)
@@ -96,10 +134,12 @@ const calculateGroupBalance = async (group, asOnDate = null) => {
       totalBalance += childBalance.totalBalance;
       totalDebit += childBalance.totalDebit;
       totalCredit += childBalance.totalCredit;
+      totalOpeningBalance += childBalance.totalOpeningBalance;
+      totalOutstandingBalance += childBalance.totalOutstandingBalance;
     }
   }
 
-  return { totalBalance, totalDebit, totalCredit };
+  return { totalBalance, totalDebit, totalCredit, totalOpeningBalance, totalOutstandingBalance };
 };
 
 // Calculate Capital/Equity (Income - Expenses)
@@ -155,13 +195,15 @@ export const getBalanceSheet = async (req, res, next) => {
     const { asOnDate } = req.query;
     const date = asOnDate ? new Date(asOnDate) : new Date();
 
-    // Get all Assets and Liability groups
+    // Get all Assets and Liability groups (using lean() to get plain objects)
     const assetsGroups = await Group.find({ type: 'Assets', isActive: true })
       .populate('parentGroup', 'name type')
+      .lean()
       .sort({ name: 1 });
 
     const liabilityGroups = await Group.find({ type: 'Liability', isActive: true })
       .populate('parentGroup', 'name type')
+      .lean()
       .sort({ name: 1 });
 
     // Build tree structures
@@ -173,14 +215,25 @@ export const getBalanceSheet = async (req, res, next) => {
       const processedGroups = [];
       for (const group of groups) {
         const balance = await calculateGroupBalance(group, date);
+        // Ensure we have a clean plain object
+        const groupId = group._id || group.id;
         const processedGroup = {
-          ...group,
+          _id: groupId,
+          id: groupId,
+          name: group.name,
+          type: group.type,
+          parentGroup: group.parentGroup,
+          isPredefined: group.isPredefined,
+          isActive: group.isActive,
           balance: balance.totalBalance,
           debitTotal: balance.totalDebit,
           creditTotal: balance.totalCredit,
+          openingBalance: balance.totalOpeningBalance,
+          outstandingBalance: balance.totalOutstandingBalance,
           children: group.children && group.children.length > 0 
             ? await processGroups(group.children) 
-            : []
+            : [],
+          ledgers: []
         };
         processedGroups.push(processedGroup);
       }

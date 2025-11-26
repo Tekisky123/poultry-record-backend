@@ -1,6 +1,7 @@
 import Voucher from "../models/Voucher.js";
 import Customer from "../models/Customer.js";
 import Vendor from "../models/Vendor.js";
+import Sequence from "../models/Sequence.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import mongoose from "mongoose";
@@ -33,7 +34,10 @@ export const createVoucher = async (req, res, next) => {
             }
         }
 
+        const nextVoucherNumber = await Sequence.getNextValue('voucherNumber');
+
         const voucherData = {
+            voucherNumber: nextVoucherNumber,
             voucherType,
             date: date || new Date(),
             party: party || null,
@@ -188,6 +192,15 @@ export const updateVoucher = async (req, res, next) => {
          .populate('updatedBy', 'name');
 
         successResponse(res, "Voucher updated successfully", 200, updatedVoucher);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getNextVoucherNumber = async (req, res, next) => {
+    try {
+        const nextVoucherNumber = await Sequence.peekNextValue('voucherNumber');
+        successResponse(res, "Next voucher number", 200, { voucherNumber: nextVoucherNumber });
     } catch (error) {
         next(error);
     }

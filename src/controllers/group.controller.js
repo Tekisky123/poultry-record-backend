@@ -87,9 +87,35 @@ export const getGroups = async (req, res, next) => {
             .populate('parentGroup', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
-            .sort({ name: 1 });
+            .sort({ name: 1 })
+            .lean();
 
-        successResponse(res, "Groups retrieved successfully", 200, groups);
+        // Get ledger counts for all groups in a single aggregation query
+        const ledgerCounts = await Ledger.aggregate([
+            { $match: { isActive: true, group: { $exists: true, $ne: null } } },
+            { $group: { _id: '$group', count: { $sum: 1 } } }
+        ]);
+
+        // Create a map of groupId -> ledger count
+        const countMap = {};
+        ledgerCounts.forEach(item => {
+            if (item._id) {
+                countMap[item._id.toString()] = item.count;
+            }
+        });
+
+        // Add ledger count to each group and normalize parentGroup
+        const groupsWithCounts = groups.map(group => ({
+            ...group,
+            id: group._id.toString(),
+            ledgerCount: countMap[group._id.toString()] || 0,
+            parentGroup: group.parentGroup ? {
+                ...group.parentGroup,
+                id: group.parentGroup._id ? group.parentGroup._id.toString() : (group.parentGroup.id || null)
+            } : null
+        }));
+
+        successResponse(res, "Groups retrieved successfully", 200, groupsWithCounts);
     } catch (error) {
         next(error);
     }

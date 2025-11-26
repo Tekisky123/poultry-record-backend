@@ -45,6 +45,17 @@ const ledgerSchema = new mongoose.Schema({
     isActive: {
         type: Boolean,
         default: true
+    },
+    openingBalance: {
+        type: Number,
+        default: 0,
+        min: [0, "Opening balance cannot be negative"]
+    },
+    outstandingBalance: {
+        type: Number,
+        default: function() {
+            return this.openingBalance || 0;
+        }
     }
 }, {
     timestamps: true,
@@ -67,19 +78,6 @@ ledgerSchema.index({ customer: 1 });
 ledgerSchema.index({ ledgerType: 1 });
 ledgerSchema.index({ isActive: 1 });
 
-// Validation: If ledgerType is vendor, vendor must be provided
-ledgerSchema.pre('validate', function(next) {
-    if (this.ledgerType === 'vendor' && !this.vendor) {
-        this.invalidate('vendor', 'Vendor is required when ledger type is vendor');
-    }
-    if (this.ledgerType === 'customer' && !this.customer) {
-        this.invalidate('customer', 'Customer is required when ledger type is customer');
-    }
-    if (this.ledgerType === 'other' && (this.vendor || this.customer)) {
-        this.invalidate('ledgerType', 'Vendor or customer should not be set when ledger type is other');
-    }
-    next();
-});
 
 const Ledger = mongoose.model("Ledger", ledgerSchema);
 

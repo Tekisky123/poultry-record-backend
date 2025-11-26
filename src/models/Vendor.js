@@ -135,6 +135,11 @@ const vendorSchema = new mongoose.Schema({
     tdsApplicable: {
         type: Boolean,
         default: false
+    },
+    group: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Group',
+        required: [true, 'Group is required']
     }
 }, {
     timestamps: true,

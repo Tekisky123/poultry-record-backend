@@ -2,12 +2,10 @@ import mongoose from "mongoose";
 
 const voucherSchema = new mongoose.Schema({
   voucherNumber: {
-    type: String,
+    type: Number,
     required: true,
     unique: true,
-    default: function() {
-      return 'VCH-' + Date.now();
-    }
+    min: [1, "Voucher number must be greater than zero"]
   },
   voucherType: {
     type: String,
