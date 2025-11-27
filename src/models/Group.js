@@ -13,8 +13,8 @@ const groupSchema = new mongoose.Schema({
         type: String,
         required: [true, "Group type is required"],
         enum: {
-            values: ['Liability', 'Assets', 'Expenses', 'Income'],
-            message: 'Group type must be one of: Liability, Assets, Expenses, Income'
+            values: ['Liability', 'Assets', 'Expenses', 'Income', 'Others'],
+            message: 'Group type must be one of: Liability, Assets, Expenses, Income, Others'
         }
     },
     parentGroup: {

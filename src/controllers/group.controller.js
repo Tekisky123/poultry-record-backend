@@ -242,7 +242,7 @@ export const deleteGroup = async (req, res, next) => {
 export const getGroupsByType = async (req, res, next) => {
     const { type } = req.params;
     try {
-        const validTypes = ['Liability', 'Assets', 'Expenses', 'Income'];
+        const validTypes = ['Liability', 'Assets', 'Expenses', 'Income', 'Others'];
         if (!validTypes.includes(type)) {
             throw new AppError('Invalid group type', 400);
         }

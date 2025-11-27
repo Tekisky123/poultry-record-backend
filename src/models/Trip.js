@@ -1,13 +1,11 @@
 import mongoose from "mongoose";
+import Sequence from "./Sequence.js";
 
 const tripSchema = new mongoose.Schema({
     tripId: { 
         type: String, 
         required: true, 
-        unique: true,
-        default: function() {
-            return 'TRP-' + Date.now();
-        }
+        unique: true
     },
     // sequence: { 
     //     type: Number, 
@@ -236,17 +234,19 @@ const tripSchema = new mongoose.Schema({
     toObject: { virtuals: true }
 });
 
-// Pre-save middleware to calculate derived fields
+// Pre-save middleware to generate tripId if not provided
 tripSchema.pre('save', async function(next) {
-    // Generate sequence number if not provided
-    // if (this.isNew && !this.sequence) {
-    //     try {
-    //         const lastTrip = await this.constructor.findOne({}, {}, { sort: { sequence: -1 } });
-    //         this.sequence = lastTrip ? lastTrip.sequence + 1 : 1;
-    //     } catch (error) {
-    //         return next(error);
-    //     }
-    // }
+    // Generate tripId if not provided
+    if (this.isNew && !this.tripId) {
+        try {
+            const sequenceValue = await Sequence.getNextValue('tripId');
+            // Generate 4-6 digit number (pad with zeros if needed, max 6 digits)
+            const tripNumber = String(sequenceValue).padStart(4, '0').slice(0, 6);
+            this.tripId = `TRP-${tripNumber}`;
+        } catch (error) {
+            return next(error);
+        }
+    }
 
     // Calculate average weights
     if (this.purchases && this.purchases.length > 0) {

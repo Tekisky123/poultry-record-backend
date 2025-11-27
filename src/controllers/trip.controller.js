@@ -2,6 +2,7 @@ import Trip from "../models/Trip.js";
 import Vehicle from "../models/Vehicle.js";
 import User from "../models/User.js";
 import Customer from "../models/Customer.js";
+import Ledger from "../models/Ledger.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
 
@@ -409,6 +410,35 @@ export const addSale = async (req, res, next) => {
         trip.updatedBy = req.user._id;
         await trip.save();
 
+        // Update ledger outstanding balances if payment amounts are provided
+        if (saleData.cashLedger && saleData.cashPaid && saleData.cashPaid > 0) {
+            try {
+                const cashLedger = await Ledger.findById(saleData.cashLedger);
+                if (cashLedger) {
+                    cashLedger.outstandingBalance = (cashLedger.outstandingBalance || 0) + Number(saleData.cashPaid);
+                    cashLedger.updatedBy = req.user._id;
+                    await cashLedger.save();
+                }
+            } catch (error) {
+                console.error('Error updating cash ledger:', error);
+                // Don't fail the sale if ledger update fails
+            }
+        }
+
+        if (saleData.onlineLedger && saleData.onlinePaid && saleData.onlinePaid > 0) {
+            try {
+                const onlineLedger = await Ledger.findById(saleData.onlineLedger);
+                if (onlineLedger) {
+                    onlineLedger.outstandingBalance = (onlineLedger.outstandingBalance || 0) + Number(saleData.onlinePaid);
+                    onlineLedger.updatedBy = req.user._id;
+                    await onlineLedger.save();
+                }
+            } catch (error) {
+                console.error('Error updating online ledger:', error);
+                // Don't fail the sale if ledger update fails
+            }
+        }
+
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
@@ -608,12 +638,74 @@ export const editSale = async (req, res, next) => {
             saleData.balanceForDiscount = 0;
         }
 
+        // Get old sale data for ledger reversal
+        const oldSale = trip.sales[saleIndex];
+        const oldCashPaid = oldSale?.cashPaid || 0;
+        const oldOnlinePaid = oldSale?.onlinePaid || 0;
+        const oldCashLedger = oldSale?.cashLedger;
+        const oldOnlineLedger = oldSale?.onlineLedger;
+
         // Update sale
         trip.sales[saleIndex] = { ...trip.sales[saleIndex], ...saleData };
 
         // Summary will be recalculated by pre-save middleware including stock and transfers
         trip.updatedBy = req.user._id;
         await trip.save();
+
+        // Update ledger outstanding balances
+        // First, reverse old ledger amounts if they exist
+        if (oldCashLedger && oldCashPaid > 0) {
+            try {
+                const cashLedger = await Ledger.findById(oldCashLedger);
+                if (cashLedger) {
+                    cashLedger.outstandingBalance = Math.max(0, (cashLedger.outstandingBalance || 0) - Number(oldCashPaid));
+                    cashLedger.updatedBy = req.user._id;
+                    await cashLedger.save();
+                }
+            } catch (error) {
+                console.error('Error reversing old cash ledger:', error);
+            }
+        }
+
+        if (oldOnlineLedger && oldOnlinePaid > 0) {
+            try {
+                const onlineLedger = await Ledger.findById(oldOnlineLedger);
+                if (onlineLedger) {
+                    onlineLedger.outstandingBalance = Math.max(0, (onlineLedger.outstandingBalance || 0) - Number(oldOnlinePaid));
+                    onlineLedger.updatedBy = req.user._id;
+                    await onlineLedger.save();
+                }
+            } catch (error) {
+                console.error('Error reversing old online ledger:', error);
+            }
+        }
+
+        // Then, add new ledger amounts if they exist
+        if (saleData.cashLedger && saleData.cashPaid && saleData.cashPaid > 0) {
+            try {
+                const cashLedger = await Ledger.findById(saleData.cashLedger);
+                if (cashLedger) {
+                    cashLedger.outstandingBalance = (cashLedger.outstandingBalance || 0) + Number(saleData.cashPaid);
+                    cashLedger.updatedBy = req.user._id;
+                    await cashLedger.save();
+                }
+            } catch (error) {
+                console.error('Error updating cash ledger:', error);
+            }
+        }
+
+        if (saleData.onlineLedger && saleData.onlinePaid && saleData.onlinePaid > 0) {
+            try {
+                const onlineLedger = await Ledger.findById(saleData.onlineLedger);
+                if (onlineLedger) {
+                    onlineLedger.outstandingBalance = (onlineLedger.outstandingBalance || 0) + Number(saleData.onlinePaid);
+                    onlineLedger.updatedBy = req.user._id;
+                    await onlineLedger.save();
+                }
+            } catch (error) {
+                console.error('Error updating online ledger:', error);
+            }
+        }
 
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
@@ -1251,7 +1343,6 @@ export const transferTrip = async (req, res, next) => {
 
         // Create new transferred trip - receiving supervisor will complete details
         const newTripData = {
-            tripId: 'TRP-' + Date.now(),
             type: 'transferred',
             date: new Date(),
             // place: '', // To be filled by receiving supervisor
