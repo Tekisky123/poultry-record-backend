@@ -221,11 +221,11 @@ export const updateTrip = async (req, res, next) => {
     }
 };
 
-// Delete trip (Admin only)
+// Delete trip (Superadmin only)
 export const deleteTrip = async (req, res, next) => {
     try {
-        if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
-            throw new AppError('Only admin can delete trips', 403);
+        if (req.user.role !== 'superadmin') {
+            throw new AppError('Only superadmin can delete trips', 403);
         }
 
         const { id } = req.params;

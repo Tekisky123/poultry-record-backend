@@ -10,7 +10,7 @@ router.post('/', authenticateToken, authorize(['supervisor']), tripController.ad
 router.get('/', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTrips);
 router.get('/:id', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripById);
 router.put('/:id', authenticateToken, authorize(['admin', 'superadmin']), tripController.updateTrip);
-router.delete('/:id', authenticateToken, authorize(['admin', 'superadmin']), tripController.deleteTrip);
+router.delete('/:id', authenticateToken, authorize(['superadmin']), tripController.deleteTrip);
 
 // Trip management operations (Supervisor)
 router.post('/:id/purchase', authenticateToken, authorize(['supervisor']), tripController.addPurchase);
