@@ -7,6 +7,7 @@ import AppError from "../utils/AppError.js";
 import bcrypt from 'bcrypt';
 import validator from 'validator';
 import mongoose from "mongoose";
+import { syncOutstandingBalance } from "../utils/balanceUtils.js";
 
 export const addCustomer = async (req, res, next) => {
     try {
@@ -81,6 +82,9 @@ export const addCustomer = async (req, res, next) => {
         const savedUser = await user.save();
 
         // Create Customer record with user reference
+        const openingBalance = customerData.openingBalance || 0;
+        const openingBalanceType = customerData.openingBalanceType || 'debit';
+        
         const customer = new Customer({
             ...customerData,
             group: groupId, // Use automatically assigned or provided group
@@ -88,8 +92,10 @@ export const addCustomer = async (req, res, next) => {
             createdBy: req.user._id,
             updatedBy: req.user._id,
             // Set both openingBalance and outstandingBalance to the same initial value
-            openingBalance: customerData.openingBalance || 0,
-            outstandingBalance: customerData.openingBalance || 0
+            openingBalance: openingBalance,
+            openingBalanceType: openingBalanceType,
+            outstandingBalance: openingBalance,
+            outstandingBalanceType: openingBalanceType
         });
 
         const savedCustomer = await customer.save();
@@ -209,9 +215,33 @@ export const updateCustomer = async (req, res, next) => {
             updatedBy: req.user._id
         };
 
-        // Remove openingBalance from update data to prevent accidental updates
-        // openingBalance should only be set during customer creation
-        delete updateData.openingBalance;
+        // Handle opening balance update with sync logic
+        const isOpeningBalanceChanged = customerData.openingBalance !== undefined || customerData.openingBalanceType !== undefined;
+        
+        if (isOpeningBalanceChanged) {
+            const newOpeningAmount = customerData.openingBalance !== undefined ? customerData.openingBalance : customer.openingBalance;
+            const newOpeningType = customerData.openingBalanceType !== undefined ? customerData.openingBalanceType : customer.openingBalanceType;
+            
+            const syncedBalance = syncOutstandingBalance(
+                customer.openingBalance,
+                customer.openingBalanceType,
+                newOpeningAmount,
+                newOpeningType,
+                customer.outstandingBalance,
+                customer.outstandingBalanceType
+            );
+            
+            updateData.outstandingBalance = syncedBalance.amount;
+            updateData.outstandingBalanceType = syncedBalance.type;
+        }
+        
+        // Set opening balance and type if provided
+        if (customerData.openingBalance !== undefined) {
+            updateData.openingBalance = customerData.openingBalance;
+        }
+        if (customerData.openingBalanceType !== undefined) {
+            updateData.openingBalanceType = customerData.openingBalanceType;
+        }
 
         const updatedCustomer = await Customer.findByIdAndUpdate(
             id,
@@ -445,6 +475,21 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         .populate('trip', 'tripId date')
         .sort({ createdAt: 1 }); // Sort ascending to maintain chronological order
 
+        // Fetch vouchers where this customer is a party in Payment/Receipt vouchers
+        const Voucher = (await import('../models/Voucher.js')).default;
+        const vouchers = await Voucher.find({
+            voucherType: { $in: ['Payment', 'Receipt'] },
+            parties: {
+                $elemMatch: {
+                    partyId: customerId,
+                    partyType: 'customer'
+                }
+            },
+            isActive: true
+        })
+        .populate('account', 'name')
+        .sort({ date: 1, createdAt: 1 }); // Sort ascending to maintain chronological order
+
         // Transform sales into ledger entries
         const ledgerEntries = [];
         
@@ -634,6 +679,42 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             });
         });
 
+        // Add voucher entries to ledger
+        vouchers.forEach(voucher => {
+            // Find the party entry for this customer
+            const partyEntry = voucher.parties.find(p => 
+                p.partyId && p.partyId.toString() === customerId.toString() && p.partyType === 'customer'
+            );
+            
+            if (partyEntry) {
+                // Map voucher type to particulars:
+                // Payment voucher: "RECEIPT" in admin, "PAYMENT" in customer portal
+                // Receipt voucher: "PAYMENT" in admin, "RECEIPT" in customer portal
+                // Store voucher type so frontend can map correctly
+                const particulars = voucher.voucherType === 'Payment' ? 'RECEIPT' : 'PAYMENT';
+                
+                ledgerEntries.push({
+                    _id: `voucher_${voucher._id}_${partyEntry.partyId}`,
+                    date: voucher.date,
+                    vehiclesNo: '',
+                    driverName: '',
+                    supervisor: '',
+                    product: '',
+                    particulars: particulars,
+                    voucherType: voucher.voucherType, // Store original voucher type for frontend mapping
+                    invoiceNo: `VCH-${voucher.voucherNumber}`,
+                    birds: 0,
+                    weight: 0,
+                    avgWeight: 0,
+                    rate: 0,
+                    amount: partyEntry.amount || 0,
+                    outstandingBalance: 0, // Will be calculated below
+                    trip: null,
+                    isVoucher: true // Flag to identify voucher entries
+                });
+            }
+        });
+
         // Add OP BAL entry at the beginning (always first entry)
         ledgerEntries.unshift({
             _id: 'opening_balance',
@@ -669,13 +750,14 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             }
             
             // If dates are equal, sort by particulars order to maintain consistent sequence:
-            // SALES -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> RECEIPT -> other
+            // SALES -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> RECEIPT -> PAYMENT -> other
             const order = {
                 'SALES': 1,
                 'BY CASH RECEIPT': 2,
                 'BY BANK RECEIPT': 3,
                 'DISCOUNT': 4,
                 'RECEIPT': 5,
+                'PAYMENT': 5,
                 'OP BAL': 0
             };
             const orderA = order[a.particulars] || 99;
@@ -715,8 +797,19 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 // Subtract discount
                 runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
                 entry.outstandingBalance = runningBalance;
-            } else if (entry.particulars === 'RECEIPT') {
+            } else if (entry.particulars === 'RECEIPT' || entry.particulars === 'PAYMENT') {
+                // Handle voucher entries based on voucher type
+                if (entry.isVoucher) {
+                    if (entry.voucherType === 'Payment') {
+                        // Payment voucher: customer balance increases (we pay them, so we owe them more)
+                        runningBalance = runningBalance + (entry.amount || 0);
+                    } else if (entry.voucherType === 'Receipt') {
+                        // Receipt voucher: customer balance decreases (they pay us, so they owe us less)
+                        runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                    }
+                } else {
                 // Receipt entries (from sales) don't change balance (amount is 0)
+                }
                 entry.outstandingBalance = runningBalance;
             } else if (entry.particulars === 'OP BAL') {
                 // OP BAL is already set, but maintain running balance
@@ -733,7 +826,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         const paginatedEntries = ledgerEntries.slice(startIndex, endIndex);
 
         // Calculate totals
-        const receiptParticulars = ['RECEIPT', 'BY CASH RECEIPT', 'BY BANK RECEIPT'];
+        const receiptParticulars = ['RECEIPT', 'PAYMENT', 'BY CASH RECEIPT', 'BY BANK RECEIPT'];
         const totals = {
             totalBirds: ledgerEntries.reduce((sum, entry) => sum + entry.birds, 0),
             totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
@@ -864,7 +957,7 @@ export const getCustomerOutstandingBalance = async (req, res, next) => {
 export const updateCustomerOutstandingBalance = async (req, res, next) => {
     try {
         const { customerId } = req.params;
-        const { newOutstandingBalance } = req.body;
+        const { newOutstandingBalance, newOutstandingBalanceType } = req.body;
 
         if (typeof newOutstandingBalance !== 'number') {
             throw new AppError('New outstanding balance must be a number', 400);
@@ -876,21 +969,27 @@ export const updateCustomerOutstandingBalance = async (req, res, next) => {
         }
 
         const oldBalance = customer.outstandingBalance || 0;
-        const newBalance = Math.max(0, newOutstandingBalance); // Ensure balance doesn't go negative
+        const oldBalanceType = customer.outstandingBalanceType || 'debit';
+        const newBalance = Math.abs(newOutstandingBalance);
+        const newBalanceType = newOutstandingBalanceType || 'debit';
         
         // Use findByIdAndUpdate to avoid triggering full document validation
         const updatedCustomer = await Customer.findByIdAndUpdate(
             customerId,
-            { outstandingBalance: newBalance },
+            { 
+                outstandingBalance: newBalance,
+                outstandingBalanceType: newBalanceType
+            },
             { new: true, runValidators: false } // Skip validators to avoid gstOrPanNumber validation
         );
 
-        console.log(`Updated customer ${updatedCustomer.shopName} outstanding balance from ${oldBalance} to ${newBalance}`);
+        console.log(`Updated customer ${updatedCustomer.shopName} outstanding balance from ${oldBalance} ${oldBalanceType} to ${newBalance} ${newBalanceType}`);
 
         successResponse(res, "Customer outstanding balance updated successfully", 200, {
             customerId: updatedCustomer._id,
             shopName: updatedCustomer.shopName,
             oldBalance,
+            oldBalanceType,
             newBalance: newBalance
         });
     } catch (error) {

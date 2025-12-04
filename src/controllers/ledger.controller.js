@@ -4,10 +4,11 @@ import Vendor from "../models/Vendor.js";
 import Customer from "../models/Customer.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
+import { syncOutstandingBalance } from "../utils/balanceUtils.js";
 
 export const addLedger = async (req, res, next) => {
     try {
-        const { name, group, openingBalance, outstandingBalance } = req.body;
+        const { name, group, openingBalance, openingBalanceType, outstandingBalance, outstandingBalanceType } = req.body;
 
         // Validate required fields
         if (!name) {
@@ -21,11 +22,19 @@ export const addLedger = async (req, res, next) => {
         }
 
         const openingValue = openingBalance || 0;
+        const openingType = openingBalanceType || 'debit';
+        
+        // If outstanding balance is provided, use it; otherwise default to opening balance
+        const outstandingValue = outstandingBalance !== undefined ? outstandingBalance : openingValue;
+        const outstandingType = outstandingBalanceType !== undefined ? outstandingBalanceType : openingType;
+
         const ledgerData = {
             name,
             group,
             openingBalance: openingValue,
-            outstandingBalance: outstandingBalance !== undefined ? outstandingBalance : openingValue,
+            openingBalanceType: openingType,
+            outstandingBalance: outstandingValue,
+            outstandingBalanceType: outstandingType,
             createdBy: req.user._id,
             updatedBy: req.user._id
         };
@@ -118,7 +127,7 @@ export const getLedgersByGroup = async (req, res, next) => {
 export const updateLedger = async (req, res, next) => {
     const { id } = req.params;
     try {
-        const { name, group, openingBalance, outstandingBalance } = req.body;
+        const { name, group, openingBalance, openingBalanceType, outstandingBalance, outstandingBalanceType } = req.body;
 
         const ledger = await Ledger.findById(id);
         if (!ledger || !ledger.isActive) {
@@ -138,11 +147,37 @@ export const updateLedger = async (req, res, next) => {
             }
         }
 
+        // Check if opening balance is being changed
+        const isOpeningBalanceChanged = openingBalance !== undefined || openingBalanceType !== undefined;
+        
+        let newOutstandingBalance = outstandingBalance !== undefined ? outstandingBalance : ledger.outstandingBalance;
+        let newOutstandingBalanceType = outstandingBalanceType !== undefined ? outstandingBalanceType : ledger.outstandingBalanceType;
+
+        // If opening balance changed, sync outstanding balance
+        if (isOpeningBalanceChanged) {
+            const newOpeningAmount = openingBalance !== undefined ? openingBalance : ledger.openingBalance;
+            const newOpeningType = openingBalanceType !== undefined ? openingBalanceType : ledger.openingBalanceType;
+            
+            const syncedBalance = syncOutstandingBalance(
+                ledger.openingBalance,
+                ledger.openingBalanceType,
+                newOpeningAmount,
+                newOpeningType,
+                ledger.outstandingBalance,
+                ledger.outstandingBalanceType
+            );
+            
+            newOutstandingBalance = syncedBalance.amount;
+            newOutstandingBalanceType = syncedBalance.type;
+        }
+
         const updateData = {
             name,
             group: group || ledger.group,
             openingBalance: openingBalance !== undefined ? openingBalance : ledger.openingBalance,
-            outstandingBalance: outstandingBalance !== undefined ? outstandingBalance : ledger.outstandingBalance,
+            openingBalanceType: openingBalanceType !== undefined ? openingBalanceType : ledger.openingBalanceType,
+            outstandingBalance: newOutstandingBalance,
+            outstandingBalanceType: newOutstandingBalanceType,
             updatedBy: req.user._id
         };
 

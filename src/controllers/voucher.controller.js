@@ -1,33 +1,63 @@
 import Voucher from "../models/Voucher.js";
 import Customer from "../models/Customer.js";
 import Vendor from "../models/Vendor.js";
+import Ledger from "../models/Ledger.js";
 import Sequence from "../models/Sequence.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import mongoose from "mongoose";
+import { addToBalance } from "../utils/balanceUtils.js";
 
 export const createVoucher = async (req, res, next) => {
     try {
-        const { voucherType, date, party, partyName, entries, narration } = req.body;
+        const { voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
 
-        // Validate required fields
-        if (!voucherType || !entries || entries.length === 0) {
-            throw new AppError('Voucher type and entries are required', 400);
+        const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt';
+
+        // Validate required fields based on voucher type
+        if (isPaymentOrReceipt) {
+            if (!parties || parties.length === 0) {
+                throw new AppError('At least one party is required for Payment/Receipt vouchers', 400);
+            }
+            if (!account) {
+                throw new AppError('Account (Cash or Bank) is required for Payment/Receipt vouchers', 400);
+            }
+            
+            // Validate parties
+            for (let partyItem of parties) {
+                if (!partyItem.partyId) {
+                    throw new AppError('All parties must have a valid customer ID', 400);
+                }
+                if (!partyItem.amount || partyItem.amount <= 0) {
+                    throw new AppError('All parties must have an amount greater than 0', 400);
+                }
+            }
+            
+            // Validate account ledger exists
+            const accountLedger = await Ledger.findById(account);
+            if (!accountLedger) {
+                throw new AppError('Account ledger not found', 404);
+            }
+        } else {
+            // For other voucher types, validate entries
+            if (!entries || entries.length === 0) {
+                throw new AppError('Voucher entries are required', 400);
+            }
+            
+            // Validate entries structure
+            for (let entry of entries) {
+                if (!entry.account) {
+                    throw new AppError('Account name is required for each entry', 400);
+                }
+                if (entry.debitAmount < 0 || entry.creditAmount < 0) {
+                    throw new AppError('Debit and credit amounts cannot be negative', 400);
+                }
+            }
         }
 
-        // Validate entries structure
-        for (let entry of entries) {
-            if (!entry.account) {
-                throw new AppError('Account name is required for each entry', 400);
-            }
-            if (entry.debitAmount < 0 || entry.creditAmount < 0) {
-                throw new AppError('Debit and credit amounts cannot be negative', 400);
-            }
-        }
-
-        // If party is provided, validate it exists
+        // If party is provided (for non-Payment/Receipt vouchers), validate it exists
         let partyData = null;
-        if (party) {
+        if (party && !isPaymentOrReceipt) {
             partyData = await Customer.findById(party) || await Vendor.findById(party);
             if (!partyData) {
                 throw new AppError('Party not found', 404);
@@ -36,13 +66,44 @@ export const createVoucher = async (req, res, next) => {
 
         const nextVoucherNumber = await Sequence.getNextValue('voucherNumber');
 
+        // Generate partyName for Payment/Receipt vouchers from parties array
+        let generatedPartyName = null;
+        if (isPaymentOrReceipt && parties && parties.length > 0) {
+            const partyNames = [];
+            for (let partyItem of parties) {
+                try {
+                    if (partyItem.partyType === 'customer') {
+                        const customer = await Customer.findById(partyItem.partyId);
+                        if (customer) {
+                            partyNames.push(customer.shopName || customer.ownerName || 'Customer');
+                        }
+                    } else if (partyItem.partyType === 'ledger') {
+                        const ledger = await Ledger.findById(partyItem.partyId);
+                        if (ledger) {
+                            partyNames.push(ledger.name || 'Ledger');
+                        }
+                    } else if (partyItem.partyType === 'vendor') {
+                        const vendor = await Vendor.findById(partyItem.partyId);
+                        if (vendor) {
+                            partyNames.push(vendor.vendorName || 'Vendor');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error fetching party name:', error);
+                }
+            }
+            generatedPartyName = partyNames.length > 0 ? partyNames.join(', ') : null;
+        }
+
         const voucherData = {
             voucherNumber: nextVoucherNumber,
             voucherType,
             date: date || new Date(),
             party: party || null,
-            partyName: partyName || (partyData ? partyData.shopName || partyData.vendorName : null),
-            entries,
+            partyName: partyName || generatedPartyName || (partyData ? partyData.shopName || partyData.vendorName : null),
+            parties: isPaymentOrReceipt ? parties : undefined,
+            account: isPaymentOrReceipt ? account : undefined,
+            entries: entries || [],
             narration,
             createdBy: req.user._id,
             updatedBy: req.user._id
@@ -51,9 +112,106 @@ export const createVoucher = async (req, res, next) => {
         const voucher = new Voucher(voucherData);
         const savedVoucher = await voucher.save();
 
+        // Update balances for Payment/Receipt vouchers (always update for these voucher types)
+        if (isPaymentOrReceipt) {
+            // Update party outstanding balances (customers, ledgers, or vendors)
+            for (let partyItem of parties) {
+                try {
+                    const partyType = partyItem.partyType || 'customer'; // Default to customer for backward compatibility
+                    
+                    if (partyType === 'customer') {
+                        const customer = await Customer.findById(partyItem.partyId);
+                        if (customer) {
+                            // Payment: customer balance increases (debit to customer - we owe them)
+                            // Receipt: customer balance decreases (credit to customer - they pay us)
+                            const transactionType = voucherType === 'Payment' ? 'debit' : 'credit';
+                            const newBalance = addToBalance(
+                                customer.outstandingBalance || 0,
+                                customer.outstandingBalanceType || 'debit',
+                                partyItem.amount,
+                                transactionType
+                            );
+                            
+                            customer.outstandingBalance = newBalance.amount;
+                            customer.outstandingBalanceType = newBalance.type;
+                            customer.updatedBy = req.user._id;
+                            await customer.save();
+                        }
+                    } else if (partyType === 'ledger') {
+                        const ledger = await Ledger.findById(partyItem.partyId);
+                        if (ledger) {
+                            // Payment: ledger balance decreases (credit to ledger)
+                            // Receipt: ledger balance increases (debit to ledger)
+                            const transactionType = voucherType === 'Payment' ? 'credit' : 'debit';
+                            const newBalance = addToBalance(
+                                ledger.outstandingBalance || 0,
+                                ledger.outstandingBalanceType || 'debit',
+                                partyItem.amount,
+                                transactionType
+                            );
+                            
+                            ledger.outstandingBalance = newBalance.amount;
+                            ledger.outstandingBalanceType = newBalance.type;
+                            ledger.updatedBy = req.user._id;
+                            await ledger.save();
+                        }
+                    } else if (partyType === 'vendor') {
+                        // Vendors might have ledgers, check if vendor has a ledger
+                        const vendorLedger = await Ledger.findOne({ vendor: partyItem.partyId });
+                        if (vendorLedger) {
+                            // Payment: vendor ledger balance decreases (credit to ledger)
+                            // Receipt: vendor ledger balance increases (debit to ledger)
+                            const transactionType = voucherType === 'Payment' ? 'credit' : 'debit';
+                            const newBalance = addToBalance(
+                                vendorLedger.outstandingBalance || 0,
+                                vendorLedger.outstandingBalanceType || 'debit',
+                                partyItem.amount,
+                                transactionType
+                            );
+                            
+                            vendorLedger.outstandingBalance = newBalance.amount;
+                            vendorLedger.outstandingBalanceType = newBalance.type;
+                            vendorLedger.updatedBy = req.user._id;
+                            await vendorLedger.save();
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Error updating ${partyItem.partyType || 'party'} balance for party ${partyItem.partyId}:`, error);
+                    // Continue with other parties even if one fails
+                }
+            }
+            
+            // Update account ledger balance
+            try {
+                const accountLedger = await Ledger.findById(account);
+                if (accountLedger) {
+                    // Payment: account balance decreases (credit to account)
+                    // Receipt: account balance increases (debit to account)
+                    const totalAmount = parties.reduce((sum, p) => sum + p.amount, 0);
+                    const transactionType = voucherType === 'Payment' ? 'credit' : 'debit';
+                    const newBalance = addToBalance(
+                        accountLedger.outstandingBalance || 0,
+                        accountLedger.outstandingBalanceType || 'debit',
+                        totalAmount,
+                        transactionType
+                    );
+                    
+                    accountLedger.outstandingBalance = newBalance.amount;
+                    accountLedger.outstandingBalanceType = newBalance.type;
+                    accountLedger.updatedBy = req.user._id;
+                    await accountLedger.save();
+                }
+            } catch (error) {
+                console.error('Error updating account ledger balance:', error);
+                // Don't fail the voucher creation if balance update fails
+            }
+        }
+
         // Populate party data for response
         const populatedVoucher = await Voucher.findById(savedVoucher._id)
             .populate('party', 'shopName vendorName')
+            .populate('parties.partyId', 'shopName ownerName')
+            .populate('account', 'name')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
@@ -90,6 +248,8 @@ export const getVouchers = async (req, res, next) => {
 
         const vouchers = await Voucher.find(query)
             .populate('party', 'shopName vendorName')
+            .populate('parties.partyId', 'shopName ownerName vendorName name')
+            .populate('account', 'name')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ date: -1, createdAt: -1 })
@@ -128,6 +288,8 @@ export const getVoucherById = async (req, res, next) => {
 
         const voucher = await Voucher.findOne({ _id: id, isActive: true })
             .populate('party', 'shopName vendorName contact address')
+            .populate('parties.partyId', 'shopName ownerName vendorName name')
+            .populate('account', 'name')
             .populate('createdBy', 'name email')
             .populate('updatedBy', 'name email');
 
@@ -144,12 +306,14 @@ export const getVoucherById = async (req, res, next) => {
 export const updateVoucher = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { voucherType, date, party, partyName, entries, narration, status } = req.body;
+        const { voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
 
         const voucher = await Voucher.findById(id);
         if (!voucher) {
             throw new AppError('Voucher not found', 404);
         }
+
+        const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt';
 
         // Validate entries if provided
         if (entries && entries.length > 0) {
@@ -163,23 +327,53 @@ export const updateVoucher = async (req, res, next) => {
             }
         }
 
-        // If party is provided, validate it exists
+        // If party is provided (for non-Payment/Receipt vouchers), validate it exists
         let partyData = null;
-        if (party) {
+        if (party && !isPaymentOrReceipt) {
             partyData = await Customer.findById(party) || await Vendor.findById(party);
             if (!partyData) {
                 throw new AppError('Party not found', 404);
             }
         }
 
+        // Generate partyName for Payment/Receipt vouchers from parties array
+        let generatedPartyName = null;
+        if (isPaymentOrReceipt && parties && parties.length > 0) {
+            const partyNames = [];
+            for (let partyItem of parties) {
+                try {
+                    if (partyItem.partyType === 'customer') {
+                        const customer = await Customer.findById(partyItem.partyId);
+                        if (customer) {
+                            partyNames.push(customer.shopName || customer.ownerName || 'Customer');
+                        }
+                    } else if (partyItem.partyType === 'ledger') {
+                        const ledger = await Ledger.findById(partyItem.partyId);
+                        if (ledger) {
+                            partyNames.push(ledger.name || 'Ledger');
+                        }
+                    } else if (partyItem.partyType === 'vendor') {
+                        const vendor = await Vendor.findById(partyItem.partyId);
+                        if (vendor) {
+                            partyNames.push(vendor.vendorName || 'Vendor');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error fetching party name:', error);
+                }
+            }
+            generatedPartyName = partyNames.length > 0 ? partyNames.join(', ') : null;
+        }
+
         const updateData = {
             ...(voucherType && { voucherType }),
             ...(date && { date }),
             ...(party !== undefined && { party: party || null }),
-            ...(partyName && { partyName }),
+            partyName: partyName || generatedPartyName || (partyData ? partyData.shopName || partyData.vendorName : null),
+            ...(isPaymentOrReceipt && parties && { parties }),
+            ...(isPaymentOrReceipt && account && { account }),
             ...(entries && { entries }),
             ...(narration !== undefined && { narration }),
-            ...(status && { status }),
             updatedBy: req.user._id
         };
 
@@ -302,7 +496,6 @@ export const exportVouchers = async (req, res, next) => {
                 'Total Debit': voucher.totalDebit,
                 'Total Credit': voucher.totalCredit,
                 'Narration': voucher.narration || '',
-                'Status': voucher.status,
                 'Created By': voucher.createdBy?.name || '',
                 'Created At': voucher.createdAt.toLocaleDateString()
             }));

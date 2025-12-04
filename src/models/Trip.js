@@ -4,7 +4,7 @@ import Sequence from "./Sequence.js";
 const tripSchema = new mongoose.Schema({
     tripId: { 
         type: String, 
-        required: true, 
+        required: false, 
         unique: true
     },
     // sequence: { 
@@ -96,8 +96,12 @@ const tripSchema = new mongoose.Schema({
         discount: { type: Number, default: 0 },
         cashPaid: { type: Number, default: 0 },
         onlinePaid: { type: Number, default: 0 },
+        cashLedger: { type: mongoose.Schema.Types.ObjectId, ref: 'Ledger' }, // Cash-in-Hand ledger for cash payments
+        onlineLedger: { type: mongoose.Schema.Types.ObjectId, ref: 'Ledger' }, // Bank Account ledger for online payments
         balance: { type: Number, default: 0 }, // Calculated balance after this sale
         outstandingBalance: { type: Number, default: 0 }, // Customer's balance AFTER this transaction
+        saleOutBalance: { type: Number, default: 0 }, // Customer's outstanding balance at the time of sale creation (signed value)
+        saleOutBalanceType: { type: String, enum: ['debit', 'credit'], default: 'debit' }, // Type of saleOutBalance
         // Balance for each particular (for accurate customer purchase ledger)
         balanceForSale: { type: Number, default: 0 }, // Balance after adding sale amount
         balanceForCashPaid: { type: Number, default: 0 }, // Balance after subtracting cashPaid
@@ -161,7 +165,7 @@ const tripSchema = new mongoose.Schema({
         avgPurchaseRate: { type: Number, default: 0 }, // Average purchase rate for calculations
         birdsProfit: { type: Number, default: 0 }, // Birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
         grossRent: { type: Number, default: 0 }, // Gross rent: rentPerKm * totalDistance
-        tripProfit: { type: Number, default: 0 } // Trip profit: netProfit + birdsProfit
+        tripProfit: { type: Number, default: 0 } // Trip profit: netRent + birdsProfit
     },
 
     status: { 
@@ -236,7 +240,7 @@ const tripSchema = new mongoose.Schema({
 
 // Pre-save middleware to generate tripId if not provided
 tripSchema.pre('save', async function(next) {
-    // Generate tripId if not provided
+    // Generate tripId if not provided (always generate for new trips)
     if (this.isNew && !this.tripId) {
         try {
             const sequenceValue = await Sequence.getNextValue('tripId');
@@ -246,6 +250,12 @@ tripSchema.pre('save', async function(next) {
         } catch (error) {
             return next(error);
         }
+    }
+    
+    // Ensure tripId is set (fallback if sequence fails)
+    if (!this.tripId) {
+        const fallbackNumber = String(Date.now()).slice(-6);
+        this.tripId = `TRP-${fallbackNumber}`;
     }
 
     // Calculate average weights
@@ -531,8 +541,11 @@ tripSchema.pre('save', async function(next) {
     const totalLosses = this.summary.totalLosses || 0;
     this.summary.netProfit = salesProfit - totalExpenses - totalLosses;
 
-    // Calculate trip profit: netProfit + birdsProfit
-    this.summary.tripProfit = Number(((this.summary.netProfit || 0) + (this.summary.birdsProfit || 0)).toFixed(2));
+    // Calculate net rent: grossRent - dieselCost
+    const netRent = (this.summary.grossRent || 0) - (this.summary.totalDieselAmount || 0);
+
+    // Calculate trip profit: netRent + birdsProfit
+    this.summary.tripProfit = Number(((netRent || 0) + (this.summary.birdsProfit || 0)).toFixed(2));
 
     // Validate vehicle readings if closing reading is provided
     if (this.vehicleReadings.opening && this.vehicleReadings.closing) {

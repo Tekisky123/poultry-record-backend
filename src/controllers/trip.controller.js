@@ -5,6 +5,7 @@ import Customer from "../models/Customer.js";
 import Ledger from "../models/Ledger.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
+import { addToBalance, subtractFromBalance, toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
 
 const buildTransferPopulate = (depth = 3) => {
     if (depth <= 0) return null;
@@ -169,8 +170,21 @@ export const getTripById = async (req, res, next) => {
             .populate('vehicle', 'vehicleNumber type capacity')
             .populate('supervisor', 'name mobileNumber')
             .populate('purchases.supplier', 'vendorName contactNumber')
-            .populate('sales.client', 'shopName ownerName contact')
+            // .populate('sales.client', 'user shopName ownerName contact place')
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
+            .populate({
+                path: 'sales.client',
+                select:"user shopName ownerName contact place",
+                populate: {
+                    path: 'user',
+                    select: '_id',
+                    populate:{
+                        path: 'customer',
+                        select: '_id'
+                    }
+                }
+            })
+            
             .populate({
                 path: 'transferHistory.transferredTo',
                 populate: {
@@ -326,7 +340,15 @@ export const addSale = async (req, res, next) => {
             try {
                 const customer = await Customer.findById(saleData.client);
                 if (customer) {
-                    const globalOutstandingBalance = customer.outstandingBalance || 0;
+                    // Store the customer's current outstanding balance at the time of sale creation
+                    const customerBalanceSigned = toSignedValue(
+                        customer.outstandingBalance || 0,
+                        customer.outstandingBalanceType || 'debit'
+                    );
+                    saleData.saleOutBalance = customerBalanceSigned; // Store as signed value for calculations
+                    saleData.saleOutBalanceType = customer.outstandingBalanceType || 'debit';
+                    
+                    const globalOutstandingBalance = customerBalanceSigned; // Use signed value for calculations
                     const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
                     const discount = saleData.discount || 0;
                     
@@ -336,8 +358,8 @@ export const addSale = async (req, res, next) => {
                                       (saleData.amount === 0 || !saleData.amount);
                     
                     // Calculate sequential balances for each particular
-                    // Starting balance (before sale/receipt)
-                    const startingBalance = globalOutstandingBalance;
+                    // Starting balance (before sale/receipt) - use absolute value for display
+                    const startingBalance = Math.abs(globalOutstandingBalance);
                     
                     if (isReceipt) {
                         // For receipts: No amount is added, only payments are subtracted
@@ -374,21 +396,46 @@ export const addSale = async (req, res, next) => {
                         saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
                     }
                     
-                    // Calculate the final balance after this sale/receipt (same as balanceForDiscount)
-                    let balance = saleData.balanceForDiscount;
+                    // Calculate the final balance after this sale/receipt
+                    // Work with signed values for accurate calculation
+                    let finalBalanceSigned = globalOutstandingBalance;
                     
-                    // If payment exceeds the sale amount + current outstanding balance, 
-                    // the extra payment reduces the balance to 0 (minimum)
-                    balance = Math.max(0, balance);
+                    if (!isReceipt && saleData.amount > 0) {
+                        finalBalanceSigned = finalBalanceSigned + saleData.amount;
+                    }
                     
-                    // Add balance to sale data
-                    saleData.balance = Number(balance.toFixed(2));
-                    saleData.outstandingBalance = balance; // Store balance AFTER this transaction
+                    if (saleData.cashPaid > 0) {
+                        finalBalanceSigned = finalBalanceSigned - saleData.cashPaid;
+                    }
+                    
+                    if (saleData.onlinePaid > 0) {
+                        finalBalanceSigned = finalBalanceSigned - saleData.onlinePaid;
+                    }
+                    
+                    if (discount > 0) {
+                        finalBalanceSigned = finalBalanceSigned - discount;
+                    }
+                    
+                    // Convert to balance format for storage
+                    const finalBalanceObj = fromSignedValue(finalBalanceSigned);
+                    const finalBalanceDisplay = finalBalanceObj.amount; // For display (always positive)
+                    
+                    // Add balance to sale data (use display value)
+                    saleData.balance = Number(finalBalanceDisplay.toFixed(2));
+                    saleData.outstandingBalance = finalBalanceDisplay; // Store balance AFTER this transaction
+                    
+                    // Update customer's outstanding balance with the final balance
+                    customer.outstandingBalance = finalBalanceObj.amount;
+                    customer.outstandingBalanceType = finalBalanceObj.type;
+                    customer.updatedBy = req.user._id;
+                    await customer.save();
                 }
             } catch (error) {
                 console.error('Error calculating sale balance:', error);
                 saleData.balance = 0;
                 saleData.outstandingBalance = 0;
+                saleData.saleOutBalance = 0;
+                saleData.saleOutBalanceType = 'debit';
                 saleData.balanceForSale = 0;
                 saleData.balanceForCashPaid = 0;
                 saleData.balanceForOnlinePaid = 0;
@@ -397,6 +444,8 @@ export const addSale = async (req, res, next) => {
         } else {
             saleData.balance = 0;
             saleData.outstandingBalance = 0;
+            saleData.saleOutBalance = 0;
+            saleData.saleOutBalanceType = 'debit';
             saleData.balanceForSale = 0;
             saleData.balanceForCashPaid = 0;
             saleData.balanceForOnlinePaid = 0;
@@ -411,13 +460,37 @@ export const addSale = async (req, res, next) => {
         await trip.save();
 
         // Update ledger outstanding balances if payment amounts are provided
-        if (saleData.cashLedger && saleData.cashPaid && saleData.cashPaid > 0) {
+        // Payments received are debits to the ledger (money coming in - increases balance)
+        const cashPaidAmount = Number(saleData.cashPaid) || 0;
+        const cashLedgerId = saleData.cashLedger;
+        
+        console.log('Sale data for ledger update:', {
+            cashLedgerId,
+            cashPaidAmount,
+            onlineLedgerId: saleData.onlineLedger,
+            onlinePaidAmount: Number(saleData.onlinePaid) || 0
+        });
+        
+        if (cashLedgerId && cashPaidAmount > 0) {
             try {
-                const cashLedger = await Ledger.findById(saleData.cashLedger);
+                const cashLedger = await Ledger.findById(cashLedgerId);
                 if (cashLedger) {
-                    cashLedger.outstandingBalance = (cashLedger.outstandingBalance || 0) + Number(saleData.cashPaid);
+                    const currentBalance = Number(cashLedger.outstandingBalance) || 0;
+                    const currentType = cashLedger.outstandingBalanceType || 'debit';
+                    
+                    const newBalance = addToBalance(
+                        currentBalance,
+                        currentType,
+                        cashPaidAmount,
+                        'debit' // Payment received is a debit to the ledger (money coming in)
+                    );
+                    
+                    cashLedger.outstandingBalance = newBalance.amount;
+                    cashLedger.outstandingBalanceType = newBalance.type;
                     cashLedger.updatedBy = req.user._id;
                     await cashLedger.save();
+                } else {
+                    console.error('Cash ledger not found with ID:', cashLedgerId);
                 }
             } catch (error) {
                 console.error('Error updating cash ledger:', error);
@@ -425,13 +498,29 @@ export const addSale = async (req, res, next) => {
             }
         }
 
-        if (saleData.onlineLedger && saleData.onlinePaid && saleData.onlinePaid > 0) {
+        const onlinePaidAmount = Number(saleData.onlinePaid) || 0;
+        const onlineLedgerId = saleData.onlineLedger;
+        
+        if (onlineLedgerId && onlinePaidAmount > 0) {
             try {
-                const onlineLedger = await Ledger.findById(saleData.onlineLedger);
+                const onlineLedger = await Ledger.findById(onlineLedgerId);
                 if (onlineLedger) {
-                    onlineLedger.outstandingBalance = (onlineLedger.outstandingBalance || 0) + Number(saleData.onlinePaid);
+                    const currentBalance = Number(onlineLedger.outstandingBalance) || 0;
+                    const currentType = onlineLedger.outstandingBalanceType || 'debit';
+                    
+                    const newBalance = addToBalance(
+                        currentBalance,
+                        currentType,
+                        onlinePaidAmount,
+                        'debit' // Payment received is a debit to the ledger (money coming in)
+                    );
+                    
+                    onlineLedger.outstandingBalance = newBalance.amount;
+                    onlineLedger.outstandingBalanceType = newBalance.type;
                     onlineLedger.updatedBy = req.user._id;
                     await onlineLedger.save();
+                } else {
+                    console.error('Online ledger not found with ID:', onlineLedgerId);
                 }
             } catch (error) {
                 console.error('Error updating online ledger:', error);
@@ -556,74 +645,150 @@ export const editSale = async (req, res, next) => {
             throw new AppError('Invalid sale index', 400);
         }
 
-        // Calculate balance for the sale if customer is provided
-        if (saleData.client) {
+        // Get old sale data BEFORE updating
+        const oldSale = trip.sales[saleIndex];
+        const oldAmount = Number(oldSale?.amount) || 0;
+        const oldCashPaid = Number(oldSale?.cashPaid) || 0;
+        const oldOnlinePaid = Number(oldSale?.onlinePaid) || 0;
+        const oldDiscount = Number(oldSale?.discount) || 0;
+        const oldCashLedger = oldSale?.cashLedger;
+        const oldOnlineLedger = oldSale?.onlineLedger;
+        const oldClient = oldSale?.client;
+        const oldIsReceipt = (oldSale?.birds === 0 || !oldSale?.birds) && 
+                             (oldSale?.weight === 0 || !oldSale?.weight) && 
+                             (oldSale?.amount === 0 || !oldSale?.amount);
+
+        // Get vendor name from first purchase if purchases exist
+        if (trip.purchases && trip.purchases.length > 0) {
+            await trip.populate('purchases.supplier', 'vendorName name');
+            const firstPurchase = trip.purchases[0];
+            if (firstPurchase.supplier) {
+                saleData.product = firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
+            }
+        }
+
+        // Process customer balance updates if customer is involved
+        let customer = null;
+        if (saleData.client || oldClient) {
             try {
-                const customer = await Customer.findById(saleData.client);
+                const customerId = saleData.client || oldClient;
+                customer = await Customer.findById(customerId);
+                
                 if (customer) {
-                    const globalOutstandingBalance = customer.outstandingBalance || 0;
-                    const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
-                    const discount = saleData.discount || 0;
+                    // Get the original customer balance at the time of sale creation (saleOutBalance)
+                    // If saleOutBalance doesn't exist (old sales), use current balance as fallback
+                    let saleOutBalanceSigned = oldSale?.saleOutBalance;
+                    if (saleOutBalanceSigned === undefined || saleOutBalanceSigned === null) {
+                        // Fallback: use current customer balance (for old sales without saleOutBalance)
+                        saleOutBalanceSigned = toSignedValue(
+                            customer.outstandingBalance || 0,
+                            customer.outstandingBalanceType || 'debit'
+                        );
+                    }
                     
-                    // Check if this is a receipt entry (birds = 0, weight = 0, amount typically 0)
+                    // STEP 1: Reverse old sale's impact from the original saleOutBalance
+                    // Start from the original balance at sale creation time
+                    let currentBalanceSigned = saleOutBalanceSigned;
+                    
+                    // Reverse old sale amount (if it was a sale, not receipt)
+                    // Sale increases debt, so reversing means subtracting the amount
+                    if (!oldIsReceipt && oldAmount > 0) {
+                        currentBalanceSigned = currentBalanceSigned - oldAmount;
+                    }
+                    
+                    // Reverse old payments (add them back - they paid less, so debt was less reduced)
+                    if (oldCashPaid > 0) {
+                        currentBalanceSigned = currentBalanceSigned + oldCashPaid;
+                    }
+                    
+                    if (oldOnlinePaid > 0) {
+                        currentBalanceSigned = currentBalanceSigned + oldOnlinePaid;
+                    }
+                    
+                    // Reverse old discount (add it back - they got less discount, so debt was less reduced)
+                    if (oldDiscount > 0) {
+                        currentBalanceSigned = currentBalanceSigned + oldDiscount;
+                    }
+                    
+                    // STEP 2: Apply new sale's impact on customer balance
+                    const newAmount = Number(saleData.amount) || 0;
+                    const newCashPaid = Number(saleData.cashPaid) || 0;
+                    const newOnlinePaid = Number(saleData.onlinePaid) || 0;
+                    const newDiscount = Number(saleData.discount) || 0;
                     const isReceipt = (saleData.birds === 0 || !saleData.birds) && 
                                       (saleData.weight === 0 || !saleData.weight) && 
-                                      (saleData.amount === 0 || !saleData.amount);
+                                      (newAmount === 0 || !saleData.amount);
                     
-                    // Calculate sequential balances for each particular
-                    // Starting balance (before sale/receipt)
-                    const startingBalance = globalOutstandingBalance;
+                    // Apply new sale amount (if it's a sale, not receipt)
+                    // Sale increases debt, so add the amount
+                    if (!isReceipt && newAmount > 0) {
+                        currentBalanceSigned = currentBalanceSigned + newAmount;
+                    }
+                    
+                    // Apply new payments (subtract them - they paid more, so debt is more reduced)
+                    if (newCashPaid > 0) {
+                        currentBalanceSigned = currentBalanceSigned - newCashPaid;
+                    }
+                    
+                    if (newOnlinePaid > 0) {
+                        currentBalanceSigned = currentBalanceSigned - newOnlinePaid;
+                    }
+                    
+                    // Apply new discount (subtract it - they got more discount, so debt is more reduced)
+                    if (newDiscount > 0) {
+                        currentBalanceSigned = currentBalanceSigned - newDiscount;
+                    }
+                    
+                    // STEP 3: Calculate sequential balances for display in ledger
+                    // Use absolute value of signed balance for display calculations
+                    const startingBalance = Math.abs(currentBalanceSigned);
                     
                     if (isReceipt) {
                         // For receipts: No amount is added, only payments are subtracted
-                        // Step 1: RECEIPT particular balance (starting balance, no change since amount=0)
                         saleData.balanceForSale = Number(startingBalance.toFixed(2));
-                        
-                        // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
-                        const balanceForCashPaid = startingBalance - (saleData.cashPaid || 0);
+                        const balanceForCashPaid = startingBalance - newCashPaid;
                         saleData.balanceForCashPaid = Number(Math.max(0, balanceForCashPaid).toFixed(2));
-                        
-                        // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
-                        const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
+                        const balanceForOnlinePaid = balanceForCashPaid - newOnlinePaid;
                         saleData.balanceForOnlinePaid = Number(Math.max(0, balanceForOnlinePaid).toFixed(2));
-                        
-                        // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
-                        const balanceForDiscount = balanceForOnlinePaid - discount;
+                        const balanceForDiscount = balanceForOnlinePaid - newDiscount;
                         saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
                     } else {
                         // For regular sales: Add sale amount, then subtract payments
-                        // Step 1: Add sale amount → Balance for SALE particular
-                        const balanceForSale = startingBalance + saleData.amount;
+                        const balanceForSale = startingBalance + newAmount;
                         saleData.balanceForSale = Number(balanceForSale.toFixed(2));
-                        
-                        // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
-                        const balanceForCashPaid = balanceForSale - (saleData.cashPaid || 0);
+                        const balanceForCashPaid = balanceForSale - newCashPaid;
                         saleData.balanceForCashPaid = Number(balanceForCashPaid.toFixed(2));
-                        
-                        // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
-                        const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
+                        const balanceForOnlinePaid = balanceForCashPaid - newOnlinePaid;
                         saleData.balanceForOnlinePaid = Number(balanceForOnlinePaid.toFixed(2));
-                        
-                        // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
-                        const balanceForDiscount = balanceForOnlinePaid - discount;
+                        const balanceForDiscount = balanceForOnlinePaid - newDiscount;
                         saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
                     }
                     
-                    // Calculate the final balance after this sale/receipt (same as balanceForDiscount)
-                    let balance = saleData.balanceForDiscount;
+                    // Final balance after this sale/receipt
+                    let finalBalance = saleData.balanceForDiscount;
+                    finalBalance = Math.max(0, finalBalance);
                     
-                    // If payment exceeds the sale amount + current outstanding balance, 
-                    // the extra payment reduces the balance to 0 (minimum)
-                    balance = Math.max(0, balance);
+                    saleData.balance = Number(finalBalance.toFixed(2));
+                    saleData.outstandingBalance = finalBalance;
                     
-                    // Add balance to sale data
-                    saleData.balance = Number(balance.toFixed(2));
-                    saleData.outstandingBalance = balance; // Store balance AFTER this transaction
+                    // Store the original balance at sale creation time for future edits
+                    // Use the original saleOutBalance if it exists, otherwise use the starting balance
+                    saleData.saleOutBalance = saleOutBalanceSigned;
+                    saleData.saleOutBalanceType = oldSale?.saleOutBalanceType || customer.outstandingBalanceType || 'debit';
+                    
+                    // STEP 4: Update customer's actual outstanding balance with the final balance
+                    const finalBalanceObj = fromSignedValue(currentBalanceSigned);
+                    customer.outstandingBalance = finalBalanceObj.amount;
+                    customer.outstandingBalanceType = finalBalanceObj.type;
+                    customer.updatedBy = req.user._id;
+                    await customer.save();
                 }
             } catch (error) {
-                console.error('Error calculating sale balance:', error);
+                console.error('Error updating customer balance:', error);
                 saleData.balance = 0;
                 saleData.outstandingBalance = 0;
+                saleData.saleOutBalance = 0;
+                saleData.saleOutBalanceType = 'debit';
                 saleData.balanceForSale = 0;
                 saleData.balanceForCashPaid = 0;
                 saleData.balanceForOnlinePaid = 0;
@@ -632,75 +797,141 @@ export const editSale = async (req, res, next) => {
         } else {
             saleData.balance = 0;
             saleData.outstandingBalance = 0;
+            saleData.saleOutBalance = 0;
+            saleData.saleOutBalanceType = 'debit';
             saleData.balanceForSale = 0;
             saleData.balanceForCashPaid = 0;
             saleData.balanceForOnlinePaid = 0;
             saleData.balanceForDiscount = 0;
         }
 
-        // Get old sale data for ledger reversal
-        const oldSale = trip.sales[saleIndex];
-        const oldCashPaid = oldSale?.cashPaid || 0;
-        const oldOnlinePaid = oldSale?.onlinePaid || 0;
-        const oldCashLedger = oldSale?.cashLedger;
-        const oldOnlineLedger = oldSale?.onlineLedger;
-
-        // Update sale
+        // STEP 5: Update sale in trip
         trip.sales[saleIndex] = { ...trip.sales[saleIndex], ...saleData };
 
         // Summary will be recalculated by pre-save middleware including stock and transfers
         trip.updatedBy = req.user._id;
         await trip.save();
 
-        // Update ledger outstanding balances
-        // First, reverse old ledger amounts if they exist
-        if (oldCashLedger && oldCashPaid > 0) {
+        // STEP 6: Update Cash Account Ledger
+        // Formula: outstandingBalance = current outstandingBalance + newCashPaid - oldCashPaid
+        const newCashPaid = Number(saleData.cashPaid) || 0;
+        const newOnlinePaid = Number(saleData.onlinePaid) || 0;
+        
+        // Handle Cash Ledger updates
+        if (saleData.cashLedger || oldCashLedger) {
             try {
-                const cashLedger = await Ledger.findById(oldCashLedger);
-                if (cashLedger) {
-                    cashLedger.outstandingBalance = Math.max(0, (cashLedger.outstandingBalance || 0) - Number(oldCashPaid));
-                    cashLedger.updatedBy = req.user._id;
-                    await cashLedger.save();
-                }
-            } catch (error) {
-                console.error('Error reversing old cash ledger:', error);
-            }
-        }
-
-        if (oldOnlineLedger && oldOnlinePaid > 0) {
-            try {
-                const onlineLedger = await Ledger.findById(oldOnlineLedger);
-                if (onlineLedger) {
-                    onlineLedger.outstandingBalance = Math.max(0, (onlineLedger.outstandingBalance || 0) - Number(oldOnlinePaid));
-                    onlineLedger.updatedBy = req.user._id;
-                    await onlineLedger.save();
-                }
-            } catch (error) {
-                console.error('Error reversing old online ledger:', error);
-            }
-        }
-
-        // Then, add new ledger amounts if they exist
-        if (saleData.cashLedger && saleData.cashPaid && saleData.cashPaid > 0) {
-            try {
-                const cashLedger = await Ledger.findById(saleData.cashLedger);
-                if (cashLedger) {
-                    cashLedger.outstandingBalance = (cashLedger.outstandingBalance || 0) + Number(saleData.cashPaid);
-                    cashLedger.updatedBy = req.user._id;
-                    await cashLedger.save();
+                // If same ledger is used, apply the difference formula
+                if (saleData.cashLedger && oldCashLedger && saleData.cashLedger.toString() === oldCashLedger.toString()) {
+                    const cashLedger = await Ledger.findById(saleData.cashLedger);
+                    if (cashLedger) {
+                        // Formula: outstandingBalance = current + newCashPaid - oldCashPaid
+                        const difference = newCashPaid - oldCashPaid;
+                        if (difference !== 0) {
+                            const currentBalanceSigned = toSignedValue(
+                                cashLedger.outstandingBalance || 0,
+                                cashLedger.outstandingBalanceType || 'debit'
+                            );
+                            const newBalanceSigned = currentBalanceSigned + difference;
+                            const newBalance = fromSignedValue(newBalanceSigned);
+                            cashLedger.outstandingBalance = newBalance.amount;
+                            cashLedger.outstandingBalanceType = newBalance.type;
+                            cashLedger.updatedBy = req.user._id;
+                            await cashLedger.save();
+                        }
+                    }
+                } else {
+                    // Different ledgers: reverse old, apply new
+                    if (oldCashLedger && oldCashPaid > 0) {
+                        const oldCashLedgerDoc = await Ledger.findById(oldCashLedger);
+                        if (oldCashLedgerDoc) {
+                            const currentBalanceSigned = toSignedValue(
+                                oldCashLedgerDoc.outstandingBalance || 0,
+                                oldCashLedgerDoc.outstandingBalanceType || 'debit'
+                            );
+                            const newBalanceSigned = currentBalanceSigned - oldCashPaid;
+                            const newBalance = fromSignedValue(newBalanceSigned);
+                            oldCashLedgerDoc.outstandingBalance = newBalance.amount;
+                            oldCashLedgerDoc.outstandingBalanceType = newBalance.type;
+                            oldCashLedgerDoc.updatedBy = req.user._id;
+                            await oldCashLedgerDoc.save();
+                        }
+                    }
+                    if (saleData.cashLedger && newCashPaid > 0) {
+                        const newCashLedgerDoc = await Ledger.findById(saleData.cashLedger);
+                        if (newCashLedgerDoc) {
+                            const currentBalanceSigned = toSignedValue(
+                                newCashLedgerDoc.outstandingBalance || 0,
+                                newCashLedgerDoc.outstandingBalanceType || 'debit'
+                            );
+                            const newBalanceSigned = currentBalanceSigned + newCashPaid;
+                            const newBalance = fromSignedValue(newBalanceSigned);
+                            newCashLedgerDoc.outstandingBalance = newBalance.amount;
+                            newCashLedgerDoc.outstandingBalanceType = newBalance.type;
+                            newCashLedgerDoc.updatedBy = req.user._id;
+                            await newCashLedgerDoc.save();
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Error updating cash ledger:', error);
             }
         }
 
-        if (saleData.onlineLedger && saleData.onlinePaid && saleData.onlinePaid > 0) {
+        // STEP 7: Update Bank Account Ledger
+        // Formula: outstandingBalance = current outstandingBalance + newOnlinePaid - oldOnlinePaid
+        if (saleData.onlineLedger || oldOnlineLedger) {
             try {
-                const onlineLedger = await Ledger.findById(saleData.onlineLedger);
-                if (onlineLedger) {
-                    onlineLedger.outstandingBalance = (onlineLedger.outstandingBalance || 0) + Number(saleData.onlinePaid);
-                    onlineLedger.updatedBy = req.user._id;
-                    await onlineLedger.save();
+                // If same ledger is used, apply the difference formula
+                if (saleData.onlineLedger && oldOnlineLedger && saleData.onlineLedger.toString() === oldOnlineLedger.toString()) {
+                    const onlineLedger = await Ledger.findById(saleData.onlineLedger);
+                    if (onlineLedger) {
+                        // Formula: outstandingBalance = current + newOnlinePaid - oldOnlinePaid
+                        const difference = newOnlinePaid - oldOnlinePaid;
+                        if (difference !== 0) {
+                            const currentBalanceSigned = toSignedValue(
+                                onlineLedger.outstandingBalance || 0,
+                                onlineLedger.outstandingBalanceType || 'debit'
+                            );
+                            const newBalanceSigned = currentBalanceSigned + difference;
+                            const newBalance = fromSignedValue(newBalanceSigned);
+                            onlineLedger.outstandingBalance = newBalance.amount;
+                            onlineLedger.outstandingBalanceType = newBalance.type;
+                            onlineLedger.updatedBy = req.user._id;
+                            await onlineLedger.save();
+                        }
+                    }
+                } else {
+                    // Different ledgers: reverse old, apply new
+                    if (oldOnlineLedger && oldOnlinePaid > 0) {
+                        const oldOnlineLedgerDoc = await Ledger.findById(oldOnlineLedger);
+                        if (oldOnlineLedgerDoc) {
+                            const currentBalanceSigned = toSignedValue(
+                                oldOnlineLedgerDoc.outstandingBalance || 0,
+                                oldOnlineLedgerDoc.outstandingBalanceType || 'debit'
+                            );
+                            const newBalanceSigned = currentBalanceSigned - oldOnlinePaid;
+                            const newBalance = fromSignedValue(newBalanceSigned);
+                            oldOnlineLedgerDoc.outstandingBalance = newBalance.amount;
+                            oldOnlineLedgerDoc.outstandingBalanceType = newBalance.type;
+                            oldOnlineLedgerDoc.updatedBy = req.user._id;
+                            await oldOnlineLedgerDoc.save();
+                        }
+                    }
+                    if (saleData.onlineLedger && newOnlinePaid > 0) {
+                        const newOnlineLedgerDoc = await Ledger.findById(saleData.onlineLedger);
+                        if (newOnlineLedgerDoc) {
+                            const currentBalanceSigned = toSignedValue(
+                                newOnlineLedgerDoc.outstandingBalance || 0,
+                                newOnlineLedgerDoc.outstandingBalanceType || 'debit'
+                            );
+                            const newBalanceSigned = currentBalanceSigned + newOnlinePaid;
+                            const newBalance = fromSignedValue(newBalanceSigned);
+                            newOnlineLedgerDoc.outstandingBalance = newBalance.amount;
+                            newOnlineLedgerDoc.outstandingBalanceType = newBalance.type;
+                            newOnlineLedgerDoc.updatedBy = req.user._id;
+                            await newOnlineLedgerDoc.save();
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Error updating online ledger:', error);
@@ -1030,8 +1261,11 @@ export const completeTrip = async (req, res, next) => {
             trip.summary.totalDieselAmount -
             trip.summary.totalLosses;
 
-        // Calculate trip profit: netProfit + birdsProfit
-        trip.summary.tripProfit = Number(((trip.summary.netProfit || 0) + (trip.summary.birdsProfit || 0)).toFixed(2));
+        // Calculate net rent: grossRent - dieselCost
+        const netRent = (trip.summary.grossRent || 0) - (trip.summary.totalDieselAmount || 0);
+
+        // Calculate trip profit: netRent + birdsProfit
+        trip.summary.tripProfit = Number(((netRent || 0) + (trip.summary.birdsProfit || 0)).toFixed(2));
 
         if (trip.summary.totalWeightSold > 0) {
             trip.summary.profitPerKg = Number((trip.summary.netProfit / trip.summary.totalWeightSold).toFixed(2));

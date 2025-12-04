@@ -48,13 +48,24 @@ const ledgerSchema = new mongoose.Schema({
     },
     openingBalance: {
         type: Number,
-        default: 0,
-        min: [0, "Opening balance cannot be negative"]
+        default: 0
+    },
+    openingBalanceType: {
+        type: String,
+        enum: ['debit', 'credit'],
+        default: 'debit'
     },
     outstandingBalance: {
         type: Number,
         default: function() {
             return this.openingBalance || 0;
+        }
+    },
+    outstandingBalanceType: {
+        type: String,
+        enum: ['debit', 'credit'],
+        default: function() {
+            return this.openingBalanceType || 'debit';
         }
     }
 }, {

@@ -63,14 +63,24 @@ const customerSchema = new mongoose.Schema({
   // Global Opening Balance for customer (static initial balance - never changes)
   openingBalance: {
     type: Number,
-    default: 0,
-    min: [0, "Opening balance cannot be negative"]
+    default: 0
+  },
+  openingBalanceType: {
+    type: String,
+    enum: ['debit', 'credit'],
+    default: 'debit'
   },
   // Global Outstanding Balance for customer (dynamic balance - changes with transactions)
   outstandingBalance: {
     type: Number,
-    default: 0,
-    min: [0, "Outstanding balance cannot be negative"]
+    default: 0
+  },
+  outstandingBalanceType: {
+    type: String,
+    enum: ['debit', 'credit'],
+    default: function() {
+      return this.openingBalanceType || 'debit';
+    }
   },
   tdsApplicable: {
     type: Boolean,
