@@ -45,7 +45,7 @@ app.use(globalErrorHandler);
 connectDB()
   .then(async () => {
     console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
-    
+
     server.listen(port, () =>
       console.log(
         `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`

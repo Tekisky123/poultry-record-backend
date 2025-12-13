@@ -49,9 +49,9 @@ export const addCustomer = async (req, res, next) => {
         // Automatically find and assign "Sundry Debtors" group for customers
         let groupId = customerData.group;
         if (!groupId) {
-            const sundryDebtorsGroup = await Group.findOne({ 
-                name: 'Sundry Debtors', 
-                isActive: true 
+            const sundryDebtorsGroup = await Group.findOne({
+                name: 'Sundry Debtors',
+                isActive: true
             });
             if (!sundryDebtorsGroup) {
                 throw new AppError('Sundry Debtors group not found. Please contact administrator.', 404);
@@ -84,7 +84,7 @@ export const addCustomer = async (req, res, next) => {
         // Create Customer record with user reference
         const openingBalance = customerData.openingBalance || 0;
         const openingBalanceType = customerData.openingBalanceType || 'debit';
-        
+
         const customer = new Customer({
             ...customerData,
             group: groupId, // Use automatically assigned or provided group
@@ -192,9 +192,9 @@ export const updateCustomer = async (req, res, next) => {
         // Automatically set group to "Sundry Debtors" if not provided
         let groupId = customerData.group;
         if (!groupId) {
-            const sundryDebtorsGroup = await Group.findOne({ 
-                name: 'Sundry Debtors', 
-                isActive: true 
+            const sundryDebtorsGroup = await Group.findOne({
+                name: 'Sundry Debtors',
+                isActive: true
             });
             if (!sundryDebtorsGroup) {
                 throw new AppError('Sundry Debtors group not found. Please contact administrator.', 404);
@@ -217,11 +217,11 @@ export const updateCustomer = async (req, res, next) => {
 
         // Handle opening balance update with sync logic
         const isOpeningBalanceChanged = customerData.openingBalance !== undefined || customerData.openingBalanceType !== undefined;
-        
+
         if (isOpeningBalanceChanged) {
             const newOpeningAmount = customerData.openingBalance !== undefined ? customerData.openingBalance : customer.openingBalance;
             const newOpeningType = customerData.openingBalanceType !== undefined ? customerData.openingBalanceType : customer.openingBalanceType;
-            
+
             const syncedBalance = syncOutstandingBalance(
                 customer.openingBalance,
                 customer.openingBalanceType,
@@ -230,11 +230,11 @@ export const updateCustomer = async (req, res, next) => {
                 customer.outstandingBalance,
                 customer.outstandingBalanceType
             );
-            
+
             updateData.outstandingBalance = syncedBalance.amount;
             updateData.outstandingBalanceType = syncedBalance.type;
         }
-        
+
         // Set opening balance and type if provided
         if (customerData.openingBalance !== undefined) {
             updateData.openingBalance = customerData.openingBalance;
@@ -472,30 +472,42 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             status: 'verified', // Only include verified payments
             isActive: true
         })
-        .populate('trip', 'tripId date')
-        .sort({ createdAt: 1 }); // Sort ascending to maintain chronological order
+            .populate('trip', 'tripId date')
+            .sort({ createdAt: 1 }); // Sort ascending to maintain chronological order
 
         // Fetch vouchers where this customer is a party in Payment/Receipt vouchers
         const Voucher = (await import('../models/Voucher.js')).default;
+        const customerForVoucher = await Customer.findById(customerId);
+        const customerName = customerForVoucher ? customerForVoucher.shopName : null;
+
         const vouchers = await Voucher.find({
-            voucherType: { $in: ['Payment', 'Receipt'] },
-            parties: {
-                $elemMatch: {
-                    partyId: customerId,
-                    partyType: 'customer'
-                }
-            },
-            isActive: true
-        })
-        .populate('account', 'name')
-        .sort({ date: 1, createdAt: 1 }); // Sort ascending to maintain chronological order
+            voucherType: { $in: ['Payment', 'Receipt', 'Journal'] },
+            isActive: true,
+            $or: [
+                // 1. Match via parties array
+                {
+                    parties: {
+                        $elemMatch: {
+                            partyId: customerId,
+                            partyType: 'customer'
+                        }
+                    }
+                },
+
+                // 2. Match via entries.account field (Journal case)
+                customerName ? {
+                    "entries.account": customerName
+                } : {}
+            ]
+        }).populate('account', 'name')
+            .sort({ date: 1, createdAt: 1 });
 
         // Transform sales into ledger entries
         const ledgerEntries = [];
-        
+
         trips.forEach(trip => {
             trip.sales.forEach(sale => {
-                if (sale.client && sale.client._id.toString() == customer._id.toString()) {                    
+                if (sale.client && sale.client._id.toString() == customer._id.toString()) {
                     // Determine particulars based on sale type
                     let particulars = '';
                     if (sale.birds > 0) {
@@ -513,12 +525,12 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     let byCash = '';
                     let byOnline = '';
 
-                    
-                    if(
-                        (particulars == 'SALES' || particulars == 'RECEIPT' || particulars == 'OP BAL') 
-                        && 
+
+                    if (
+                        (particulars == 'SALES' || particulars == 'RECEIPT' || particulars == 'OP BAL')
+                        &&
                         (sale.cashPaid > 0 || sale.onlinePaid > 0)
-                    ){
+                    ) {
                         byCash = sale.cashPaid > 0 ? 'BY CASH RECEIPT' : '';
                         byOnline = sale.onlinePaid > 0 ? 'BY BANK RECEIPT' : '';
                     }
@@ -527,10 +539,10 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     // Create main entry (SALES or RECEIPT)
                     // For RECEIPT entries, use balanceForSale (starting balance) since amount=0
                     // For SALES entries, use balanceForSale (balance after adding sale amount)
-                    const mainEntryBalance = (particulars === 'RECEIPT') 
+                    const mainEntryBalance = (particulars === 'RECEIPT')
                         ? (sale.balanceForSale || sale.outstandingBalance || 0) // Receipt: starting balance
                         : (sale.balanceForSale || sale.outstandingBalance || 0); // Sale: balance after adding amount
-                    
+
                     // Use unique IDs for each entry type to prevent duplicates
                     ledgerEntries.push({
                         _id: `sale_${sale._id}_${particulars}`,
@@ -579,7 +591,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                             date: trip.date
                         }
                     };
-                    const byOnlineEntry ={
+                    const byOnlineEntry = {
                         _id: `sale_${sale._id}_online`,
                         date: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
@@ -603,13 +615,13 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         }
                     }
 
-                    if(byCash != '' && byOnline != ''){ // Both cash and online paid
+                    if (byCash != '' && byOnline != '') { // Both cash and online paid
                         ledgerEntries.push(byCashEntry, byOnlineEntry);
-                    }else if(byCash != '' && byOnline == ''){ // Only cash paid
+                    } else if (byCash != '' && byOnline == '') { // Only cash paid
                         ledgerEntries.push(byCashEntry);
-                    }else if(byCash == '' && byOnline != ''){ // Only online paid
+                    } else if (byCash == '' && byOnline != '') { // Only online paid
                         ledgerEntries.push(byOnlineEntry);
-                    }else{}
+                    } else { }
 
 
                     // If sale has discount, create separate DISCOUNT entry
@@ -647,11 +659,11 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             // Determine particulars based on payment method
             // If paymentMethod is 'cash', it's "BY CASH RECEIPT", otherwise "BY BANK RECEIPT"
             const particulars = payment.paymentMethod === 'cash' ? 'BY CASH RECEIPT' : 'BY BANK RECEIPT';
-            
+
             // Use referenceNumber, transactionId, or payment ID as invoice number
-            const invoiceNo = payment.verificationDetails?.referenceNumber || 
-                            payment.verificationDetails?.transactionId || 
-                            `PAY-${payment._id.toString().slice(-6)}`;
+            const invoiceNo = payment.verificationDetails?.referenceNumber ||
+                payment.verificationDetails?.transactionId ||
+                `PAY-${payment._id.toString().slice(-6)}`;
 
             ledgerEntries.push({
                 _id: `payment_${payment._id}`,
@@ -681,38 +693,43 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Add voucher entries to ledger
         vouchers.forEach(voucher => {
-            // Find the party entry for this customer
-            const partyEntry = voucher.parties.find(p => 
-                p.partyId && p.partyId.toString() === customerId.toString() && p.partyType === 'customer'
-            );
-            
-            if (partyEntry) {
-                // Map voucher type to particulars:
-                // Payment voucher: "RECEIPT" in admin, "PAYMENT" in customer portal
-                // Receipt voucher: "PAYMENT" in admin, "RECEIPT" in customer portal
-                // Store voucher type so frontend can map correctly
-                const particulars = voucher.voucherType === 'Payment' ? 'RECEIPT' : 'PAYMENT';
-                
-                ledgerEntries.push({
-                    _id: `voucher_${voucher._id}_${partyEntry.partyId}`,
-                    date: voucher.date,
-                    vehiclesNo: '',
-                    driverName: '',
-                    supervisor: '',
-                    product: '',
-                    particulars: particulars,
-                    voucherType: voucher.voucherType, // Store original voucher type for frontend mapping
-                    invoiceNo: `VCH-${voucher.voucherNumber}`,
-                    birds: 0,
-                    weight: 0,
-                    avgWeight: 0,
-                    rate: 0,
-                    amount: partyEntry.amount || 0,
-                    outstandingBalance: 0, // Will be calculated below
-                    trip: null,
-                    isVoucher: true // Flag to identify voucher entries
-                });
-            }
+            // Map voucher type to particulars:
+            // Payment voucher: "RECEIPT" in admin, "PAYMENT" in customer portal
+            // Receipt voucher: "PAYMENT" in admin, "RECEIPT" in customer portal
+            // Store voucher type so frontend can map correctly
+            const particulars = voucher.voucherType === 'Payment' ? 'RECEIPT' : voucher.voucherType === 'Receipt' ? 'PAYMENT' : 'JOURNAL';
+
+            // For Journal Voucher entry: Find matching entry for the logged-in customer
+            const entryJrVchr = voucher.entries.find(e => e.account === customerName);
+            // For Journal Voucher entry: Extract non-zero amount
+            const amountJrVchr = entryJrVchr
+                ? (entryJrVchr.debitAmount !== 0 ? entryJrVchr.debitAmount : entryJrVchr.creditAmount)
+                : 0;
+
+            const amountTypeJrVchr = entryJrVchr
+                ? (entryJrVchr.debitAmount !== 0 ? 'debit' : 'credit')
+                : '';
+
+            ledgerEntries.push({
+                _id: `voucher_${voucher._id}_${voucher.voucherType === 'Journal' ? customerForVoucher._id : voucher.partyId}`,
+                date: voucher.date,
+                vehiclesNo: '',
+                driverName: '',
+                supervisor: '',
+                product: '',
+                particulars: particulars,
+                voucherType: voucher.voucherType, // Store original voucher type for frontend mapping
+                invoiceNo: `VCH-${voucher.voucherNumber}`,
+                birds: 0,
+                weight: 0,
+                avgWeight: 0,
+                rate: 0,
+                amount: voucher.voucherType === 'Journal' ? amountJrVchr : voucher.amount || 0,
+                outstandingBalance: 0, // Will be calculated below
+                trip: null,
+                isVoucher: true, // Flag to identify voucher entries
+                amountType: amountTypeJrVchr || '',
+            });
         });
 
         // Add OP BAL entry at the beginning (always first entry)
@@ -741,14 +758,14 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             // OP BAL entry always comes first
             if (a._id === 'opening_balance') return -1;
             if (b._id === 'opening_balance') return 1;
-            
+
             // Sort by date first
             const dateA = new Date(a.date).getTime();
             const dateB = new Date(b.date).getTime();
             if (dateA !== dateB) {
                 return dateA - dateB;
             }
-            
+
             // If dates are equal, sort by particulars order to maintain consistent sequence:
             // SALES -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> RECEIPT -> PAYMENT -> other
             const order = {
@@ -765,7 +782,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             if (orderA !== orderB) {
                 return orderA - orderB;
             }
-            
+
             // If still equal, sort by _id to ensure stable sort
             return a._id.localeCompare(b._id);
         });
@@ -783,7 +800,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             // For sales entries, they already have pre-calculated balances from the sale transaction
             // But we need to recalculate to account for payments that may have been made
             // So we'll recalculate all balances sequentially
-            
+
             // Update balance based on entry type and amount
             if (entry.particulars === 'SALES') {
                 // Add sale amount
@@ -797,7 +814,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 // Subtract discount
                 runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
                 entry.outstandingBalance = runningBalance;
-            } else if (entry.particulars === 'RECEIPT' || entry.particulars === 'PAYMENT') {
+            } else if (entry.particulars === 'RECEIPT' || entry.particulars === 'PAYMENT' || entry.particulars === 'JOURNAL') {
                 // Handle voucher entries based on voucher type
                 if (entry.isVoucher) {
                     if (entry.voucherType === 'Payment') {
@@ -806,9 +823,15 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     } else if (entry.voucherType === 'Receipt') {
                         // Receipt voucher: customer balance decreases (they pay us, so they owe us less)
                         runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                    } else if (entry.voucherType === 'Journal') {
+                        if (entry.amountType === 'debit') {
+                            runningBalance = runningBalance + (entry.amount || 0);
+                        } else {
+                            runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                        }
                     }
                 } else {
-                // Receipt entries (from sales) don't change balance (amount is 0)
+                    // Receipt entries (from sales) don't change balance (amount is 0)
                 }
                 entry.outstandingBalance = runningBalance;
             } else if (entry.particulars === 'OP BAL') {
@@ -870,7 +893,7 @@ export const getCustomerPayments = async (req, res, next) => {
 
         // Build query
         const query = { customer: customer._id };
-        
+
         // Get payments with pagination
         const payments = await Payment.find(query)
             .populate('trip', 'tripId date')
@@ -972,11 +995,11 @@ export const updateCustomerOutstandingBalance = async (req, res, next) => {
         const oldBalanceType = customer.outstandingBalanceType || 'debit';
         const newBalance = Math.abs(newOutstandingBalance);
         const newBalanceType = newOutstandingBalanceType || 'debit';
-        
+
         // Use findByIdAndUpdate to avoid triggering full document validation
         const updatedCustomer = await Customer.findByIdAndUpdate(
             customerId,
-            { 
+            {
                 outstandingBalance: newBalance,
                 outstandingBalanceType: newBalanceType
             },

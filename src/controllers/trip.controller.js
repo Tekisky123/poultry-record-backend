@@ -6,6 +6,7 @@ import Ledger from "../models/Ledger.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
 import { addToBalance, subtractFromBalance, toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
+import { addSaleWhatsappMessage } from "../utils/addSaleWhatsappMessage.js";
 
 const buildTransferPopulate = (depth = 3) => {
     if (depth <= 0) return null;
@@ -40,7 +41,7 @@ export const addTrip = async (req, res, next) => {
         console.log('User role:', req.user.role);
         console.log('User ID:', req.user._id);
         console.log('Supervisor from body:', req.body.supervisor);
-        
+
         const tripData = {
             ...req.body,
             supervisor: req.user._id, // Always use the logged-in supervisor's ID
@@ -48,7 +49,7 @@ export const addTrip = async (req, res, next) => {
             updatedBy: req.user._id,
             date: req.body.date || new Date()
         };
-        
+
         console.log('Final trip data:', tripData);
 
         // Validate opening odometer reading
@@ -174,17 +175,17 @@ export const getTripById = async (req, res, next) => {
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
             .populate({
                 path: 'sales.client',
-                select:"user shopName ownerName contact place",
+                select: "user shopName ownerName contact place",
                 populate: {
                     path: 'user',
                     select: '_id',
-                    populate:{
+                    populate: {
                         path: 'customer',
                         select: '_id'
                     }
                 }
             })
-            
+
             .populate({
                 path: 'transferHistory.transferredTo',
                 populate: {
@@ -225,7 +226,7 @@ export const updateTrip = async (req, res, next) => {
             updateData,
             { new: true, runValidators: true }
         ).populate('vehicle', 'vehicleNumber type')
-         .populate('supervisor', 'name mobileNumber');
+            .populate('supervisor', 'name mobileNumber');
 
         if (!trip) throw new AppError('Trip not found', 404);
 
@@ -276,7 +277,7 @@ export const addPurchase = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
-        
+
         // Prevent adding purchases to transferred trips
         if (trip.type === 'transferred') {
             throw new AppError('Cannot add purchases to transferred trips. This trip contains transferred stock.', 403);
@@ -313,8 +314,8 @@ export const addSale = async (req, res, next) => {
 
         saleData = {
             ...saleData,
-            amount:Number(saleData.amount),
-            avgWeight:Number(saleData.avgWeight),
+            amount: Number(saleData.amount),
+            avgWeight: Number(saleData.avgWeight),
         }
 
         let query = { _id: id };
@@ -347,33 +348,33 @@ export const addSale = async (req, res, next) => {
                     );
                     saleData.saleOutBalance = customerBalanceSigned; // Store as signed value for calculations
                     saleData.saleOutBalanceType = customer.outstandingBalanceType || 'debit';
-                    
+
                     const globalOutstandingBalance = customerBalanceSigned; // Use signed value for calculations
                     const totalPaid = (saleData.onlinePaid || 0) + (saleData.cashPaid || 0);
                     const discount = saleData.discount || 0;
-                    
+
                     // Check if this is a receipt entry (birds = 0, weight = 0, amount typically 0)
-                    const isReceipt = (saleData.birds === 0 || !saleData.birds) && 
-                                      (saleData.weight === 0 || !saleData.weight) && 
-                                      (saleData.amount === 0 || !saleData.amount);
-                    
+                    const isReceipt = (saleData.birds === 0 || !saleData.birds) &&
+                        (saleData.weight === 0 || !saleData.weight) &&
+                        (saleData.amount === 0 || !saleData.amount);
+
                     // Calculate sequential balances for each particular
                     // Starting balance (before sale/receipt) - use absolute value for display
                     const startingBalance = Math.abs(globalOutstandingBalance);
-                    
+
                     if (isReceipt) {
                         // For receipts: No amount is added, only payments are subtracted
                         // Step 1: RECEIPT particular balance (starting balance, no change since amount=0)
                         saleData.balanceForSale = Number(startingBalance.toFixed(2));
-                        
+
                         // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
                         const balanceForCashPaid = startingBalance - (saleData.cashPaid || 0);
                         saleData.balanceForCashPaid = Number(Math.max(0, balanceForCashPaid).toFixed(2));
-                        
+
                         // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
                         const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
                         saleData.balanceForOnlinePaid = Number(Math.max(0, balanceForOnlinePaid).toFixed(2));
-                        
+
                         // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
                         const balanceForDiscount = balanceForOnlinePaid - discount;
                         saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
@@ -382,48 +383,48 @@ export const addSale = async (req, res, next) => {
                         // Step 1: Add sale amount → Balance for SALE particular
                         const balanceForSale = startingBalance + saleData.amount;
                         saleData.balanceForSale = Number(balanceForSale.toFixed(2));
-                        
+
                         // Step 2: Subtract cashPaid → Balance for BY CASH RECEIPT particular
                         const balanceForCashPaid = balanceForSale - (saleData.cashPaid || 0);
                         saleData.balanceForCashPaid = Number(balanceForCashPaid.toFixed(2));
-                        
+
                         // Step 3: Subtract onlinePaid → Balance for BY BANK RECEIPT particular
                         const balanceForOnlinePaid = balanceForCashPaid - (saleData.onlinePaid || 0);
                         saleData.balanceForOnlinePaid = Number(balanceForOnlinePaid.toFixed(2));
-                        
+
                         // Step 4: Subtract discount → Balance for DISCOUNT particular (final balance)
                         const balanceForDiscount = balanceForOnlinePaid - discount;
                         saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
                     }
-                    
+
                     // Calculate the final balance after this sale/receipt
                     // Work with signed values for accurate calculation
                     let finalBalanceSigned = globalOutstandingBalance;
-                    
+
                     if (!isReceipt && saleData.amount > 0) {
                         finalBalanceSigned = finalBalanceSigned + saleData.amount;
                     }
-                    
+
                     if (saleData.cashPaid > 0) {
                         finalBalanceSigned = finalBalanceSigned - saleData.cashPaid;
                     }
-                    
+
                     if (saleData.onlinePaid > 0) {
                         finalBalanceSigned = finalBalanceSigned - saleData.onlinePaid;
                     }
-                    
+
                     if (discount > 0) {
                         finalBalanceSigned = finalBalanceSigned - discount;
                     }
-                    
+
                     // Convert to balance format for storage
                     const finalBalanceObj = fromSignedValue(finalBalanceSigned);
                     const finalBalanceDisplay = finalBalanceObj.amount; // For display (always positive)
-                    
+
                     // Add balance to sale data (use display value)
                     saleData.balance = Number(finalBalanceDisplay.toFixed(2));
                     saleData.outstandingBalance = finalBalanceDisplay; // Store balance AFTER this transaction
-                    
+
                     // Update customer's outstanding balance with the final balance
                     customer.outstandingBalance = finalBalanceObj.amount;
                     customer.outstandingBalanceType = finalBalanceObj.type;
@@ -463,28 +464,28 @@ export const addSale = async (req, res, next) => {
         // Payments received are debits to the ledger (money coming in - increases balance)
         const cashPaidAmount = Number(saleData.cashPaid) || 0;
         const cashLedgerId = saleData.cashLedger;
-        
+
         console.log('Sale data for ledger update:', {
             cashLedgerId,
             cashPaidAmount,
             onlineLedgerId: saleData.onlineLedger,
             onlinePaidAmount: Number(saleData.onlinePaid) || 0
         });
-        
+
         if (cashLedgerId && cashPaidAmount > 0) {
             try {
                 const cashLedger = await Ledger.findById(cashLedgerId);
                 if (cashLedger) {
                     const currentBalance = Number(cashLedger.outstandingBalance) || 0;
                     const currentType = cashLedger.outstandingBalanceType || 'debit';
-                    
+
                     const newBalance = addToBalance(
                         currentBalance,
                         currentType,
                         cashPaidAmount,
                         'debit' // Payment received is a debit to the ledger (money coming in)
                     );
-                    
+
                     cashLedger.outstandingBalance = newBalance.amount;
                     cashLedger.outstandingBalanceType = newBalance.type;
                     cashLedger.updatedBy = req.user._id;
@@ -500,21 +501,21 @@ export const addSale = async (req, res, next) => {
 
         const onlinePaidAmount = Number(saleData.onlinePaid) || 0;
         const onlineLedgerId = saleData.onlineLedger;
-        
+
         if (onlineLedgerId && onlinePaidAmount > 0) {
             try {
                 const onlineLedger = await Ledger.findById(onlineLedgerId);
                 if (onlineLedger) {
                     const currentBalance = Number(onlineLedger.outstandingBalance) || 0;
                     const currentType = onlineLedger.outstandingBalanceType || 'debit';
-                    
+
                     const newBalance = addToBalance(
                         currentBalance,
                         currentType,
                         onlinePaidAmount,
                         'debit' // Payment received is a debit to the ledger (money coming in)
                     );
-                    
+
                     onlineLedger.outstandingBalance = newBalance.amount;
                     onlineLedger.outstandingBalanceType = newBalance.type;
                     onlineLedger.updatedBy = req.user._id;
@@ -533,6 +534,8 @@ export const addSale = async (req, res, next) => {
             .populate('supervisor', 'name mobileNumber')
             .populate('purchases.supplier', 'vendorName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
+
+        // await addSaleWhatsappMessage(populatedTrip.sales[0].client.contact);
 
         successResponse(res, "Sale added to trip", 200, populatedTrip);
     } catch (error) {
@@ -553,7 +556,7 @@ export const editPurchase = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
-        
+
         // Prevent editing purchases in transferred trips
         if (trip.type === 'transferred') {
             throw new AppError('Cannot edit purchases in transferred trips. This trip contains transferred stock.', 403);
@@ -574,7 +577,7 @@ export const editPurchase = async (req, res, next) => {
         trip.summary.totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
 
         // Recalculate average purchase rate
-        const avgPurchaseRate = trip.summary.totalWeightPurchased > 0 ? 
+        const avgPurchaseRate = trip.summary.totalWeightPurchased > 0 ?
             trip.summary.totalPurchaseAmount / trip.summary.totalWeightPurchased : 0;
         trip.summary.avgPurchaseRate = Number(avgPurchaseRate.toFixed(2));
 
@@ -654,9 +657,9 @@ export const editSale = async (req, res, next) => {
         const oldCashLedger = oldSale?.cashLedger;
         const oldOnlineLedger = oldSale?.onlineLedger;
         const oldClient = oldSale?.client;
-        const oldIsReceipt = (oldSale?.birds === 0 || !oldSale?.birds) && 
-                             (oldSale?.weight === 0 || !oldSale?.weight) && 
-                             (oldSale?.amount === 0 || !oldSale?.amount);
+        const oldIsReceipt = (oldSale?.birds === 0 || !oldSale?.birds) &&
+            (oldSale?.weight === 0 || !oldSale?.weight) &&
+            (oldSale?.amount === 0 || !oldSale?.amount);
 
         // Get vendor name from first purchase if purchases exist
         if (trip.purchases && trip.purchases.length > 0) {
@@ -673,7 +676,7 @@ export const editSale = async (req, res, next) => {
             try {
                 const customerId = saleData.client || oldClient;
                 customer = await Customer.findById(customerId);
-                
+
                 if (customer) {
                     // Get the original customer balance at the time of sale creation (saleOutBalance)
                     // If saleOutBalance doesn't exist (old sales), use current balance as fallback
@@ -685,64 +688,64 @@ export const editSale = async (req, res, next) => {
                             customer.outstandingBalanceType || 'debit'
                         );
                     }
-                    
+
                     // STEP 1: Reverse old sale's impact from the original saleOutBalance
                     // Start from the original balance at sale creation time
                     let currentBalanceSigned = saleOutBalanceSigned;
-                    
+
                     // Reverse old sale amount (if it was a sale, not receipt)
                     // Sale increases debt, so reversing means subtracting the amount
                     if (!oldIsReceipt && oldAmount > 0) {
                         currentBalanceSigned = currentBalanceSigned - oldAmount;
                     }
-                    
+
                     // Reverse old payments (add them back - they paid less, so debt was less reduced)
                     if (oldCashPaid > 0) {
                         currentBalanceSigned = currentBalanceSigned + oldCashPaid;
                     }
-                    
+
                     if (oldOnlinePaid > 0) {
                         currentBalanceSigned = currentBalanceSigned + oldOnlinePaid;
                     }
-                    
+
                     // Reverse old discount (add it back - they got less discount, so debt was less reduced)
                     if (oldDiscount > 0) {
                         currentBalanceSigned = currentBalanceSigned + oldDiscount;
                     }
-                    
+
                     // STEP 2: Apply new sale's impact on customer balance
                     const newAmount = Number(saleData.amount) || 0;
                     const newCashPaid = Number(saleData.cashPaid) || 0;
                     const newOnlinePaid = Number(saleData.onlinePaid) || 0;
                     const newDiscount = Number(saleData.discount) || 0;
-                    const isReceipt = (saleData.birds === 0 || !saleData.birds) && 
-                                      (saleData.weight === 0 || !saleData.weight) && 
-                                      (newAmount === 0 || !saleData.amount);
-                    
+                    const isReceipt = (saleData.birds === 0 || !saleData.birds) &&
+                        (saleData.weight === 0 || !saleData.weight) &&
+                        (newAmount === 0 || !saleData.amount);
+
                     // Apply new sale amount (if it's a sale, not receipt)
                     // Sale increases debt, so add the amount
                     if (!isReceipt && newAmount > 0) {
                         currentBalanceSigned = currentBalanceSigned + newAmount;
                     }
-                    
+
                     // Apply new payments (subtract them - they paid more, so debt is more reduced)
                     if (newCashPaid > 0) {
                         currentBalanceSigned = currentBalanceSigned - newCashPaid;
                     }
-                    
+
                     if (newOnlinePaid > 0) {
                         currentBalanceSigned = currentBalanceSigned - newOnlinePaid;
                     }
-                    
+
                     // Apply new discount (subtract it - they got more discount, so debt is more reduced)
                     if (newDiscount > 0) {
                         currentBalanceSigned = currentBalanceSigned - newDiscount;
                     }
-                    
+
                     // STEP 3: Calculate sequential balances for display in ledger
                     // Use absolute value of signed balance for display calculations
                     const startingBalance = Math.abs(currentBalanceSigned);
-                    
+
                     if (isReceipt) {
                         // For receipts: No amount is added, only payments are subtracted
                         saleData.balanceForSale = Number(startingBalance.toFixed(2));
@@ -763,19 +766,19 @@ export const editSale = async (req, res, next) => {
                         const balanceForDiscount = balanceForOnlinePaid - newDiscount;
                         saleData.balanceForDiscount = Number(Math.max(0, balanceForDiscount).toFixed(2));
                     }
-                    
+
                     // Final balance after this sale/receipt
                     let finalBalance = saleData.balanceForDiscount;
                     finalBalance = Math.max(0, finalBalance);
-                    
+
                     saleData.balance = Number(finalBalance.toFixed(2));
                     saleData.outstandingBalance = finalBalance;
-                    
+
                     // Store the original balance at sale creation time for future edits
                     // Use the original saleOutBalance if it exists, otherwise use the starting balance
                     saleData.saleOutBalance = saleOutBalanceSigned;
                     saleData.saleOutBalanceType = oldSale?.saleOutBalanceType || customer.outstandingBalanceType || 'debit';
-                    
+
                     // STEP 4: Update customer's actual outstanding balance with the final balance
                     const finalBalanceObj = fromSignedValue(currentBalanceSigned);
                     customer.outstandingBalance = finalBalanceObj.amount;
@@ -816,7 +819,7 @@ export const editSale = async (req, res, next) => {
         // Formula: outstandingBalance = current outstandingBalance + newCashPaid - oldCashPaid
         const newCashPaid = Number(saleData.cashPaid) || 0;
         const newOnlinePaid = Number(saleData.onlinePaid) || 0;
-        
+
         // Handle Cash Ledger updates
         if (saleData.cashLedger || oldCashLedger) {
             try {
@@ -977,9 +980,9 @@ export const addDeathBirds = async (req, res, next) => {
         // Calculate purchase totals to determine avgPurchaseRate
         const totalPurchaseAmount = trip.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
         const totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
-        
+
         // Calculate average purchase rate using formula: total purchase cost / total purchase weight
-        const avgPurchaseRate = totalWeightPurchased > 0 ? 
+        const avgPurchaseRate = totalWeightPurchased > 0 ?
             totalPurchaseAmount / totalWeightPurchased : 0;
 
         if (avgPurchaseRate <= 0) {
@@ -1012,11 +1015,11 @@ export const addDeathBirds = async (req, res, next) => {
         // Calculate bird weight loss: purchased - sold - stock - lost - transferred
         const totalStockWeight = trip.stocks.reduce((sum, stock) => sum + (stock.weight || 0), 0);
         const totalTransferredWeight = trip.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.weight || 0), 0);
-        trip.summary.birdWeightLoss = (trip.summary.totalWeightPurchased || 0) - 
-                                     (trip.summary.totalWeightSold || 0) - 
-                                     totalStockWeight - 
-                                     (trip.summary.totalWeightLost || 0) - 
-                                     totalTransferredWeight;
+        trip.summary.birdWeightLoss = (trip.summary.totalWeightPurchased || 0) -
+            (trip.summary.totalWeightSold || 0) -
+            totalStockWeight -
+            (trip.summary.totalWeightLost || 0) -
+            totalTransferredWeight;
 
         // Summary will be recalculated by pre-save middleware including stock and transfers
         await trip.save();
@@ -1072,7 +1075,7 @@ export const updateTripExpenses = async (req, res, next) => {
         }
 
         const trip = await Trip.findOne(query);
-        
+
         if (!trip) throw new AppError('Trip not found!', 404);
 
         trip.expenses = expenses;
@@ -1178,7 +1181,7 @@ export const editDieselStation = async (req, res, next) => {
 export const completeTrip = async (req, res, next) => {
     try {
         const { closingOdometer, finalRemarks, mortality } = req.body;
-        
+
         let query = { _id: req.params.id };
         if (req.user.role === 'supervisor') {
             query.supervisor = req.user._id;
@@ -1192,14 +1195,14 @@ export const completeTrip = async (req, res, next) => {
         if (trip.vehicleReadings.opening && closingOdometer < trip.vehicleReadings.opening) {
             throw new AppError('Closing odometer reading must be greater than opening reading', 400);
         }
-        
+
         trip.vehicleReadings.closing = closingOdometer;
         if (trip.vehicleReadings.opening) {
             trip.vehicleReadings.totalDistance = closingOdometer - trip.vehicleReadings.opening;
             // Set totalKm for financial calculations
             trip.totalKm = trip.vehicleReadings.totalDistance;
         }
-        
+
         // Calculate total diesel amount
         trip.dieselAmount = trip.diesel.totalAmount || 0;
 
@@ -1217,10 +1220,10 @@ export const completeTrip = async (req, res, next) => {
             const totalBirdsPurchased = trip.summary?.totalBirdsPurchased || 0;
             const totalWeightPurchased = trip.summary?.totalWeightPurchased || 0;
             const avgWeight = totalBirdsPurchased > 0 ? totalWeightPurchased / totalBirdsPurchased : 0;
-            
+
             // Calculate death weight based on average weight
             const deathWeight = mortality * avgWeight;
-            
+
             // Get average purchase rate for death bird value calculation
             const avgPurchaseRate = trip.summary?.avgPurchaseRate || 0;
             const deathValue = deathWeight * avgPurchaseRate;
@@ -1249,10 +1252,10 @@ export const completeTrip = async (req, res, next) => {
         trip.summary.grossRent = (trip.rentPerKm || 0) * totalDistance;
 
         // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
-        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) - 
-                                  (trip.summary.totalPurchaseAmount || 0) - 
-                                  (trip.summary.totalExpenses || 0) - 
-                                  trip.summary.grossRent;
+        trip.summary.birdsProfit = (trip.summary.totalSalesAmount || 0) -
+            (trip.summary.totalPurchaseAmount || 0) -
+            (trip.summary.totalExpenses || 0) -
+            trip.summary.grossRent;
 
         // Calculate final profit including death losses
         trip.summary.netProfit = trip.summary.totalSalesAmount -
@@ -1504,9 +1507,9 @@ export const updateTripStatus = async (req, res, next) => {
 export const transferTrip = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { 
-            supervisorId, 
-            vehicleId, 
+        const {
+            supervisorId,
+            vehicleId,
             reason,
             transferBirds // Custom bird count entered by supervisor
         } = req.body;
@@ -1551,11 +1554,11 @@ export const transferTrip = async (req, res, next) => {
         }
 
         // Validate receiving supervisor exists and is approved
-        const receivingSupervisor = await User.findOne({ 
-            _id: supervisorId, 
-            role: 'supervisor', 
-            approvalStatus: 'approved', 
-            isActive: true 
+        const receivingSupervisor = await User.findOne({
+            _id: supervisorId,
+            role: 'supervisor',
+            approvalStatus: 'approved',
+            isActive: true
         });
         if (!receivingSupervisor) {
             throw new AppError('Invalid supervisor or supervisor not approved', 400);
@@ -1619,7 +1622,7 @@ export const transferTrip = async (req, res, next) => {
         // Update original trip summary to reflect transferred birds
         // Note: We don't remove from actual purchases/sales/stock, just track the transfer
         // The remaining birds calculation will automatically adjust
-        
+
         // Add transfer to original trip's history
         originalTrip.transferHistory.push({
             transferredTo: newTrip._id,
@@ -1681,7 +1684,7 @@ export const transferTrip = async (req, res, next) => {
 export const getTripTransferHistory = async (req, res, next) => {
     try {
         const { id } = req.params;
-        
+
         let query = { _id: id };
         if (req.user.role === 'supervisor') {
             query.supervisor = req.user._id;
