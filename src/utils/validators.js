@@ -53,9 +53,9 @@ export const signupValidator = (data = {}) => {
     }
   } else {
     // For non-customers, age is optional but if provided must be within range
-  if (age !== undefined) {
-    if (typeof age !== 'number' || age < 18 || age > 100) {
-      throw new AppError('Age must be a number between 18 and 100', 400);
+    if (age !== undefined) {
+      if (typeof age !== 'number' || age < 18 || age > 100) {
+        throw new AppError('Age must be a number between 18 and 100', 400);
       }
     }
   }
@@ -84,13 +84,13 @@ export const signupValidator = (data = {}) => {
     if (!gstOrPanNumber || typeof gstOrPanNumber !== 'string' || !gstOrPanNumber.trim()) {
       throw new AppError('GST/PAN number is required for customer registration', 400);
     }
-    
+
     const gstPanValue = gstOrPanNumber.trim();
     // Basic length validation - GST is 15 chars, PAN is 10 chars
     if (gstPanValue.length < 10 || gstPanValue.length > 15) {
       throw new AppError('GST/PAN number must be between 10-15 characters', 400);
     }
-    
+
     // Optional: Enhanced validation for GST/PAN format
     // GST format: 2 chars state code + 10 chars PAN + 1 char entity + 1 char Z + 1 char checksum
     // PAN format: 5 chars + 4 chars + 1 char
@@ -110,7 +110,7 @@ export const signupValidator = (data = {}) => {
     if (!place || typeof place !== 'string' || !place.trim()) {
       throw new AppError('Place is required for customer registration', 400);
     }
-    
+
     const placeValue = place.trim();
     if (placeValue.length > 100) {
       throw new AppError('Place name cannot exceed 100 characters', 400);
@@ -137,7 +137,7 @@ export const loginValidator = (data = {}) => {
     console.log("user login with email");
   }
   // Check if it's a mobile number
-  else if (validator.isMobilePhone(username.toString(), "any", { strictMode: true })) {
+  else if (validator.isMobilePhone(`+91${username.toString()}`, "any", { strictMode: true })) {
     console.log("user login with mobile number");
   }
   // Otherwise invalid

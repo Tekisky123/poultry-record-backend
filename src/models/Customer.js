@@ -2,19 +2,19 @@ import mongoose from "mongoose";
 import validator from "validator";
 
 const customerSchema = new mongoose.Schema({
-  shopName: { 
-    type: String, 
+  shopName: {
+    type: String,
     required: [true, "Shop name is required"],
     trim: true,
     minlength: [2, "Shop name must be at least 2 characters"],
     maxlength: [100, "Shop name cannot exceed 100 characters"]
   },
-  ownerName: { 
-    type: String, 
+  ownerName: {
+    type: String,
     trim: true,
     maxlength: [100, "Owner name cannot exceed 100 characters"]
   },
-  contact: { 
+  contact: {
     type: String,
     required: [true, "Contact number is required"],
     trim: true,
@@ -23,41 +23,41 @@ const customerSchema = new mongoose.Schema({
       message: "Invalid contact number"
     }
   },
-  address: { 
-    type: String, 
+  address: {
+    type: String,
     trim: true,
     maxlength: [200, "Address cannot exceed 200 characters"]
   },
-  gstOrPanNumber: { 
-    type: String, 
+  gstOrPanNumber: {
+    type: String,
     required: [true, "GST or PAN number is required"],
     trim: true,
     maxlength: [100, "GST or PAN number cannot exceed 100 characters"]
   },
-  place: { 
-    type: String, 
+  place: {
+    type: String,
     required: [true, "Place is required"],
     trim: true,
     maxlength: [100, "Place name too long"]
   },
-  isActive: { 
-    type: Boolean, 
-    default: true 
+  isActive: {
+    type: Boolean,
+    default: true
   },
-  createdBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: "User", 
-    required: true 
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true
   },
-  updatedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: "User", 
-    required: true 
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true
   },
   // Reference to User account for login credentials
-  user: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: "User", 
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
     required: false // Optional for backward compatibility
   },
   // Global Opening Balance for customer (static initial balance - never changes)
@@ -78,7 +78,7 @@ const customerSchema = new mongoose.Schema({
   outstandingBalanceType: {
     type: String,
     enum: ['debit', 'credit'],
-    default: function() {
+    default: function () {
       return this.openingBalanceType || 'debit';
     }
   },
@@ -89,7 +89,7 @@ const customerSchema = new mongoose.Schema({
   group: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group',
-    required: [true, 'Group is required']
+    // required: [true, 'Group is required']
   }
 }, {
   timestamps: true,

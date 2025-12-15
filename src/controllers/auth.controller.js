@@ -1,5 +1,7 @@
 import User from "../models/User.js";
 import Customer from "../models/Customer.js";
+import Group from "../models/Group.js";
+import mongoose from "mongoose";
 import AppError from "../utils/AppError.js";
 import validator from 'validator';
 import { loginValidator, signupValidator } from '../utils/validators.js';
@@ -16,6 +18,9 @@ const cookieConfig = {
 }
 
 export const signup = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     signupValidator(req.body);
 
@@ -27,7 +32,7 @@ export const signup = async (req, res, next) => {
         { email: email }, // only check email if provided
         { mobileNumber: mobileNumber }
       ]
-    });
+    }).session(session);
 
     if (existingUser) {
       throw new AppError('User with this email or mobile number already exists', 400);
@@ -41,7 +46,7 @@ export const signup = async (req, res, next) => {
       approvalStatus: 'pending' // All users start as pending, including customers
     });
 
-    const savedUser = await user.save();
+    const savedUser = await user.save({ session });
 
     // If role is customer, create Customer record with GST/PAN information
     if (role === 'customer') {
@@ -60,18 +65,26 @@ export const signup = async (req, res, next) => {
         outstandingBalance: 0
       });
 
-      const savedCustomer = await customer.save();
+      const savedCustomer = await customer.save({ session });
 
       // Update User with customer reference
       savedUser.customer = savedCustomer._id;
-      await savedUser.save();
+      await savedUser.save({ session });
     }
+
+    await session.commitTransaction();
 
     const { password, ...otherData } = savedUser.toObject();
 
     successResponse(res, "signup successfull!!", 201, otherData);
   } catch (error) {
+    console.log("signup next err", error)
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
@@ -86,8 +99,8 @@ export const login = async (req, res, next) => {
 
     if (validator.isEmail(username)) {
       query.email = username.toLowerCase();
-    } else if (validator.isMobilePhone(username.toString(), "any", { strictMode: true })) {
-      query.mobileNumber = username;
+    } else if (validator.isMobilePhone(`+91${username.toString()}`, "any", { strictMode: true })) {
+      query.mobileNumber = `+91${username.toString()}`;
     } else {
       throw new AppError("Username must be a valid email or mobile number", 400);
     }
