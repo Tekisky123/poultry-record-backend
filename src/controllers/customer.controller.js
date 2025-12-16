@@ -843,6 +843,10 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             }
         });
 
+        // Keep consistent chronological order (Ascending: Oldest -> Newest)
+        // This is standard for ledgers so balances make sense sequentially
+        // ledgerEntries.reverse(); // REMOVED: User requested Ascending order
+
         // Apply pagination
         const startIndex = (page - 1) * limit;
         const endIndex = startIndex + parseInt(limit);

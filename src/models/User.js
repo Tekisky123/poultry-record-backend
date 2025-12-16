@@ -54,7 +54,7 @@ const userSchema = new mongoose.Schema({
     dateOfBirth: {
         type: Date,
         validate: {
-            validator: function(value) {
+            validator: function (value) {
                 if (!value) return true; // Optional field
                 const today = new Date();
                 const birthDate = new Date(value);
@@ -117,8 +117,8 @@ const userSchema = new mongoose.Schema({
     },
 
     // Reference to Customer profile (for customer role users)
-    customer: { 
-        type: mongoose.Schema.Types.ObjectId, 
+    customer: {
+        type: mongoose.Schema.Types.ObjectId,
         ref: 'Customer',
         required: false // Optional, only for customer role users
     }
@@ -141,7 +141,7 @@ userSchema.methods.getJWT = async function () {
     const user = this;
 
 
-    const token = await jwt.sign({...user}, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRY });
+    const token = await jwt.sign({ ...user }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRY });
 
     return token;
 }

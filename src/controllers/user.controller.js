@@ -9,8 +9,8 @@ import bcrypt from 'bcrypt';
 
 export const getUsers = async (req, res, next) => {
     try {
-        const users = await User.find({ 
-            isActive: true, 
+        const users = await User.find({
+            isActive: true,
             approvalStatus: 'approved',
             role: { $ne: 'customer' } // Exclude customers from users list
         })
@@ -115,7 +115,7 @@ export const approveUser = async (req, res, next) => {
             if (!group) {
                 return next(new AppError('Group is required for customer approval', 400));
             }
-            
+
             // Validate that the group exists and is active
             const groupExists = await Group.findOne({ _id: group, isActive: true });
             if (!groupExists) {
@@ -143,7 +143,7 @@ export const approveUser = async (req, res, next) => {
             });
 
             const savedCustomer = await customer.save();
-            
+
             // Update user with customer reference
             user.customer = savedCustomer._id;
             await user.save();
@@ -189,9 +189,16 @@ export const rejectUser = async (req, res, next) => {
 
 export const updateUser = async (req, res, next) => {
     const { id } = req?.params;
-    const { name, email, mobileNumber, role, isActive } = req?.body;
+    const { name, email, mobileNumber, role, isActive, password } = req?.body;
     try {
-        const user = await User.findByIdAndUpdate(id, { name, email, mobileNumber, role, isActive }, { new: true }).select('-password');
+        let updateData = { name, email, mobileNumber, role, isActive };
+
+        if (password) {
+            const hashPassword = await bcrypt.hash(password, 10);
+            updateData.password = hashPassword;
+        }
+
+        const user = await User.findByIdAndUpdate(id, updateData, { new: true }).select('-password');
         successResponse(res, "user", 200, user)
     } catch (error) {
         next(error);

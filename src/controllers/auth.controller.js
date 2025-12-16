@@ -92,7 +92,6 @@ export const login = async (req, res, next) => {
   try {
     // Validate request body
     loginValidator(req.body);
-
     const { username, password: inputPassword } = req.body;
 
     const query = { isActive: true };
@@ -104,25 +103,20 @@ export const login = async (req, res, next) => {
     } else {
       throw new AppError("Username must be a valid email or mobile number", 400);
     }
-
     // Check if user exists and is active
     const user = await User.findOne(query);
 
     if (!user) throw new AppError('Invalid credentials', 401);
-
     // Require approval for admin/supervisor before allowing login
     if ((user.role === 'admin' || user.role === 'supervisor' || user.role === 'customer') && user.approvalStatus !== 'approved') {
       throw new AppError(`Account approval is ${user.approvalStatus || "pending"}`, 403);
     }
-
     // Check password
     const validPassword = await user.validatePassword(inputPassword);
     if (!validPassword) throw new AppError('Invalid credentials', 401);
-
     // Update last login timestamp
     user.lastLogin = new Date();
     await user.save();
-
     // Generate JWT
     const token = await user.getJWT();
 
