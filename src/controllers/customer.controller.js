@@ -867,6 +867,17 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             currentBalance: ledgerEntries[ledgerEntries.length - 1]?.outstandingBalance || 0 // Use the final running balance
         };
 
+        // Self-Healing: Sync calculated ledger balance to customer profile if mismatched
+        // This fixes issues where intermediate updates (like editing middle sales) might have missed propagating the final balance
+        if (customer.outstandingBalance === undefined || Math.abs(customer.outstandingBalance - totals.currentBalance) > 0.01) {
+            await Customer.findByIdAndUpdate(customerId, {
+                outstandingBalance: totals.currentBalance,
+                outstandingBalanceType: 'debit', // Ledger usually tracks the debit balance (receivable)
+                updatedBy: req.user._id
+            });
+            console.log(`Auto-corrected customer ${customer.shopName} balance from ${customer.outstandingBalance} to ${totals.currentBalance}`);
+        }
+
         successResponse(res, "Customer purchase ledger retrieved successfully", 200, {
             ledger: paginatedEntries,
             totals,
