@@ -767,15 +767,15 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             }
 
             // If dates are equal, sort by particulars order to maintain consistent sequence:
-            // SALES -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> RECEIPT -> PAYMENT -> other
+            // OP BAL -> SALES/RECEIPT -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> PAYMENT -> other
             const order = {
+                'OP BAL': 0,
                 'SALES': 1,
+                'RECEIPT': 1,  // Same as SALES since they're mutually exclusive
                 'BY CASH RECEIPT': 2,
                 'BY BANK RECEIPT': 3,
                 'DISCOUNT': 4,
-                'RECEIPT': 5,
-                'PAYMENT': 5,
-                'OP BAL': 0
+                'PAYMENT': 5
             };
             const orderA = order[a.particulars] || 99;
             const orderB = order[b.particulars] || 99;

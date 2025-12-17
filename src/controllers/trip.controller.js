@@ -318,6 +318,17 @@ export const addSale = async (req, res, next) => {
             avgWeight: Number(saleData.avgWeight),
         }
 
+        // Clean up optional ObjectId fields - remove empty strings
+        if (!saleData.cashLedger || saleData.cashLedger === '') {
+            delete saleData.cashLedger;
+        }
+        if (!saleData.onlineLedger || saleData.onlineLedger === '') {
+            delete saleData.onlineLedger;
+        }
+        if (!saleData.client || saleData.client === '') {
+            delete saleData.client;
+        }
+
         let query = { _id: id };
         if (req.user.role === 'supervisor') {
             query.supervisor = req.user._id;
@@ -634,6 +645,21 @@ export const editSale = async (req, res, next) => {
         const { id, index } = req.params;
         const saleData = req.body;
 
+        // Clean up optional ObjectId fields - remove empty strings
+        if (!saleData.cashLedger || saleData.cashLedger === '') {
+            delete saleData.cashLedger;
+        }
+        if (!saleData.onlineLedger || saleData.onlineLedger === '') {
+            delete saleData.onlineLedger;
+        }
+        if (!saleData.client || saleData.client === '') {
+            delete saleData.client;
+        }
+        // Do not allow overwriting original sale date on update
+        if (saleData.timestamp) {
+            delete saleData.timestamp;
+        }
+
         let query = { _id: id };
         if (req.user.role === 'supervisor') {
             query.supervisor = req.user._id;
@@ -808,8 +834,8 @@ export const editSale = async (req, res, next) => {
             saleData.balanceForDiscount = 0;
         }
 
-        // STEP 5: Update sale in trip
-        trip.sales[saleIndex] = { ...trip.sales[saleIndex], ...saleData };
+        // STEP 5: Update sale in trip (preserve original timestamp/date)
+        trip.sales[saleIndex] = { ...trip.sales[saleIndex], ...saleData, timestamp: oldSale.timestamp };
 
         // Summary will be recalculated by pre-save middleware including stock and transfers
         trip.updatedBy = req.user._id;
