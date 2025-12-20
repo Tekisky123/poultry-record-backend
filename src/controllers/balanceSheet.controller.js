@@ -24,12 +24,12 @@ const buildTree = (groups) => {
     const plainGroup = group.toObject ? group.toObject() : group;
     const groupId = getIdString(plainGroup._id || plainGroup.id);
     if (groupId) {
-      groupMap.set(groupId, { 
+      groupMap.set(groupId, {
         ...plainGroup,
         _id: groupId,
         id: groupId,
-        children: [], 
-        ledgers: [] 
+        children: [],
+        ledgers: []
       });
     }
   });
@@ -39,7 +39,7 @@ const buildTree = (groups) => {
     const plainGroup = group.toObject ? group.toObject() : group;
     const groupId = getIdString(plainGroup._id || plainGroup.id);
     const node = groupMap.get(groupId);
-    
+
     if (node) {
       // Handle parentGroup - it might be populated or just an ID
       let parentGroupId = null;
@@ -50,7 +50,7 @@ const buildTree = (groups) => {
           parentGroupId = getIdString(plainGroup.parentGroup);
         }
       }
-      
+
       if (parentGroupId && groupMap.has(parentGroupId)) {
         const parent = groupMap.get(parentGroupId);
         parent.children.push(node);
@@ -111,11 +111,11 @@ const calculateLedgerBalance = (ledgerName, voucherBalanceMap) => {
   try {
     const normalizedName = ledgerName.toString().trim().toLowerCase();
     const balance = voucherBalanceMap.get(normalizedName) || { debitTotal: 0, creditTotal: 0 };
-    
-    return { 
-      debitTotal: balance.debitTotal, 
-      creditTotal: balance.creditTotal, 
-      balance: balance.debitTotal - balance.creditTotal 
+
+    return {
+      debitTotal: balance.debitTotal,
+      creditTotal: balance.creditTotal,
+      balance: balance.debitTotal - balance.creditTotal
     };
   } catch (error) {
     console.error('Error calculating ledger balance:', error);
@@ -124,25 +124,25 @@ const calculateLedgerBalance = (ledgerName, voucherBalanceMap) => {
 };
 
 // Calculate group balance (sum of all ledgers in group and its children) - optimized
-const calculateGroupBalance = async (group, voucherBalanceMap, asOnDate = null) => {
+const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, asOnDate = null) => {
   let totalBalance = 0;
   let totalDebit = 0;
   let totalCredit = 0;
   let totalOpeningBalance = 0;
   let totalOutstandingBalance = 0;
 
-  // Get all ledgers in this group (batch fetch)
+  // Get all ledgers in this group (from map)
   const groupId = group.id || group._id;
-  const ledgers = await Ledger.find({ group: groupId, isActive: true }).lean();
-  
-  // Process all ledgers in parallel
+  const ledgers = ledgerGroupMap.get(groupId.toString()) || [];
+
+  // Process all ledgers
   for (const ledger of ledgers) {
     const ledgerBalance = calculateLedgerBalance(ledger.name, voucherBalanceMap);
     totalDebit += ledgerBalance.debitTotal;
     totalCredit += ledgerBalance.creditTotal;
     totalOpeningBalance += ledger.openingBalance || 0;
     totalOutstandingBalance += ledger.outstandingBalance ?? ledger.openingBalance ?? 0;
-    
+
     // For Assets: Debit - Credit (positive means asset)
     // For Liability: Credit - Debit (positive means liability)
     if (group.type === 'Assets') {
@@ -155,7 +155,7 @@ const calculateGroupBalance = async (group, voucherBalanceMap, asOnDate = null) 
   // Recursively calculate children balances
   if (group.children && group.children.length > 0) {
     for (const child of group.children) {
-      const childBalance = await calculateGroupBalance(child, voucherBalanceMap, asOnDate);
+      const childBalance = await calculateGroupBalance(child, voucherBalanceMap, ledgerGroupMap, asOnDate);
       totalBalance += childBalance.totalBalance;
       totalDebit += childBalance.totalDebit;
       totalCredit += childBalance.totalCredit;
@@ -168,35 +168,35 @@ const calculateGroupBalance = async (group, voucherBalanceMap, asOnDate = null) 
 };
 
 // Calculate Capital/Equity (Income - Expenses) - optimized
-const calculateCapital = async (voucherBalanceMap, asOnDate = null) => {
+const calculateCapital = async (voucherBalanceMap, allLedgers, asOnDate = null) => {
   try {
-    // Get all income and expense groups
-    const incomeGroups = await Group.find({ type: 'Income', isActive: true }).lean();
-    const expenseGroups = await Group.find({ type: 'Expenses', isActive: true }).lean();
+    // Get all income and expense groups to filters ledgers
+    // Better way: Filter allLedgers based on their populated Group type
+    // Since we didn't populate group type in the global fetch, we might need a set of group IDs.
+    // However, the original code fetched groups to get IDs.
 
-    // Get all income and expense ledger IDs
-    const incomeGroupIds = incomeGroups.map(g => g._id);
-    const expenseGroupIds = expenseGroups.map(g => g._id);
+    // Efficient approach: Fetch Income/Expense group IDs
+    const incomeGroups = await Group.find({ type: 'Income', isActive: true }).select('_id').lean();
+    const expenseGroups = await Group.find({ type: 'Expenses', isActive: true }).select('_id').lean();
 
-    // Batch fetch all ledgers
-    const incomeLedgers = await Ledger.find({ group: { $in: incomeGroupIds }, isActive: true }).lean();
-    const expenseLedgers = await Ledger.find({ group: { $in: expenseGroupIds }, isActive: true }).lean();
+    const incomeGroupIds = new Set(incomeGroups.map(g => g._id.toString()));
+    const expenseGroupIds = new Set(expenseGroups.map(g => g._id.toString()));
 
     let totalIncome = 0;
     let totalExpenses = 0;
 
-    // Calculate income from voucher map
-    for (const ledger of incomeLedgers) {
-      const balance = calculateLedgerBalance(ledger.name, voucherBalanceMap);
-      // Income: Credit - Debit
-      totalIncome += (balance.creditTotal - balance.debitTotal);
-    }
+    // Iterate through all ledgers
+    for (const ledger of allLedgers) {
+      if (!ledger.group) continue;
+      const groupId = ledger.group.toString();
 
-    // Calculate expenses from voucher map
-    for (const ledger of expenseLedgers) {
-      const balance = calculateLedgerBalance(ledger.name, voucherBalanceMap);
-      // Expenses: Debit - Credit
-      totalExpenses += (balance.debitTotal - balance.creditTotal);
+      if (incomeGroupIds.has(groupId)) {
+        const balance = calculateLedgerBalance(ledger.name, voucherBalanceMap);
+        totalIncome += (balance.creditTotal - balance.debitTotal);
+      } else if (expenseGroupIds.has(groupId)) {
+        const balance = calculateLedgerBalance(ledger.name, voucherBalanceMap);
+        totalExpenses += (balance.debitTotal - balance.creditTotal);
+      }
     }
 
     // Capital = Income - Expenses
@@ -213,19 +213,25 @@ export const getBalanceSheet = async (req, res, next) => {
     const { asOnDate } = req.query;
     const date = asOnDate ? new Date(asOnDate) : new Date();
 
-    // OPTIMIZATION: Build voucher balance map once (fetch all vouchers once)
-    const voucherBalanceMap = await buildVoucherBalanceMap(date);
+    // OPTIMIZATION: batch fetch all needed data
+    const [voucherBalanceMap, allLedgers, assetsGroups, liabilityGroups] = await Promise.all([
+      buildVoucherBalanceMap(date),
+      Ledger.find({ isActive: true }).lean(),
+      Group.find({ type: 'Assets', isActive: true }).populate('parentGroup', 'name type').lean().sort({ name: 1 }),
+      Group.find({ type: 'Liability', isActive: true }).populate('parentGroup', 'name type').lean().sort({ name: 1 })
+    ]);
 
-    // Get all Assets and Liability groups (using lean() to get plain objects)
-    const assetsGroups = await Group.find({ type: 'Assets', isActive: true })
-      .populate('parentGroup', 'name type')
-      .lean()
-      .sort({ name: 1 });
-
-    const liabilityGroups = await Group.find({ type: 'Liability', isActive: true })
-      .populate('parentGroup', 'name type')
-      .lean()
-      .sort({ name: 1 });
+    // Build Ledger Map (GroupId -> Ledgers)
+    const ledgerGroupMap = new Map();
+    allLedgers.forEach(ledger => {
+      if (ledger.group) {
+        const groupId = ledger.group.toString();
+        if (!ledgerGroupMap.has(groupId)) {
+          ledgerGroupMap.set(groupId, []);
+        }
+        ledgerGroupMap.get(groupId).push(ledger);
+      }
+    });
 
     // Build tree structures
     const assetsTree = buildTree(assetsGroups);
@@ -235,7 +241,7 @@ export const getBalanceSheet = async (req, res, next) => {
     const processGroups = async (groups) => {
       const processedGroups = [];
       for (const group of groups) {
-        const balance = await calculateGroupBalance(group, voucherBalanceMap, date);
+        const balance = await calculateGroupBalance(group, voucherBalanceMap, ledgerGroupMap, date);
         // Ensure we have a clean plain object
         const groupId = group._id || group.id;
         const processedGroup = {
@@ -251,8 +257,8 @@ export const getBalanceSheet = async (req, res, next) => {
           creditTotal: balance.totalCredit,
           openingBalance: balance.totalOpeningBalance,
           outstandingBalance: balance.totalOutstandingBalance,
-          children: group.children && group.children.length > 0 
-            ? await processGroups(group.children) 
+          children: group.children && group.children.length > 0
+            ? await processGroups(group.children)
             : [],
           ledgers: []
         };
@@ -265,7 +271,7 @@ export const getBalanceSheet = async (req, res, next) => {
     const processedLiabilities = await processGroups(liabilityTree);
 
     // Calculate capital/equity (pass voucher map)
-    const capital = await calculateCapital(voucherBalanceMap, date);
+    const capital = await calculateCapital(voucherBalanceMap, allLedgers, date);
 
     // Calculate totals
     const calculateTotal = (groups) => {

@@ -8,6 +8,7 @@ import authorize from '../middleware/authorization.js';
 router.post('/', authenticateToken, authorize(["admin", "superadmin"]), ledgerController.addLedger);
 router.get('/', authenticateToken, authorize(["admin", "superadmin"]), ledgerController.getLedgers);
 router.get('/group/:groupId', authenticateToken, authorize(["admin", "superadmin", "supervisor"]), ledgerController.getLedgersByGroup);
+router.get('/:id/monthly-summary', authenticateToken, authorize(["admin", "superadmin"]), ledgerController.getMonthlySummary);
 router.get('/:id', authenticateToken, authorize(["admin", "superadmin"]), ledgerController.getLedgerById);
 router.put('/:id', authenticateToken, authorize(["admin", "superadmin"]), ledgerController.updateLedger);
 router.delete('/:id', authenticateToken, authorize(["admin", "superadmin"]), ledgerController.deleteLedger);

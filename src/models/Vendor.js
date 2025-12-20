@@ -136,10 +136,31 @@ const vendorSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    tdsUpdatedAt: {
+        type: Date
+    },
     group: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Group',
         required: [true, 'Group is required']
+    },
+    openingBalance: {
+        type: Number,
+        default: 0
+    },
+    openingBalanceType: {
+        type: String,
+        enum: ['debit', 'credit'],
+        default: 'credit' // Vendors usually credit (payable)
+    },
+    outstandingBalance: {
+        type: Number,
+        default: 0
+    },
+    outstandingBalanceType: {
+        type: String,
+        enum: ['debit', 'credit'],
+        default: 'credit'
     }
 }, {
     timestamps: true,

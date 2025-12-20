@@ -1,8 +1,12 @@
 import Vendor from "../models/Vendor.js";
 import Group from "../models/Group.js";
+import Trip from "../models/Trip.js";
+import Voucher from "../models/Voucher.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
+
+import { syncOutstandingBalance } from "../utils/balanceUtils.js";
 
 export const addVendor = async (req, res, next) => {
     try {
@@ -11,9 +15,9 @@ export const addVendor = async (req, res, next) => {
         // Automatically find and assign "Sundry Creditors" group for vendors
         let groupId = group;
         if (!groupId) {
-            const sundryCreditorsGroup = await Group.findOne({ 
-                name: 'Sundry Creditors', 
-                isActive: true 
+            const sundryCreditorsGroup = await Group.findOne({
+                name: 'Sundry Creditors',
+                isActive: true
             });
             if (!sundryCreditorsGroup) {
                 throw new AppError('Sundry Creditors group not found. Please contact administrator.', 404);
@@ -31,7 +35,10 @@ export const addVendor = async (req, res, next) => {
             ...vendorData,
             group: groupId, // Use automatically assigned or provided group
             createdBy: req.user._id,
-            updatedBy: req.user._id
+            updatedBy: req.user._id,
+            // Initialize outstanding balance same as opening balance
+            outstandingBalance: vendorData.openingBalance || 0,
+            outstandingBalanceType: vendorData.openingBalanceType || 'credit'
         });
         await vendor.save();
 
@@ -74,9 +81,9 @@ export const updateVendor = async (req, res, next) => {
         // Automatically set group to "Sundry Creditors" if not provided
         let groupId = group;
         if (!groupId) {
-            const sundryCreditorsGroup = await Group.findOne({ 
-                name: 'Sundry Creditors', 
-                isActive: true 
+            const sundryCreditorsGroup = await Group.findOne({
+                name: 'Sundry Creditors',
+                isActive: true
             });
             if (!sundryCreditorsGroup) {
                 throw new AppError('Sundry Creditors group not found. Please contact administrator.', 404);
@@ -95,18 +102,44 @@ export const updateVendor = async (req, res, next) => {
             group: groupId, // Use automatically assigned or provided group
             updatedBy: req.user._id
         };
-        
+
+        // Handle opening balance update with sync logic
+        const existingVendor = await Vendor.findById(id);
+        if (!existingVendor) {
+            return res.status(404).json({ message: "Vendor not found" });
+        }
+
+        // Check if TDS field is updated
+        if (vendorData.tdsApplicable !== undefined && vendorData.tdsApplicable !== existingVendor.tdsApplicable) {
+            updateData.tdsUpdatedAt = new Date();
+        }
+
+        const isOpeningBalanceChanged = vendorData.openingBalance !== undefined || vendorData.openingBalanceType !== undefined;
+
+        if (isOpeningBalanceChanged) {
+            const newOpeningAmount = vendorData.openingBalance !== undefined ? vendorData.openingBalance : existingVendor.openingBalance;
+            const newOpeningType = vendorData.openingBalanceType !== undefined ? vendorData.openingBalanceType : existingVendor.openingBalanceType;
+
+            const syncedBalance = syncOutstandingBalance(
+                existingVendor.openingBalance,
+                existingVendor.openingBalanceType,
+                newOpeningAmount,
+                newOpeningType,
+                existingVendor.outstandingBalance,
+                existingVendor.outstandingBalanceType
+            );
+
+            updateData.outstandingBalance = syncedBalance.amount;
+            updateData.outstandingBalanceType = syncedBalance.type;
+        }
+
         const vendor = await Vendor.findByIdAndUpdate(
             id,
             updateData,
             { new: true, runValidators: true }
         )
             .populate('group', 'name type');
-        
-        if (!vendor) {
-            return res.status(404).json({ message: "Vendor not found" });
-        }
-        
+
         successResponse(res, "Vendor updated successfully", 200, vendor);
     } catch (error) {
         next(error);
@@ -121,12 +154,346 @@ export const deleteVendor = async (req, res, next) => {
             { isActive: false },
             { new: true }
         );
-        
+
         if (!vendor) {
             return res.status(404).json({ message: "Vendor not found" });
         }
-        
+
         successResponse(res, "Vendor deleted successfully", 200, vendor);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getVendorLedger = async (req, res, next) => {
+    const { id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const skip = (page - 1) * limit;
+
+    try {
+        const vendor = await Vendor.findById(id);
+        if (!vendor) {
+            throw new AppError('Vendor not found', 404);
+        }
+
+        // Build Date Query
+        const dateQuery = {};
+        if (startDate || endDate) {
+            dateQuery.date = {};
+            if (startDate) dateQuery.date.$gte = new Date(startDate);
+            if (endDate) {
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                dateQuery.date.$lte = end;
+            }
+        }
+
+        // 1. Fetch Trips (Purchases)
+        const tripQuery = {
+            'purchases.supplier': id,
+            status: { $in: ['completed', 'ongoing'] },
+            ...dateQuery
+        };
+        const trips = await Trip.find(tripQuery)
+            .populate('vehicle', 'vehicleNumber')
+            .populate('supervisor', 'name')
+            .populate('purchases.supplier', '_id vendorName')
+            .lean();
+
+
+        // 2. Fetch Vouchers (Payments/Receipts/Journals)
+        const voucherQuery = {
+            $or: [
+                { party: id },
+                {
+                    'parties': {
+                        $elemMatch: {
+                            partyId: id,
+                            partyType: 'vendor'
+                        }
+                    }
+                },
+                {
+                    'entries.account': vendor.vendorName
+                }
+            ],
+            isActive: true,
+            ...dateQuery
+        };
+        const vouchers = await Voucher.find(voucherQuery).lean();
+
+        // 3. Calculate Opening Balance for the filtered period
+        let periodOpeningBalance = vendor.openingBalance || 0;
+        if (vendor.openingBalanceType === 'debit') {
+            periodOpeningBalance = -periodOpeningBalance;
+        }
+
+        if (startDate) {
+            // Fetch all previous trips
+            const prevTrips = await Trip.find({
+                'purchases.supplier': id,
+                status: 'completed',
+                date: { $lt: new Date(startDate) }
+            }).lean();
+
+            // Fetch all previous vouchers
+            const prevVouchers = await Voucher.find({
+                $or: [
+                    { party: id },
+                    {
+                        'parties': {
+                            $elemMatch: {
+                                partyId: id,
+                                partyType: 'vendor'
+                            }
+                        }
+                    },
+                    {
+                        'entries.account': vendor.vendorName
+                    }
+                ],
+                isActive: true,
+                date: { $lt: new Date(startDate) }
+            }).lean();
+
+            // Calculate impact of previous transactions
+            for (const trip of prevTrips) {
+                const purchases = trip.purchases.filter(p => p.supplier && p.supplier.toString() === id);
+                for (const purchase of purchases) {
+                    let tripAmount = purchase.amount || 0;
+
+                    // Logic to deduct TDS from previous trips calculation if applicable
+                    if (vendor.tdsApplicable && (vendor.tdsUpdatedAt && new Date(trip.date) > new Date(vendor.tdsUpdatedAt))) {
+                        const tdsAmount = tripAmount * 0.001; // 0.1% TDS
+                        tripAmount -= tdsAmount;
+                    }
+
+                    periodOpeningBalance += tripAmount; // Purchase increases payable (Credit), net of TDS
+                }
+            }
+
+            for (const voucher of prevVouchers) {
+                let amount = 0;
+                let type = 'debit'; // default to reducing payable
+
+                if (voucher.voucherType === 'Journal') {
+                    const entry = voucher.entries.find(e => e.account === vendor.vendorName);
+                    if (entry) {
+                        if (entry.creditAmount > 0) {
+                            amount = entry.creditAmount;
+                            type = 'credit'; // Increases payable
+                        } else {
+                            amount = entry.debitAmount;
+                            type = 'debit'; // Decreases payable
+                        }
+                    }
+                } else {
+                    if (voucher.parties && voucher.parties.length > 0) {
+                        const partyEntry = voucher.parties.find(p => p.partyId && p.partyId.toString() === id && p.partyType === 'vendor');
+                        amount = partyEntry ? partyEntry.amount : 0;
+                    } else if (voucher.party && voucher.party.toString() === id) {
+                        amount = voucher.totalDebit || voucher.totalCredit;
+                    }
+                    // For Payment/Receipt, we assume they reduce the payable (Debit)
+                    // Unless it's a Receipt in a specific context, but used logic matches existing:
+                    type = 'debit';
+                }
+
+                if (type === 'credit') {
+                    periodOpeningBalance += amount;
+                } else {
+                    periodOpeningBalance -= amount;
+                }
+            }
+        }
+
+        // 3. Normalize Data
+        let ledgerEntries = [];
+
+        // Process Trips
+        for (const trip of trips) {
+            const purchases = trip.purchases.filter(p => p.supplier && p.supplier._id.toString() === id);
+
+            purchases.forEach((purchase, index) => {
+                // Calculate TDS for current period trips
+                let lessTDS = 0;
+                if (vendor.tdsApplicable && (vendor.tdsUpdatedAt && new Date(trip.date) > new Date(vendor.tdsUpdatedAt))) {
+                    lessTDS = (purchase.amount || 0) * 0.001; // 0.1% TDS
+                }
+
+                ledgerEntries.push({
+                    _id: trip._id,
+                    uniqueId: `TRIP-${trip._id}-${purchase._id || index}`, // Ensure unique ID for multiple purchases
+                    date: trip.date,
+                    type: 'PURCHASE',
+                    particulars: 'PURCHASE',
+                    liftingDate: trip.date,
+                    deliveryDate: trip.completionDetails?.completedAt || trip.updatedAt,
+                    vehicleNo: trip.vehicle?.vehicleNumber || '-',
+                    driverName: trip.driver || '-',
+                    supervisor: trip.supervisor?.name || '-',
+                    dcNumber: purchase.dcNumber,
+                    birds: purchase.birds,
+                    weight: purchase.weight,
+                    avgWeight: purchase.avgWeight,
+                    rate: purchase.rate,
+                    amount: purchase.amount,
+                    lessTDS: lessTDS,
+                    tripId: trip.tripId,
+                    voucherNo: '-',
+                    timestamp: new Date(trip.date).getTime()
+                });
+            });
+        }
+
+        // Process Vouchers
+        for (const voucher of vouchers) {
+            let amount = 0;
+            let amountType = 'debit'; // default
+
+            if (voucher.voucherType === 'Journal') {
+                const entry = voucher.entries.find(e => e.account === vendor.vendorName);
+                if (entry) {
+                    if (entry.creditAmount > 0) {
+                        amount = entry.creditAmount;
+                        amountType = 'credit';
+                    } else {
+                        amount = entry.debitAmount;
+                        amountType = 'debit';
+                    }
+                }
+            } else {
+                if (voucher.parties && voucher.parties.length > 0) {
+                    const partyEntry = voucher.parties.find(p => p.partyId && p.partyId.toString() === id && p.partyType === 'vendor');
+                    amount = partyEntry ? partyEntry.amount : 0;
+                } else if (voucher.party && voucher.party.toString() === id) {
+                    amount = voucher.totalDebit || voucher.totalCredit;
+                }
+                amountType = 'debit';
+            }
+
+            if (amount > 0) {
+                ledgerEntries.push({
+                    _id: voucher._id,
+                    uniqueId: `VOUCHER-${voucher._id}`,
+                    date: voucher.date,
+                    type: voucher.voucherType.toUpperCase(),
+                    particulars: voucher.voucherType === 'Payment' ? 'PAYMENT' : (voucher.voucherType === 'Receipt' ? 'RECEIPT' : 'JOURNAL'),
+                    vehicleNo: '-',
+                    driverName: '-',
+                    supervisor: '-',
+                    dcNumber: '-',
+                    birds: 0,
+                    weight: 0,
+                    avgWeight: 0,
+                    rate: 0,
+                    amount: amount,
+                    lessTDS: 0,
+                    tripId: '-',
+                    voucherNo: voucher.voucherNumber ? `VCH-${voucher.voucherNumber}` : '-',
+                    timestamp: new Date(voucher.date).getTime(),
+                    amountType: amountType // Store this for balance calc
+                });
+            }
+        }
+
+        // 4. Sort by Date ASC
+        ledgerEntries.sort((a, b) => a.timestamp - b.timestamp);
+
+        // 5. Calculate Running Balance
+        let runningBalance = periodOpeningBalance;
+
+        let calculatedEntries = [];
+
+        // Add Opening Balance Entry
+        calculatedEntries.push({
+            _id: 'op_bal',
+            uniqueId: 'OP_BAL',
+            date: startDate || vendor.createdAt, // Use filtered start date or vendor creation date
+            type: 'OPENING',
+            particulars: 'OP',
+            vehicleNo: '-',
+            driverName: '-',
+            supervisor: '-',
+            dcNumber: '-',
+            birds: 0,
+            weight: 0,
+            avgWeight: 0,
+            rate: 0,
+            amount: 0,
+            lessTDS: 0,
+            tripId: '-',
+            voucherNo: '-',
+            balance: periodOpeningBalance,
+            timestamp: 0 // Ensure it stays at top if sorting again, though we push it first
+        });
+
+        const transactionEntries = ledgerEntries.map(entry => {
+            if (entry.type === 'PURCHASE') {
+                runningBalance += entry.amount; // Credit (Payable increases)
+                if (entry.lessTDS) {
+                    runningBalance -= entry.lessTDS; // Reduce payable by TDS amount
+                }
+            } else if (entry.amountType === 'credit') {
+                runningBalance += entry.amount; // Journal Credit increases Payable
+            } else if (entry.amountType === 'debit' || entry.type === 'PAYMENT' || entry.type === 'RECEIPT') {
+                // Payment, Receipt, or Journal Debit decreases Payable
+                runningBalance -= entry.amount;
+            }
+
+            return {
+                ...entry,
+                balance: runningBalance
+            };
+        });
+
+        calculatedEntries = [...calculatedEntries, ...transactionEntries];
+
+        // 6. Pagination (Ascending Order - Oldest First)
+        const totalItems = calculatedEntries.length;
+        const totalPages = Math.ceil(totalItems / limit);
+        const paginatedEntries = calculatedEntries.slice(skip, skip + limit);
+
+        const totals = {
+            totalBirds: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.birds || 0), 0),
+            totalWeight: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.weight || 0), 0),
+            totalAmount: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.amount || 0), 0)
+        };
+
+        // Update Vendor Outstanding Balance (Only if no date filter is applied)
+        if (!startDate && !endDate && calculatedEntries.length > 0) {
+            const finalLedgerBalance = calculatedEntries[calculatedEntries.length - 1].balance;
+            const newBalanceType = finalLedgerBalance >= 0 ? 'credit' : 'debit';
+            const newBalanceAmount = Math.abs(finalLedgerBalance);
+
+            // Only update if different to avoid unnecessary writes
+            if (vendor.outstandingBalance !== newBalanceAmount || vendor.outstandingBalanceType !== newBalanceType) {
+                await Vendor.findByIdAndUpdate(id, {
+                    outstandingBalance: newBalanceAmount,
+                    outstandingBalanceType: newBalanceType
+                });
+            }
+        }
+
+        successResponse(res, "Vendor ledger fetched successfully", 200, {
+            ledger: paginatedEntries,
+            pagination: {
+                currentPage: page,
+                totalPages,
+                totalItems,
+                itemsPerPage: limit
+            },
+            vendor: {
+                name: vendor.vendorName,
+                openingBalance: vendor.openingBalance,
+                currentBalance: vendor.outstandingBalance
+            },
+            totals
+        });
+
     } catch (error) {
         next(error);
     }
