@@ -1,6 +1,7 @@
 import Customer from "../models/Customer.js";
 import User from "../models/User.js";
 import Trip from "../models/Trip.js";
+import IndirectSale from "../models/IndirectSale.js";
 import Group from "../models/Group.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
@@ -463,6 +464,13 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             .populate('vehicle', 'vehicleNumber')
             .sort({ createdAt: -1 });
 
+        // Fetch Indirect Sales
+        const indirectSales = await IndirectSale.find({
+            customer: customerId,
+            isActive: true,
+            // status: 'completed' // Matches vendor controller manual override
+        }).lean().populate('vendor', '_id vendorName');
+
         // Fetch verified payments for this customer
         // Include all verified payments from Submit Payment popup
         // These are separate payment records that should appear in the ledger
@@ -501,9 +509,37 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             ]
         }).populate('account', 'name')
             .sort({ date: 1, createdAt: 1 });
-
         // Transform sales into ledger entries
         const ledgerEntries = [];
+
+        // Determine particulars primarily based on role, but specific entry types override
+        // Admin sees SALES, Customer sees PURCHASE for the same transaction
+        const saleParticularsTitle = req.user.role === 'customer' ? 'IN_PURCHASE' : 'IN_SALES';
+
+        // Process Indirect Sales
+        indirectSales.forEach(sale => {
+            // Check if it's a purchase from the customer's perspective (i.e. Company Sold to Customer)
+            console.log("In sale", sale.vendor)
+            // Construct the entry
+            ledgerEntries.push({
+                _id: sale._id, // Use string or objectId
+                date: sale.date,
+                vehiclesNo: sale.vehicleNumber || '-',
+                driverName: sale.driver || '-',
+                supervisor: '-',
+                product: sale?.vendor?.vendorName || 'Broiler Chicken', // Default product
+                particulars: saleParticularsTitle, // PURCHASE (Portal) or SALES (Admin)
+                invoiceNo: sale.invoiceNumber || '-',
+                birds: sale.sales?.birds || 0,
+                weight: sale.sales?.weight || 0,
+                avgWeight: sale.sales?.avgWeight || 0,
+                rate: sale.sales?.rate || 0,
+                amount: sale.sales?.amount || 0,
+                outstandingBalance: 0, // Calculated later
+                trip: null, // No trip object for indirect
+                isIndirect: true
+            });
+        });
 
         trips.forEach(trip => {
             trip.sales.forEach(sale => {
@@ -802,8 +838,9 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             // So we'll recalculate all balances sequentially
 
             // Update balance based on entry type and amount
-            if (entry.particulars === 'SALES') {
-                // Add sale amount
+            if (entry.particulars === 'SALES' || entry.particulars === 'PURCHASE') {
+                // Add sale amount (Indirect or Direct)
+                // PURCHASE tag is used for Customer View of Indirect Sale (which is a Sale from Company to Cust)
                 runningBalance = runningBalance + (entry.amount || 0);
                 entry.outstandingBalance = runningBalance;
             } else if (entry.particulars === 'BY CASH RECEIPT' || entry.particulars === 'BY BANK RECEIPT') {
@@ -854,10 +891,11 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Calculate totals
         const receiptParticulars = ['RECEIPT', 'PAYMENT', 'BY CASH RECEIPT', 'BY BANK RECEIPT'];
+
         const totals = {
-            totalBirds: ledgerEntries.reduce((sum, entry) => sum + entry.birds, 0),
+            totalBirds: ledgerEntries.reduce((sum, entry) => sum + (entry.isIndirect || entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.birds : 0), 0),
             totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
-            totalAmount: ledgerEntries.reduce((sum, entry) => sum + entry.amount, 0),
+            totalAmount: ledgerEntries.reduce((sum, entry) => sum + (entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.amount : 0), 0),
             totalReceipt: ledgerEntries.reduce((sum, entry) => {
                 if (receiptParticulars.includes(entry.particulars)) {
                     return sum + (entry.amount || 0);

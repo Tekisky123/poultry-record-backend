@@ -2,6 +2,7 @@ import Vendor from "../models/Vendor.js";
 import Group from "../models/Group.js";
 import Trip from "../models/Trip.js";
 import Voucher from "../models/Voucher.js";
+import IndirectSale from "../models/IndirectSale.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
@@ -225,6 +226,15 @@ export const getVendorLedger = async (req, res, next) => {
         };
         const vouchers = await Voucher.find(voucherQuery).lean();
 
+        // 3. Fetch Indirect Sales
+        const indirectSaleQuery = {
+            vendor: id,
+            isActive: true,
+            // status: 'completed',
+            ...dateQuery
+        };
+        const indirectSales = await IndirectSale.find(indirectSaleQuery).lean().populate('customer', '_id shopName ownerName');
+
         // 3. Calculate Opening Balance for the filtered period
         let periodOpeningBalance = vendor.openingBalance || 0;
         if (vendor.openingBalanceType === 'debit') {
@@ -258,6 +268,14 @@ export const getVendorLedger = async (req, res, next) => {
                 isActive: true,
                 date: { $lt: new Date(startDate) }
             }).lean();
+
+            // Fetch all previous Indirect Sales
+            const prevIndirectSales = await IndirectSale.find({
+                vendor: id,
+                isActive: true,
+                // status: 'completed',
+                date: { $lt: new Date(startDate) }
+            }).lean().populate('customer', '_id shopName ownerName');
 
             // Calculate impact of previous transactions
             for (const trip of prevTrips) {
@@ -308,6 +326,10 @@ export const getVendorLedger = async (req, res, next) => {
                     periodOpeningBalance -= amount;
                 }
             }
+
+            for (const sale of prevIndirectSales) {
+                periodOpeningBalance += sale.summary?.totalPurchaseAmount || 0;
+            }
         }
 
         // 3. Normalize Data
@@ -345,6 +367,35 @@ export const getVendorLedger = async (req, res, next) => {
                     tripId: trip.tripId,
                     voucherNo: '-',
                     timestamp: new Date(trip.date).getTime()
+                });
+            });
+        }
+
+        // Process Indirect Sales
+        for (const sale of indirectSales) {
+            console.log("Indirect sale", sale.customer);
+            sale.purchases.forEach((purchase, index) => {
+                ledgerEntries.push({
+                    _id: sale._id,
+                    uniqueId: `INDIRECT-${sale._id}-${index}`,
+                    date: sale.date,
+                    type: 'PURCHASE',
+                    particulars: 'INDIRECT_PURCHASE',
+                    liftingDate: sale.date,
+                    deliveryDate: sale.date,
+                    vehicleNo: sale.vehicleNumber || '-',
+                    driverName: sale.driver || '-',
+                    supervisor: sale.customer?.ownerName + " ( Client )" || sale.customer?.shopName + " ( Client )" || '-',
+                    dcNumber: purchase.dcNumber || '-',
+                    birds: purchase.birds,
+                    weight: purchase.weight,
+                    avgWeight: purchase.avg || (purchase.birds > 0 ? purchase.weight / purchase.birds : 0),
+                    rate: purchase.rate,
+                    amount: purchase.amount,
+                    lessTDS: 0,
+                    tripId: '-',
+                    voucherNo: sale.invoiceNumber || '-',
+                    timestamp: new Date(sale.date).getTime()
                 });
             });
         }
@@ -458,9 +509,9 @@ export const getVendorLedger = async (req, res, next) => {
         const paginatedEntries = calculatedEntries.slice(skip, skip + limit);
 
         const totals = {
-            totalBirds: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.birds || 0), 0),
-            totalWeight: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.weight || 0), 0),
-            totalAmount: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.amount || 0), 0)
+            totalBirds: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.birds || 0), 0) + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseBirds || 0), 0),
+            totalWeight: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.weight || 0), 0) + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseWeight || 0), 0),
+            totalAmount: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.amount || 0), 0) + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseAmount || 0), 0)
         };
 
         // Update Vendor Outstanding Balance (Only if no date filter is applied)
