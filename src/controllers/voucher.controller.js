@@ -212,7 +212,13 @@ export const createVoucher = async (req, res, next) => {
                 for (let entry of entries) {
                     try {
                         // Find account doc (Ledger, Customer, or Vendor)
-                        let accountDoc = await Ledger.findOne({ name: entry.account });
+                        // Try Ledger by slug or name
+                        let accountDoc = await Ledger.findOne({
+                            $or: [
+                                { slug: entry.account },
+                                { name: entry.account }
+                            ]
+                        });
                         let accountType = 'ledger';
 
                         if (!accountDoc) {

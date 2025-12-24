@@ -16,7 +16,7 @@ const predefinedGroups = [
     { name: 'Sundry Debtors', type: 'Assets', parentName: 'Current Assets' },
     { name: 'Fixed Assets', type: 'Assets' },
     { name: 'Investments', type: 'Assets' },
-    
+
     // Liability Groups
     { name: 'Current Liabilities', type: 'Liability' },
     { name: 'Bank OD A/c', type: 'Liability', parentName: 'Current Liabilities' },
@@ -24,17 +24,17 @@ const predefinedGroups = [
     { name: 'Duties & Taxes', type: 'Liability', parentName: 'Current Liabilities' },
     { name: 'Provisions', type: 'Liability', parentName: 'Current Liabilities' },
     { name: 'Loans (Liability)', type: 'Liability' },
-    
+
     // Income Groups
     { name: 'Sales Accounts', type: 'Income' },
     { name: 'Indirect Income', type: 'Income' },
     { name: 'Direct Income', type: 'Income' },
-    
+
     // Expenses Groups
     { name: 'Purchase Accounts', type: 'Expenses' },
     { name: 'Indirect Expenses', type: 'Expenses' },
     { name: 'Direct Expenses', type: 'Expenses' },
-    
+
     // Additional common groups
     { name: 'Suspense A/c', type: 'Assets' },
     { name: 'Misc. Expenses (Asset)', type: 'Assets' },
@@ -45,14 +45,14 @@ const predefinedGroups = [
 const initializeGroups = async () => {
     try {
         console.log('🔄 Initializing predefined groups...');
-        
+
         // Get or create a system user for predefined groups
         let systemUser = await User.findOne({ role: 'superadmin' });
         if (!systemUser) {
             // If no superadmin exists, try to get any admin user
             systemUser = await User.findOne({ role: 'admin' });
         }
-        
+
         let systemUserId = null;
         if (systemUser) {
             systemUserId = systemUser._id;
@@ -63,13 +63,28 @@ const initializeGroups = async () => {
         const createdGroups = [];
         const groupMap = new Map(); // To store created groups for parent references
 
+        // Helper to generate expected slug
+        const generateSlug = (name) => {
+            return name
+                .toString()
+                .toLowerCase()
+                .trim()
+                .replace(/[\s\W-]+/g, '-')
+                .replace(/^-+|-+$/g, '');
+        };
+
         // First pass: Create all groups without parents
         for (const groupData of predefinedGroups) {
-            const existingGroup = await Group.findOne({ name: groupData.name, isPredefined: true });
-            
+            const expectedSlug = generateSlug(groupData.name);
+            let existingGroup = await Group.findOne({ slug: expectedSlug, isPredefined: true });
+            if (!existingGroup) {
+                existingGroup = await Group.findOne({ name: groupData.name, isPredefined: true });
+            }
+
             if (!existingGroup) {
                 const group = new Group({
                     name: groupData.name,
+                    slug: expectedSlug,
                     type: groupData.type,
                     parentGroup: null,
                     isPredefined: true,
@@ -77,7 +92,7 @@ const initializeGroups = async () => {
                     updatedBy: systemUserId,
                     isActive: true
                 });
-                
+
                 await group.save();
                 groupMap.set(groupData.name, group._id);
                 createdGroups.push(group);
@@ -91,9 +106,14 @@ const initializeGroups = async () => {
         // Second pass: Update parent relationships
         for (const groupData of predefinedGroups) {
             if (groupData.parentName) {
-                const group = await Group.findOne({ name: groupData.name, isPredefined: true });
+                const expectedSlug = generateSlug(groupData.name);
+                let group = await Group.findOne({ slug: expectedSlug, isPredefined: true });
+                if (!group) {
+                    group = await Group.findOne({ name: groupData.name, isPredefined: true });
+                }
+
                 const parentId = groupMap.get(groupData.parentName);
-                
+
                 if (group && parentId && !group.parentGroup) {
                     group.parentGroup = parentId;
                     group.updatedBy = systemUserId;

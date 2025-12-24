@@ -51,13 +51,19 @@ export const addCustomer = async (req, res, next) => {
         let groupId = customerData.group;
         if (!groupId) {
             const sundryDebtorsGroup = await Group.findOne({
-                name: 'Sundry Debtors',
+                slug: 'sundry-debtors',
                 isActive: true
             });
             if (!sundryDebtorsGroup) {
-                throw new AppError('Sundry Debtors group not found. Please contact administrator.', 404);
+                // If slug not found, try fallback to name just in case migration was partial or manual change
+                const fallbackGroup = await Group.findOne({ name: 'Sundry Debtors', isActive: true });
+                if (!fallbackGroup) {
+                    throw new AppError('Sundry Debtors group not found (slug: sundry-debtors). Please contact administrator.', 404);
+                }
+                groupId = fallbackGroup._id;
+            } else {
+                groupId = sundryDebtorsGroup._id;
             }
-            groupId = sundryDebtorsGroup._id;
         } else {
             // Validate provided group exists
             const groupDoc = await Group.findById(groupId);
@@ -122,7 +128,7 @@ export const getCustomers = async (req, res, next) => {
     try {
         const customers = await Customer.find({ isActive: true })
             .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance tdsApplicable')
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ shopName: 1 });
@@ -137,7 +143,7 @@ export const getCustomerById = async (req, res, next) => {
     try {
         const customer = await Customer.findOne({ _id: id, isActive: true })
             .populate('user', 'name email mobileNumber role approvalStatus')
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
         successResponse(res, "customer", 200, customer)
@@ -194,13 +200,19 @@ export const updateCustomer = async (req, res, next) => {
         let groupId = customerData.group;
         if (!groupId) {
             const sundryDebtorsGroup = await Group.findOne({
-                name: 'Sundry Debtors',
+                slug: 'sundry-debtors',
                 isActive: true
             });
             if (!sundryDebtorsGroup) {
-                throw new AppError('Sundry Debtors group not found. Please contact administrator.', 404);
+                // If slug not found, try fallback to name just in case migration was partial or manual change
+                const fallbackGroup = await Group.findOne({ name: 'Sundry Debtors', isActive: true });
+                if (!fallbackGroup) {
+                    throw new AppError('Sundry Debtors group not found (slug: sundry-debtors). Please contact administrator.', 404);
+                }
+                groupId = fallbackGroup._id;
+            } else {
+                groupId = sundryDebtorsGroup._id;
             }
-            groupId = sundryDebtorsGroup._id;
         } else {
             // Validate provided group exists
             const groupDoc = await Group.findById(groupId);
@@ -249,7 +261,7 @@ export const updateCustomer = async (req, res, next) => {
             updateData,
             { new: true, runValidators: true }
         ).populate('user', 'name email mobileNumber role approvalStatus')
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
@@ -514,12 +526,10 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Determine particulars primarily based on role, but specific entry types override
         // Admin sees SALES, Customer sees PURCHASE for the same transaction
-        const saleParticularsTitle = req.user.role === 'customer' ? 'IN_PURCHASE' : 'IN_SALES';
-
+        const saleParticularsTitle = req.user.role === 'customer' ? 'INDIRECT_PURCHASE' : 'INDIRECT_SALES';
         // Process Indirect Sales
         indirectSales.forEach(sale => {
             // Check if it's a purchase from the customer's perspective (i.e. Company Sold to Customer)
-            console.log("In sale", sale.vendor)
             // Construct the entry
             ledgerEntries.push({
                 _id: sale._id, // Use string or objectId
@@ -807,6 +817,8 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             const order = {
                 'OP BAL': 0,
                 'SALES': 1,
+                'INDIRECT_PURCHASE': 1,
+                'INDIRECT_SALES': 1,
                 'RECEIPT': 1,  // Same as SALES since they're mutually exclusive
                 'BY CASH RECEIPT': 2,
                 'BY BANK RECEIPT': 3,
@@ -820,7 +832,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             }
 
             // If still equal, sort by _id to ensure stable sort
-            return a._id.localeCompare(b._id);
+            return String(a._id).localeCompare(String(b._id));
         });
 
         // Recalculate sequential balances for all entries chronologically

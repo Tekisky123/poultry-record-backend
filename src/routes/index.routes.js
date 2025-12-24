@@ -15,6 +15,7 @@ import groupRouter from './group.routes.js';
 import ledgerRouter from './ledger.routes.js';
 import dieselStationRouter from './dieselStation.routes.js';
 import balanceSheetRouter from './balanceSheet.routes.js';
+import securityRouter from './security.routes.js';
 
 router.use('/auth', authRouter);
 router.use('/user', userRouter);
@@ -31,5 +32,6 @@ router.use('/group', groupRouter);
 router.use('/ledger', ledgerRouter);
 router.use('/diesel-stations', dieselStationRouter);
 router.use('/balance-sheet', balanceSheetRouter);
+router.use('/security', securityRouter);
 
 export default router;

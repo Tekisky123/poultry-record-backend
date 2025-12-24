@@ -9,6 +9,13 @@ const groupSchema = new mongoose.Schema({
         minlength: [2, "Group name must be at least 2 characters"],
         maxlength: [100, "Group name cannot exceed 100 characters"]
     },
+    slug: {
+        type: String,
+        trim: true,
+        unique: true,
+        lowercase: true,
+        index: true
+    },
     type: {
         type: String,
         required: [true, "Group type is required"],
@@ -59,6 +66,20 @@ const groupSchema = new mongoose.Schema({
 groupSchema.index({ parentGroup: 1 });
 groupSchema.index({ type: 1 });
 groupSchema.index({ isActive: 1 });
+
+
+// Pre-save hook to generate slug
+groupSchema.pre('save', function (next) {
+    if (!this.slug && this.name) {
+        this.slug = this.name
+            .toString()
+            .toLowerCase()
+            .trim()
+            .replace(/[\s\W-]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+    }
+    next();
+});
 
 // Virtual for child groups count
 groupSchema.virtual('childrenCount', {

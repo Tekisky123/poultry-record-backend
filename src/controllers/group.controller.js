@@ -69,7 +69,7 @@ export const addGroup = async (req, res, next) => {
         await group.save();
 
         const populatedGroup = await Group.findById(group._id)
-            .populate('parentGroup', 'name type')
+            .populate('parentGroup', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
@@ -89,7 +89,7 @@ export const getGroups = async (req, res, next) => {
         }
 
         const groups = await Group.find(query)
-            .populate('parentGroup', 'name type')
+            .populate('parentGroup', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ name: 1 })
@@ -201,7 +201,7 @@ export const updateGroup = async (req, res, next) => {
             updateData,
             { new: true, runValidators: true }
         )
-            .populate('parentGroup', 'name type')
+            .populate('parentGroup', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 

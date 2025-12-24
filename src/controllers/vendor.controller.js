@@ -17,13 +17,19 @@ export const addVendor = async (req, res, next) => {
         let groupId = group;
         if (!groupId) {
             const sundryCreditorsGroup = await Group.findOne({
-                name: 'Sundry Creditors',
+                slug: 'sundry-creditors',
                 isActive: true
             });
             if (!sundryCreditorsGroup) {
-                throw new AppError('Sundry Creditors group not found. Please contact administrator.', 404);
+                // Try fallback by name
+                const fallbackGroup = await Group.findOne({ name: 'Sundry Creditors', isActive: true });
+                if (!fallbackGroup) {
+                    throw new AppError('Sundry Creditors group not found (slug: sundry-creditors). Please contact administrator.', 404);
+                }
+                groupId = fallbackGroup._id;
+            } else {
+                groupId = sundryCreditorsGroup._id;
             }
-            groupId = sundryCreditorsGroup._id;
         } else {
             // Validate provided group exists
             const groupDoc = await Group.findById(groupId);
@@ -44,7 +50,7 @@ export const addVendor = async (req, res, next) => {
         await vendor.save();
 
         const populatedVendor = await Vendor.findById(vendor._id)
-            .populate('group', 'name type');
+            .populate('group', 'name type slug');
 
         successResponse(res, "New vendor added", 201, populatedVendor)
     } catch (error) {
@@ -55,7 +61,7 @@ export const addVendor = async (req, res, next) => {
 export const getVendors = async (req, res, next) => {
     try {
         const vendors = await Vendor.find({ isActive: true })
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .sort({ vendorName: 1 });
         successResponse(res, "vendors", 200, vendors)
     } catch (error) {
@@ -67,7 +73,7 @@ export const getVendorById = async (req, res, next) => {
     const { id } = req?.params;
     try {
         const vendor = await Vendor.findOne({ _id: id, isActive: true })
-            .populate('group', 'name type');
+            .populate('group', 'name type slug');
         successResponse(res, "vendor", 200, vendor)
     } catch (error) {
         next(error);
@@ -83,13 +89,19 @@ export const updateVendor = async (req, res, next) => {
         let groupId = group;
         if (!groupId) {
             const sundryCreditorsGroup = await Group.findOne({
-                name: 'Sundry Creditors',
+                slug: 'sundry-creditors',
                 isActive: true
             });
             if (!sundryCreditorsGroup) {
-                throw new AppError('Sundry Creditors group not found. Please contact administrator.', 404);
+                // Try fallback by name
+                const fallbackGroup = await Group.findOne({ name: 'Sundry Creditors', isActive: true });
+                if (!fallbackGroup) {
+                    throw new AppError('Sundry Creditors group not found (slug: sundry-creditors). Please contact administrator.', 404);
+                }
+                groupId = fallbackGroup._id;
+            } else {
+                groupId = sundryCreditorsGroup._id;
             }
-            groupId = sundryCreditorsGroup._id;
         } else {
             // Validate provided group exists
             const groupDoc = await Group.findById(groupId);
@@ -139,7 +151,7 @@ export const updateVendor = async (req, res, next) => {
             updateData,
             { new: true, runValidators: true }
         )
-            .populate('group', 'name type');
+            .populate('group', 'name type slug');
 
         successResponse(res, "Vendor updated successfully", 200, vendor);
     } catch (error) {

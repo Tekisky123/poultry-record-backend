@@ -46,7 +46,7 @@ export const addLedger = async (req, res, next) => {
         await ledger.save();
 
         const populatedLedger = await Ledger.findById(ledger._id)
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('vendor', 'vendorName email contactNumber')
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
@@ -71,7 +71,7 @@ export const getLedgers = async (req, res, next) => {
         }
 
         const ledgers = await Ledger.find(query)
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('vendor', 'vendorName email contactNumber')
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
@@ -88,7 +88,7 @@ export const getLedgerById = async (req, res, next) => {
     const { id } = req.params;
     try {
         const ledger = await Ledger.findOne({ _id: id, isActive: true })
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('vendor', 'vendorName email contactNumber')
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
@@ -114,7 +114,7 @@ export const getLedgersByGroup = async (req, res, next) => {
         }
 
         const ledgers = await Ledger.find({ group: groupId, isActive: true })
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('vendor', 'vendorName email contactNumber')
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
@@ -185,7 +185,7 @@ export const updateLedger = async (req, res, next) => {
         };
 
         const updatedLedger = await Ledger.findByIdAndUpdate(id, updateData, { new: true, runValidators: true })
-            .populate('group', 'name type')
+            .populate('group', 'name type slug')
             .populate('vendor', 'vendorName email contactNumber')
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
@@ -268,7 +268,9 @@ export const getMonthlySummary = async (req, res, next) => {
                 startDate: mStart,
                 endDate: mEnd,
                 debit: 0,
-                credit: 0
+                credit: 0,
+                birds: 0,
+                weight: 0
             });
         }
 
@@ -319,18 +321,24 @@ export const getMonthlySummary = async (req, res, next) => {
         const processTrip = (t, isBeforeStart, monthIndex) => {
             let debit = 0;
             let credit = 0;
+            let birds = 0;
+            let weight = 0;
 
             if (subjectType === 'customer') {
                 t.sales.forEach(s => {
                     if (s.client && s.client.toString() === id.toString() && !s.isReceipt) {
                         debit += s.amount || 0;
                         credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        birds += (s.birds || s.birdsCount || 0);
+                        weight += s.weight || 0;
                     }
                 });
             } else if (subjectType === 'vendor') {
                 t.purchases.forEach(p => {
                     if (p.supplier && p.supplier.toString() === id.toString()) {
                         credit += p.amount || 0;
+                        birds += p.birds || 0;
+                        weight += p.weight || 0;
                     }
                 });
             }
@@ -340,6 +348,8 @@ export const getMonthlySummary = async (req, res, next) => {
             } else if (monthIndex >= 0) {
                 months[monthIndex].debit += debit;
                 months[monthIndex].credit += credit;
+                months[monthIndex].birds += birds;
+                months[monthIndex].weight += weight;
             }
         };
 
@@ -389,7 +399,9 @@ export const getMonthlySummary = async (req, res, next) => {
             months: finalMonths,
             totals: {
                 debit: months.reduce((acc, m) => acc + m.debit, 0),
-                credit: months.reduce((acc, m) => acc + m.credit, 0)
+                credit: months.reduce((acc, m) => acc + m.credit, 0),
+                birds: months.reduce((acc, m) => acc + m.birds, 0),
+                weight: months.reduce((acc, m) => acc + m.weight, 0)
             }
         });
 

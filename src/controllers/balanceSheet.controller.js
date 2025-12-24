@@ -217,8 +217,8 @@ export const getBalanceSheet = async (req, res, next) => {
     const [voucherBalanceMap, allLedgers, assetsGroups, liabilityGroups] = await Promise.all([
       buildVoucherBalanceMap(date),
       Ledger.find({ isActive: true }).lean(),
-      Group.find({ type: 'Assets', isActive: true }).populate('parentGroup', 'name type').lean().sort({ name: 1 }),
-      Group.find({ type: 'Liability', isActive: true }).populate('parentGroup', 'name type').lean().sort({ name: 1 })
+      Group.find({ type: 'Assets', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),
+      Group.find({ type: 'Liability', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 })
     ]);
 
     // Build Ledger Map (GroupId -> Ledgers)
@@ -248,6 +248,7 @@ export const getBalanceSheet = async (req, res, next) => {
           _id: groupId,
           id: groupId,
           name: group.name,
+          slug: group.slug,
           type: group.type,
           parentGroup: group.parentGroup,
           isPredefined: group.isPredefined,

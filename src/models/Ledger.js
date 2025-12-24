@@ -8,6 +8,13 @@ const ledgerSchema = new mongoose.Schema({
         minlength: [2, "Ledger name must be at least 2 characters"],
         maxlength: [100, "Ledger name cannot exceed 100 characters"]
     },
+    slug: {
+        type: String,
+        trim: true,
+        unique: true,
+        lowercase: true,
+        index: true
+    },
     group: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Group',
@@ -57,14 +64,14 @@ const ledgerSchema = new mongoose.Schema({
     },
     outstandingBalance: {
         type: Number,
-        default: function() {
+        default: function () {
             return this.openingBalance || 0;
         }
     },
     outstandingBalanceType: {
         type: String,
         enum: ['debit', 'credit'],
-        default: function() {
+        default: function () {
             return this.openingBalanceType || 'debit';
         }
     }
@@ -88,6 +95,20 @@ ledgerSchema.index({ vendor: 1 });
 ledgerSchema.index({ customer: 1 });
 ledgerSchema.index({ ledgerType: 1 });
 ledgerSchema.index({ isActive: 1 });
+
+
+// Pre-save hook to generate slug
+ledgerSchema.pre('save', function (next) {
+    if (!this.slug && this.name) {
+        this.slug = this.name
+            .toString()
+            .toLowerCase()
+            .trim()
+            .replace(/[\s\W-]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+    }
+    next();
+});
 
 
 const Ledger = mongoose.model("Ledger", ledgerSchema);
