@@ -270,16 +270,25 @@ export const getMonthlySummary = async (req, res, next) => {
                 debit: 0,
                 credit: 0,
                 birds: 0,
-                weight: 0
+                weight: 0,
+                discountAndOther: 0
             });
         }
 
-        let vouchers = await Voucher.find({ isActive: true, status: 'posted' }).lean();
+        let vouchers = await Voucher.find({ isActive: true }).lean();
         let trips = [];
         if (subjectType === 'customer') {
             trips = await Trip.find({ 'sales.client': id }).lean();
         } else if (subjectType === 'vendor') {
             trips = await Trip.find({ 'purchases.supplier': id }).lean();
+        } else if (subjectType === 'ledger') {
+            // Fetch trips where this ledger is used in sales (cash/online) or expenses
+            trips = await Trip.find({
+                $or: [
+                    { 'sales.cashLedger': id },
+                    { 'sales.onlineLedger': id }
+                ]
+            }).lean();
         }
 
         let runningBalance = toSignedValue(subject.openingBalance || 0, subject.openingBalanceType || 'debit');
@@ -287,27 +296,67 @@ export const getMonthlySummary = async (req, res, next) => {
         const processVoucher = (v, isBeforeStart, monthIndex) => {
             let debit = 0;
             let credit = 0;
+            let voucherAmount = 0; // Total amount for Discount & Other calculation
 
+            const subjectIdStr = id.toString();
+            const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
+                subjectType === 'vendor' ? subject.vendorName : subject.name;
+            const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+
+            // 1. Check entries
+            if (v.entries) {
+                v.entries.forEach(e => {
+                    let isMatch = false;
+                    const entryAcc = e.account ? e.account.toString().trim().toLowerCase() : '';
+
+                    if (entryAcc === subjectIdStr || entryAcc === subjectNameStr) {
+                        isMatch = true;
+                    }
+                    if (!isMatch && e.name && e.name.trim().toLowerCase() === subjectNameStr) {
+                        isMatch = true;
+                    }
+
+                    if (isMatch) {
+                        debit += e.debitAmount || 0;
+                        credit += e.creditAmount || 0;
+                        voucherAmount += (e.debitAmount || 0) + (e.creditAmount || 0);
+                    }
+                });
+            }
+
+            // 2. Check Parties (Payment/Receipt)
             if ((v.voucherType === 'Payment' || v.voucherType === 'Receipt') && v.parties) {
                 v.parties.forEach(p => {
-                    if (p.partyId && p.partyId.toString() === id.toString()) {
-                        if (v.voucherType === 'Payment') {
-                            debit += p.amount || 0;
-                        } else {
-                            credit += p.amount || 0;
+                    if (p.partyId && p.partyId.toString() === subjectIdStr) {
+                        let isTypeMatch = false;
+                        if (subjectType === 'ledger' && p.partyType === 'ledger') isTypeMatch = true;
+                        else if (subjectType === 'customer' && p.partyType === 'customer') isTypeMatch = true;
+                        else if (subjectType === 'vendor' && p.partyType === 'vendor') isTypeMatch = true;
+                        else if (!p.partyType) isTypeMatch = true;
+
+                        if (isTypeMatch) {
+                            if (v.voucherType === 'Payment') {
+                                debit += p.amount || 0;
+                            } else {
+                                credit += p.amount || 0;
+                            }
+                            voucherAmount += p.amount || 0;
                         }
                     }
                 });
-            } else {
-                const name = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
-                    subjectType === 'vendor' ? subject.vendorName : subject.name;
-                v.entries.forEach(e => {
-                    if ((e.account && e.account.toString() === id.toString()) ||
-                        (e.accountName && e.name && e.name.toLowerCase() === name.toLowerCase())) {
-                        debit += e.debitAmount || 0;
-                        credit += e.creditAmount || 0;
+            }
+
+            // 3. Check Account Header (For Ledgers - Payment/Receipt)
+            if (subjectType === 'ledger' && (v.voucherType === 'Payment' || v.voucherType === 'Receipt') && v.account) {
+                if (v.account.toString() === subjectIdStr) {
+                    const totalAmount = v.parties ? v.parties.reduce((sum, p) => sum + (p.amount || 0), 0) : 0;
+                    if (v.voucherType === 'Payment') {
+                        credit += totalAmount;
+                    } else {
+                        debit += totalAmount;
                     }
-                });
+                    voucherAmount += totalAmount;
+                }
             }
 
             if (isBeforeStart) {
@@ -315,6 +364,11 @@ export const getMonthlySummary = async (req, res, next) => {
             } else if (monthIndex >= 0) {
                 months[monthIndex].debit += debit;
                 months[monthIndex].credit += credit;
+
+                // Add to Discount & Other:  Journal Included
+                if (v.voucherType !== 'Receipt' && v.voucherType !== 'Payment') {
+                    months[monthIndex].discountAndOther += voucherAmount;
+                }
             }
         };
 
@@ -323,6 +377,7 @@ export const getMonthlySummary = async (req, res, next) => {
             let credit = 0;
             let birds = 0;
             let weight = 0;
+            let discount = 0;
 
             if (subjectType === 'customer') {
                 t.sales.forEach(s => {
@@ -331,6 +386,7 @@ export const getMonthlySummary = async (req, res, next) => {
                         credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
                         birds += (s.birds || s.birdsCount || 0);
                         weight += s.weight || 0;
+                        discount += s.discount || 0;
                     }
                 });
             } else if (subjectType === 'vendor') {
@@ -341,6 +397,19 @@ export const getMonthlySummary = async (req, res, next) => {
                         weight += p.weight || 0;
                     }
                 });
+            } else if (subjectType === 'ledger') {
+                if (t.sales) {
+                    t.sales.forEach(s => {
+                        if (s.cashLedger && s.cashLedger.toString() === id.toString()) {
+                            // Cash Sale received into this ledger
+                            debit += s.cashPaid || 0;
+                        }
+                        if (s.onlineLedger && s.onlineLedger.toString() === id.toString()) {
+                            // Online Sale received into this ledger
+                            debit += s.onlinePaid || 0;
+                        }
+                    });
+                }
             }
 
             if (isBeforeStart) {
@@ -350,6 +419,7 @@ export const getMonthlySummary = async (req, res, next) => {
                 months[monthIndex].credit += credit;
                 months[monthIndex].birds += birds;
                 months[monthIndex].weight += weight;
+                months[monthIndex].discountAndOther += discount;
             }
         };
 
@@ -401,8 +471,274 @@ export const getMonthlySummary = async (req, res, next) => {
                 debit: months.reduce((acc, m) => acc + m.debit, 0),
                 credit: months.reduce((acc, m) => acc + m.credit, 0),
                 birds: months.reduce((acc, m) => acc + m.birds, 0),
-                weight: months.reduce((acc, m) => acc + m.weight, 0)
+                weight: months.reduce((acc, m) => acc + m.weight, 0),
+                discountAndOther: months.reduce((acc, m) => acc + m.discountAndOther, 0)
             }
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getLedgerTransactions = async (req, res, next) => {
+    const { id } = req.params;
+    const { startDate, endDate } = req.query;
+
+    try {
+        const ledger = await Ledger.findById(id);
+        if (!ledger) {
+            throw new AppError('Ledger not found', 404);
+        }
+
+        const queryStartDate = startDate ? new Date(startDate) : null;
+        let queryEndDate = endDate ? new Date(endDate) : null;
+
+        // Adjust endDate to end of day if provided
+        if (queryEndDate) {
+            queryEndDate.setHours(23, 59, 59, 999);
+        }
+
+        // Vouchers Query
+        const voucherQuery = {
+            isActive: true,
+            $or: [
+                { 'entries.account': ledger.name }, // For Journal/Contra (using Name string)
+                { account: id },                    // For Payment/Receipt Header (using ObjectId)
+                { 'parties.partyId': id }           // For Payment/Receipt Line Items (using ObjectId)
+            ]
+        };
+
+        if (queryStartDate || queryEndDate) {
+            voucherQuery.date = {};
+            if (queryStartDate) voucherQuery.date.$gte = queryStartDate;
+            if (queryEndDate) voucherQuery.date.$lte = queryEndDate;
+        }
+
+        // Trips Query (for Cash/Bank ledgers used in Sales)
+        const tripQuery = {
+            $or: [
+                { 'sales.cashLedger': id },
+                { 'sales.onlineLedger': id }
+            ]
+        };
+        // Date filter for trips usually uses 'date'
+        if (queryStartDate || queryEndDate) {
+            tripQuery.date = {};
+            if (queryStartDate) tripQuery.date.$gte = queryStartDate;
+            if (queryEndDate) tripQuery.date.$lte = queryEndDate;
+        }
+
+        const [vouchers, trips] = await Promise.all([
+            Voucher.find(voucherQuery).lean().populate('party', 'shopName vendorName').populate('parties.partyId', 'shopName vendorName'),
+            Trip.find(tripQuery).lean().populate('vehicle', 'registrationNumber').populate('supervisor', 'name')
+        ]);
+
+        let transactions = [];
+
+        // Process Vouchers
+        vouchers.forEach(v => {
+            let debit = 0;
+            let credit = 0;
+            let description = v.narration || v.voucherType;
+            let refNo = v.voucherNumber;
+
+            // Determine Debit/Credit for this ledger
+            if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+                // If ledger is the ACCOUNT (Header)
+                if (v.account && v.account.toString() === id.toString()) {
+                    const totalAmount = v.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
+                    if (v.voucherType === 'Payment') {
+                        credit += totalAmount;
+                    } else {
+                        debit += totalAmount;
+                    }
+                    description += ` (Parties: ${v.partyName || 'Multiple'})`;
+                }
+
+                // If ledger is in PARTIES (Line Items)
+                if (v.parties) {
+                    v.parties.forEach(p => {
+                        if (p.partyId && p.partyId.toString() === id.toString()) {
+                            if (v.voucherType === 'Payment') {
+                                debit += p.amount || 0;
+                            } else {
+                                credit += p.amount || 0;
+                            }
+                        }
+                    });
+                }
+            } else {
+                // Contra / Journal
+                v.entries.forEach(e => {
+                    if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                        debit += e.debitAmount || 0;
+                        credit += e.creditAmount || 0;
+                    }
+                });
+            }
+
+            if (debit > 0 || credit > 0) {
+                transactions.push({
+                    _id: v._id,
+                    date: v.date,
+                    type: v.voucherType,
+                    refNo: `VCH-${refNo}`,
+                    description,
+                    debit,
+                    credit,
+                    source: 'voucher',
+                    narration: v.narration || ''
+                });
+            }
+        });
+
+        // Process Trips
+        trips.forEach(t => {
+            if (t.sales) {
+                t.sales.forEach(s => {
+                    let debit = 0;
+                    let credit = 0;
+                    let isRelevant = false;
+
+                    if (s.cashLedger && s.cashLedger.toString() === id.toString()) {
+                        debit += s.cashPaid || 0;
+                        isRelevant = true;
+                    }
+                    if (s.onlineLedger && s.onlineLedger.toString() === id.toString()) {
+                        debit += s.onlinePaid || 0;
+                        isRelevant = true;
+                    }
+
+                    if (isRelevant && (debit > 0)) {
+                        transactions.push({
+                            _id: t._id,
+                            date: t.date,
+                            type: 'Trip Sale',
+                            refNo: t.tripId,
+                            description: `Sale Bill: ${s.billNumber} (${s.birds} birds) - ${s.product || 'Bird Sale'}`,
+                            debit,
+                            credit,
+                            source: 'trip'
+                        });
+                    }
+                });
+            }
+        });
+
+        // Calculate Opening Balance if StartDate is present
+        // Use Ledger's opening balance + sum of all previous transactions
+
+        let openingBalance = ledger.openingBalance || 0;
+        let openingType = ledger.openingBalanceType || 'debit';
+        let signedOpening = toSignedValue(openingBalance, openingType);
+
+        if (queryStartDate) {
+            // Find transactions BEFORE queryStartDate
+            const preVoucherQuery = {
+                isActive: true,
+                date: { $lt: queryStartDate },
+                $or: [
+                    { 'entries.account': ledger.name },
+                    { account: id },
+                    { 'parties.partyId': id }
+                ]
+            };
+            const preTripQuery = {
+                date: { $lt: queryStartDate },
+                $or: [
+                    { 'sales.cashLedger': id },
+                    { 'sales.onlineLedger': id }
+                ]
+            };
+
+            const [preVouchers, preTrips] = await Promise.all([
+                Voucher.find(preVoucherQuery).lean().select('voucherType date account parties entries'),
+                Trip.find(preTripQuery).lean().select('sales date')
+            ]);
+
+            preVouchers.forEach(v => {
+                let debit = 0;
+                let credit = 0;
+                if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+                    if (v.account && v.account.toString() === id.toString()) {
+                        const total = v.parties.reduce((s, p) => s + (p.amount || 0), 0);
+                        if (v.voucherType === 'Payment') credit += total;
+                        else debit += total;
+                    }
+                    if (v.parties) {
+                        v.parties.forEach(p => {
+                            if (p.partyId && p.partyId.toString() === id.toString()) {
+                                if (v.voucherType === 'Payment') debit += p.amount || 0;
+                                else credit += p.amount || 0;
+                            }
+                        });
+                    }
+                } else {
+                    v.entries.forEach(e => {
+                        if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                            debit += e.debitAmount || 0;
+                            credit += e.creditAmount || 0;
+                        }
+                    });
+                }
+                signedOpening += (debit - credit);
+            });
+
+            preTrips.forEach(t => {
+                if (t.sales) {
+                    t.sales.forEach(s => {
+                        let debit = 0;
+                        if (s.cashLedger && s.cashLedger.toString() === id.toString()) debit += s.cashPaid || 0;
+                        if (s.onlineLedger && s.onlineLedger.toString() === id.toString()) debit += s.onlinePaid || 0;
+                        signedOpening += debit;
+                    });
+                }
+            });
+        }
+
+        // Sort transactions
+        transactions.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Calculate Running Balance
+        let currentBalance = signedOpening;
+        transactions = transactions.map(t => {
+            currentBalance += (t.debit - t.credit);
+            const formatted = fromSignedValue(currentBalance);
+            return {
+                ...t,
+                runningBalance: formatted.amount,
+                runningBalanceType: formatted.type
+            };
+        });
+
+        // Final Opening Balance for Display (at queryStartDate)
+        const displayOpening = fromSignedValue(signedOpening);
+
+        // Add Opening Balance Entry
+        transactions.unshift({
+            _id: 'op_bal',
+            date: queryStartDate || ledger.createdAt || new Date(),
+            type: 'OPENING',
+            refNo: '-',
+            description: 'OP',
+            debit: 0,
+            credit: 0,
+            runningBalance: displayOpening.amount,
+            runningBalanceType: displayOpening.type
+        });
+
+        successResponse(res, "Ledger transactions retrieved", 200, {
+            ledger: {
+                _id: ledger._id,
+                name: ledger.name,
+                group: ledger.group
+            },
+            openingBalance: displayOpening.amount,
+            openingBalanceType: displayOpening.type,
+            transactions,
+            closingBalance: transactions.length > 0 ? transactions[transactions.length - 1].runningBalance : displayOpening.amount,
+            closingBalanceType: transactions.length > 0 ? transactions[transactions.length - 1].runningBalanceType : displayOpening.type
         });
 
     } catch (error) {

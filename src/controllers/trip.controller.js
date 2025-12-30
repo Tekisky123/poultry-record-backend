@@ -7,6 +7,7 @@ import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
 import { addToBalance, subtractFromBalance, toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
 import { addSaleWhatsappMessage } from "../utils/addSaleWhatsappMessage.js";
+import { sendSaleSms, sendReceiptSms } from "../services/sms.service.js";
 
 const buildTransferPopulate = (depth = 3) => {
     if (depth <= 0) return null;
@@ -311,6 +312,7 @@ export const addSale = async (req, res, next) => {
     try {
         const { id } = req.params;
         let saleData = req.body;
+        const sendSms = req.body.sendSms; // Extract SMS flag
 
         saleData = {
             ...saleData,
@@ -548,6 +550,53 @@ export const addSale = async (req, res, next) => {
 
         // await addSaleWhatsappMessage(populatedTrip.sales[0].client.contact);
 
+        // Send SMS if requested
+        if (sendSms && populatedTrip.sales.length > 0) {
+            // Get the last added sale (since we used push)
+            const newSale = populatedTrip.sales[populatedTrip.sales.length - 1];
+
+            if (newSale.client) { // Only send if client exists
+                const customerName = newSale.client.shopName || newSale.client.ownerName || 'Customer';
+                const mobileNumber = newSale.client.contact;
+
+                // Determine if it is a Receipt or Sale
+                const isReceipt = (newSale.birds === 0 || !newSale.birds) &&
+                    (newSale.weight === 0 || !newSale.weight) &&
+                    (newSale.amount === 0 || !newSale.amount);
+
+                if (isReceipt) {
+                    // For receipt, amount is the total paid
+                    const totalPaid = (newSale.cashPaid || 0) + (newSale.onlinePaid || 0);
+                    if (totalPaid > 0) {
+                        try {
+                            await sendReceiptSms(
+                                customerName,
+                                totalPaid,
+                                newSale.billNumber,
+                                newSale.date || new Date(),
+                                mobileNumber
+                            );
+                        } catch (smsError) {
+                            console.error('Failed to send Receipt SMS:', smsError);
+                        }
+                    }
+                } else {
+                    // For sale
+                    try {
+                        await sendSaleSms(
+                            customerName,
+                            newSale.amount,
+                            newSale.billNumber,
+                            newSale.date || new Date(),
+                            mobileNumber
+                        );
+                    } catch (smsError) {
+                        console.error('Failed to send Sale SMS:', smsError);
+                    }
+                }
+            }
+        }
+
         successResponse(res, "Sale added to trip", 200, populatedTrip);
     } catch (error) {
         next(error);
@@ -644,6 +693,7 @@ export const editSale = async (req, res, next) => {
     try {
         const { id, index } = req.params;
         const saleData = req.body;
+        const sendSms = req.body.sendSms; // Extract SMS flag
 
         // Clean up optional ObjectId fields - remove empty strings
         if (!saleData.cashLedger || saleData.cashLedger === '') {
@@ -972,6 +1022,49 @@ export const editSale = async (req, res, next) => {
             .populate('supervisor', 'name mobileNumber')
             .populate('purchases.supplier', 'vendorName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
+
+        // Send SMS if requested
+        if (sendSms && saleIndex >= 0 && populatedTrip.sales[saleIndex]) {
+            const updatedSale = populatedTrip.sales[saleIndex];
+
+            if (updatedSale.client) {
+                const customerName = updatedSale.client.shopName || updatedSale.client.ownerName || 'Customer';
+                const mobileNumber = updatedSale.client.contact;
+
+                const isReceipt = (updatedSale.birds === 0 || !updatedSale.birds) &&
+                    (updatedSale.weight === 0 || !updatedSale.weight) &&
+                    (updatedSale.amount === 0 || !updatedSale.amount);
+
+                if (isReceipt) {
+                    const totalPaid = (updatedSale.cashPaid || 0) + (updatedSale.onlinePaid || 0);
+                    if (totalPaid > 0) {
+                        try {
+                            await sendReceiptSms(
+                                customerName,
+                                totalPaid,
+                                updatedSale.billNumber,
+                                updatedSale.date || new Date(),
+                                mobileNumber
+                            );
+                        } catch (smsError) {
+                            console.error('Failed to send Receipt SMS (Edit):', smsError);
+                        }
+                    }
+                } else {
+                    try {
+                        await sendSaleSms(
+                            customerName,
+                            updatedSale.amount,
+                            updatedSale.billNumber,
+                            updatedSale.date || new Date(),
+                            mobileNumber
+                        );
+                    } catch (smsError) {
+                        console.error('Failed to send Sale SMS (Edit):', smsError);
+                    }
+                }
+            }
+        }
 
         successResponse(res, "Sale updated successfully", 200, populatedTrip);
     } catch (error) {
@@ -1795,6 +1888,66 @@ export const completeTripDetails = async (req, res, next) => {
             .populate('transferredFrom', 'tripId');
 
         successResponse(res, "Trip details completed successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Get monthly trip statistics (profit, rent, etc.)
+export const getMonthlyTripStats = async (req, res, next) => {
+    try {
+        const { year } = req.query;
+        let startYear;
+
+        if (year) {
+            startYear = parseInt(year);
+        } else {
+            const today = new Date();
+            // If month is Jan(0), Feb(1), Mar(2), current FY started last year
+            startYear = today.getMonth() <= 2 ? today.getFullYear() - 1 : today.getFullYear();
+        }
+
+        const startDate = new Date(startYear, 3, 1); // Apr 1
+        const endDate = new Date(startYear + 1, 3, 1); // Apr 1 next year (exclusive)
+
+        // Generate months array for standard Indian FY (Apr-Mar)
+        const months = [];
+        for (let i = 0; i < 12; i++) {
+            const mStart = new Date(startYear, 3 + i, 1);
+            const mEnd = new Date(startYear, 3 + i + 1, 1);
+            months.push({
+                name: mStart.toLocaleString('en-US', { month: 'long', year: 'numeric' }),
+                startDate: mStart.toISOString(),
+                endDate: mEnd.toISOString(),
+                netProfit: 0,
+                grossRent: 0,
+                tripCount: 0
+            });
+        }
+
+        // We only want trips within this date range
+        const trips = await Trip.find({
+            date: { $gte: startDate, $lt: endDate }
+        }).select('date summary.netProfit summary.grossRent tripId');
+
+        trips.forEach(trip => {
+            const tDate = new Date(trip.date);
+            // Find matching month bin
+            const idx = months.findIndex(m => tDate >= new Date(m.startDate) && tDate < new Date(m.endDate));
+            if (idx !== -1) {
+                months[idx].netProfit += (trip.summary?.netProfit || 0);
+                months[idx].grossRent += (trip.summary?.grossRent || 0);
+                months[idx].tripCount += 1;
+            }
+        });
+
+        const totals = {
+            netProfit: months.reduce((acc, m) => acc + m.netProfit, 0),
+            grossRent: months.reduce((acc, m) => acc + m.grossRent, 0),
+            tripCount: months.reduce((acc, m) => acc + m.tripCount, 0),
+        };
+
+        successResponse(res, "Monthly trip stats retrieved", 200, { months, totals });
     } catch (error) {
         next(error);
     }

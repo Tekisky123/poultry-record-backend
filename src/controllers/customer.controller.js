@@ -418,6 +418,25 @@ export const getCustomerDashboardStats = async (req, res, next) => {
             .populate('vehicle', 'vehicleNumber')
             .sort({ createdAt: -1 });
 
+        // Fetch Vouchers for "Other" calculations (similar to ledger logic)
+        const Voucher = (await import('../models/Voucher.js')).default;
+        const vouchers = await Voucher.find({
+            voucherType: { $in: ['Payment', 'Receipt', 'Journal'] },
+            isActive: true,
+            $or: [
+                {
+                    parties: {
+                        $elemMatch: {
+                            partyId: customerId,
+                            partyType: 'customer'
+                        }
+                    }
+                },
+                // For Journal: match via account name if needed (ledger logic uses name)
+                { "entries.account": customer.shopName }
+            ]
+        }).lean();
+
         // Calculate stats from sales data
         let totalPurchases = 0;
         let totalAmount = 0;
@@ -425,6 +444,7 @@ export const getCustomerDashboardStats = async (req, res, next) => {
         let totalBirds = 0;
         let totalWeight = 0;
         let pendingPayments = 0;
+        let totalDiscountAndOther = 0;
 
         trips.forEach(trip => {
             trip.sales.forEach(sale => {
@@ -435,8 +455,49 @@ export const getCustomerDashboardStats = async (req, res, next) => {
                     totalBirds += sale.birds || 0;
                     totalWeight += sale.weight || 0;
                     pendingPayments += sale.outstandingBalance || 0;
+
+                    // Add sales discount to Discount & Other
+                    if (sale.discount > 0) {
+                        totalDiscountAndOther += sale.discount;
+                    }
                 }
             });
+        });
+
+        // Add Voucher amounts to Discount & Other
+        // Logic mirrors ledger: 
+        // Payment Voucher -> RECEIPT (Excluded)
+        // Receipt Voucher -> PAYMENT (Included)
+        // Journal Voucher -> JOURNAL (Included)
+        vouchers.forEach(voucher => {
+            let particulars = '';
+            let amount = 0;
+
+            if (voucher.voucherType === 'Payment') {
+                particulars = 'RECEIPT';
+                const partyData = voucher.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
+                amount = partyData ? partyData.amount : 0;
+            } else if (voucher.voucherType === 'Receipt') {
+                particulars = 'PAYMENT';
+                const partyData = voucher.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
+                amount = partyData ? partyData.amount : 0;
+            } else {
+                particulars = 'JOURNAL';
+                // Calculate journal amount for this customer
+                const entry = voucher.entries?.find(e => e.account === customer.shopName);
+                if (entry) {
+                    amount = entry.debitAmount !== 0 ? entry.debitAmount : entry.creditAmount;
+                }
+            }
+
+            // Filter based on user's excluded list
+            // Excluded: ['INDIRECT_PURCHASE', 'INDIRECT_SALES', 'SALES', 'PURCHASE', 'BY CASH RECEIPT', 'BY BANK RECEIPT', 'RECEIPT', 'OP BAL']
+            // Included: 'PAYMENT' (Receipt Voucher), 'JOURNAL', 'DISCOUNT' (already added)
+            const excludedParticulars = ['INDIRECT_PURCHASE', 'INDIRECT_SALES', 'SALES', 'PURCHASE', 'BY CASH RECEIPT', 'BY BANK RECEIPT', 'RECEIPT', 'OP BAL'];
+
+            if (!excludedParticulars.includes(particulars)) {
+                totalDiscountAndOther += amount;
+            }
         });
 
         const stats = {
@@ -448,7 +509,8 @@ export const getCustomerDashboardStats = async (req, res, next) => {
             totalWeight,
             pendingPayments,
             openingBalance: customer.openingBalance || 0,
-            outstandingBalance: customer.outstandingBalance || 0
+            outstandingBalance: customer.outstandingBalance || 0,
+            totalDiscountAndOther
         };
 
         successResponse(res, "Customer dashboard stats retrieved successfully", 200, stats);
@@ -756,8 +818,17 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 ? (entryJrVchr.debitAmount !== 0 ? 'debit' : 'credit')
                 : '';
 
+            // Calculate amount for specific customer in Payment/Receipt vouchers
+            let voucherAmount = 0;
+            if (voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') {
+                const partyData = voucher.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
+                voucherAmount = partyData ? partyData.amount : 0;
+            } else if (voucher.voucherType === 'Journal') {
+                voucherAmount = amountJrVchr;
+            }
+
             ledgerEntries.push({
-                _id: `voucher_${voucher._id}_${voucher.voucherType === 'Journal' ? customerForVoucher._id : voucher.partyId}`,
+                _id: `voucher_${voucher._id}_${voucher.voucherType === 'Journal' ? customerForVoucher._id : voucher.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString())?.partyId}`,
                 date: voucher.date,
                 vehiclesNo: '',
                 driverName: '',
@@ -770,11 +841,12 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 weight: 0,
                 avgWeight: 0,
                 rate: 0,
-                amount: voucher.voucherType === 'Journal' ? amountJrVchr : voucher.amount || 0,
+                amount: voucherAmount,
                 outstandingBalance: 0, // Will be calculated below
                 trip: null,
                 isVoucher: true, // Flag to identify voucher entries
                 amountType: amountTypeJrVchr || '',
+                narration: voucher.narration || ''
             });
         });
 
@@ -910,6 +982,13 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             totalAmount: ledgerEntries.reduce((sum, entry) => sum + (entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.amount : 0), 0),
             totalReceipt: ledgerEntries.reduce((sum, entry) => {
                 if (receiptParticulars.includes(entry.particulars)) {
+                    return sum + (entry.amount || 0);
+                }
+                return sum;
+            }, 0),
+            totalDiscountAndOther: ledgerEntries.reduce((sum, entry) => {
+                const excludedParticulars = ['INDIRECT_PURCHASE', 'INDIRECT_SALES', 'SALES', 'PURCHASE', 'BY CASH RECEIPT', 'BY BANK RECEIPT', 'RECEIPT', 'OP BAL'];
+                if (!excludedParticulars.includes(entry.particulars)) {
                     return sum + (entry.amount || 0);
                 }
                 return sum;

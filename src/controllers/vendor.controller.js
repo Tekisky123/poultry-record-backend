@@ -236,6 +236,13 @@ export const getVendorLedger = async (req, res, next) => {
             isActive: true,
             ...dateQuery
         };
+
+        const filterType = req.query.filterType;
+        if (filterType === 'PURCHASE') {
+            // Only include Purchase type vouchers if filtering for Purchases
+            voucherQuery.voucherType = 'Purchase';
+        }
+
         const vouchers = await Voucher.find(voucherQuery).lean();
 
         // 3. Fetch Indirect Sales
@@ -249,11 +256,18 @@ export const getVendorLedger = async (req, res, next) => {
 
         // 3. Calculate Opening Balance for the filtered period
         let periodOpeningBalance = vendor.openingBalance || 0;
-        if (vendor.openingBalanceType === 'debit') {
-            periodOpeningBalance = -periodOpeningBalance;
+        if (filterType === 'PURCHASE') {
+            // If filtering for Purchases only, we show 0 opening balance to list only relevant records
+            periodOpeningBalance = 0;
+        } else {
+            if (vendor.openingBalanceType === 'debit') {
+                periodOpeningBalance = -periodOpeningBalance;
+            }
         }
 
-        if (startDate) {
+        if (startDate && filterType !== 'PURCHASE') {
+            // Fetch all previous trips
+            // ... (Only fetch previous balances if NOT filtering for specific records)
             // Fetch all previous trips
             const prevTrips = await Trip.find({
                 'purchases.supplier': id,
@@ -458,7 +472,8 @@ export const getVendorLedger = async (req, res, next) => {
                     tripId: '-',
                     voucherNo: voucher.voucherNumber ? `VCH-${voucher.voucherNumber}` : '-',
                     timestamp: new Date(voucher.date).getTime(),
-                    amountType: amountType // Store this for balance calc
+                    amountType: amountType, // Store this for balance calc
+                    narration: voucher.narration || ''
                 });
             }
         }

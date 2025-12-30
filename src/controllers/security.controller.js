@@ -18,7 +18,6 @@ import Payment from '../models/Payment.js';
 import Group from '../models/Group.js';
 import Ledger from '../models/Ledger.js';
 import Voucher from '../models/Voucher.js';
-import IndirectExpense from '../models/IndirectExpense.js';
 import IndirectSale from '../models/IndirectSale.js';
 import DieselStation from '../models/DieselStation.js';
 
@@ -33,7 +32,6 @@ const models = {
     'groups': Group,
     'ledgers': Ledger,
     'vouchers': Voucher,
-    'indirect_expenses': IndirectExpense,
     'indirect_sales': IndirectSale,
     'diesel_stations': DieselStation
 };

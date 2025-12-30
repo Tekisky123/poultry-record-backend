@@ -263,53 +263,221 @@ export const getGroupsByType = async (req, res, next) => {
 };
 
 // Calculate ledger balance from vouchers up to asOnDate
-const calculateLedgerBalance = async (ledgerId, openingBalance, openingBalanceType, asOnDate = null, preFetchedVouchers = null) => {
+
+// Updated to accept ledgerName and calculate correctly
+const calculateLedgerBalance = async (ledgerId, ledgerName, openingBalance, openingBalanceType, startDate = null, endDate = null, preFetchedVouchers = null, preFetchedTrips = null) => {
     try {
+        let periodDebit = 0;
+        let periodCredit = 0;
+        let openingMovement = 0;
+
+        const start = startDate ? new Date(startDate) : null;
+        const end = endDate ? new Date(endDate) : null;
+        if (end) {
+            end.setHours(23, 59, 59, 999);
+        }
+
         let vouchers = preFetchedVouchers;
 
         if (!vouchers) {
             const query = {
                 isActive: true
             };
-
-            if (asOnDate) {
-                query.date = { $lte: new Date(asOnDate) };
+            if (end) {
+                query.date = { $lte: end };
             }
             vouchers = await Voucher.find(query).lean();
         }
 
-        let debitTotal = 0;
-        let creditTotal = 0;
+        if (Array.isArray(vouchers)) {
+            vouchers.forEach(voucher => {
+                const vDate = new Date(voucher.date);
+                if (end && vDate > end) return;
 
-        // Create a quick lookup set or use efficient iteration
-        // Since we iterate all vouchers, it's fine for now if voucher list isn't huge.
-        // If huge, we should optimize further.
-        vouchers.forEach(voucher => {
-            if (asOnDate && new Date(voucher.date) > new Date(asOnDate)) return;
+                // Only consider posted vouchers
+                // if (voucher.status && voucher.status !== 'posted') return;
 
-            voucher.entries.forEach(entry => {
-                // Match by ledger ID
-                if (entry.account && entry.account.toString() === ledgerId.toString()) {
-                    debitTotal += entry.debitAmount || 0;
-                    creditTotal += entry.creditAmount || 0;
+                const isBeforeStart = start && vDate < start;
+                let vDebit = 0;
+                let vCredit = 0;
+
+                const ledgerIdStr = ledgerId.toString();
+                const ledgerNameStr = ledgerName ? ledgerName.trim().toLowerCase() : '';
+
+                // 1. Check entries (Journal, Contra, or Payment/Receipt splits)
+                if (voucher.entries) {
+                    voucher.entries.forEach(entry => {
+                        let isMatch = false;
+                        if (entry.account) {
+                            const entryAcc = entry.account.toString().trim().toLowerCase();
+                            // Match by Name or ID
+                            if (entryAcc === ledgerNameStr || entryAcc === ledgerIdStr) {
+                                isMatch = true;
+                            }
+                        }
+
+                        if (isMatch) {
+                            vDebit += entry.debitAmount || 0;
+                            vCredit += entry.creditAmount || 0;
+                        }
+                    });
+                }
+
+                // 2. Check parties (Payment/Receipt line items where partyType is 'ledger')
+                if ((voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') && voucher.parties) {
+                    voucher.parties.forEach(party => {
+                        if (party.partyType === 'ledger' && party.partyId && party.partyId.toString() === ledgerIdStr) {
+                            if (voucher.voucherType === 'Payment') {
+                                // Payment to ledger: Ledger gets Debited 
+                                vDebit += party.amount || 0;
+                            } else if (voucher.voucherType === 'Receipt') {
+                                // Receipt from ledger: Ledger gets Credited 
+                                vCredit += party.amount || 0;
+                            }
+                        }
+                    });
+                }
+
+                // 3. Check account (Payment/Receipt Header - e.g. Cash/Bank Ledger)
+                if ((voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') && voucher.account) {
+                    if (voucher.account.toString() === ledgerIdStr) {
+                        const totalAmount = voucher.parties ? voucher.parties.reduce((sum, p) => sum + (p.amount || 0), 0) : 0;
+
+                        if (voucher.voucherType === 'Payment') {
+                            // Payment from Account: Account gets Credited 
+                            vCredit += totalAmount;
+                        } else if (voucher.voucherType === 'Receipt') {
+                            // Receipt to Account: Account gets Debited 
+                            vDebit += totalAmount;
+                        }
+                    }
+                }
+
+                if (isBeforeStart) {
+                    openingMovement += (vDebit - vCredit);
+                } else {
+                    periodDebit += vDebit;
+                    periodCredit += vCredit;
                 }
             });
-        });
+        }
+
+        // Get trips
+        let trips = preFetchedTrips;
+        if (!trips) {
+            // Only fetch if we suspect this ledger might be involved in trips (Cash/Bank)
+            // Or just fetch matching trips
+            const tripQuery = {
+                $or: [
+                    { 'sales.cashLedger': ledgerId },
+                    { 'sales.onlineLedger': ledgerId }
+                ]
+            };
+            if (end) {
+                // optimize: use date from trip schema if possible, but createdAt is used elsewhere
+                tripQuery.createdAt = { $lte: end };
+            }
+            // Only fetch if we really need to? For now, let's fetch.
+            // Note: Trip imports might be needed if not present (it is imported at top)
+            trips = await Trip.find(tripQuery).lean();
+        }
+
+        if (Array.isArray(trips)) {
+            trips.forEach(trip => {
+                const tDate = new Date(trip.createdAt); // Consistent with Vendor/Customer calc
+                if (end && tDate > end) return;
+
+                const isBeforeStart = start && tDate < start;
+                let tDebit = 0;
+                let tCredit = 0;
+
+                if (trip.sales) {
+                    trip.sales.forEach(sale => {
+                        // Cash Payment received -> Debit Cash Ledger
+                        if (sale.cashLedger && sale.cashLedger.toString() === ledgerId.toString()) {
+                            tDebit += (sale.cashPaid || 0);
+                        }
+                        // Online Payment received -> Debit Bank Ledger
+                        if (sale.onlineLedger && sale.onlineLedger.toString() === ledgerId.toString()) {
+                            tDebit += (sale.onlinePaid || 0);
+                        }
+                    });
+                }
+
+                if (isBeforeStart) {
+                    openingMovement += (tDebit - tCredit);
+                } else {
+                    periodDebit += tDebit;
+                    periodCredit += tCredit;
+                }
+            });
+        }
 
         // Start with opening balance
         const openingSigned = toSignedValue(openingBalance || 0, openingBalanceType || 'debit');
 
-        // Add transactions
-        const finalSigned = openingSigned + debitTotal - creditTotal;
+        // Total flow
+        const calculatedOpening = openingSigned + openingMovement;
+        const finalSigned = calculatedOpening + periodDebit - periodCredit;
+
+        // Calculate Discount & Other for Ledger
+        let discountAndOther = 0;
+        if (Array.isArray(vouchers)) {
+            vouchers.forEach(voucher => {
+                const vDate = new Date(voucher.date);
+                if (end && vDate > end) return;
+
+                let isMatch = false;
+                let amount = 0;
+
+                // Match Logic (simplified from main loop)
+                const ledgerIdStr = ledgerId.toString();
+                const ledgerNameStr = ledgerName ? ledgerName.trim().toLowerCase() : '';
+
+                if (voucher.entries) {
+                    voucher.entries.forEach(entry => {
+                        const entryAcc = entry.account ? entry.account.toString().trim().toLowerCase() : '';
+                        if (entryAcc === ledgerNameStr || entryAcc === ledgerIdStr) {
+                            isMatch = true;
+                            amount += (entry.debitAmount || 0) + (entry.creditAmount || 0);
+                        }
+                    });
+                }
+                if (!isMatch && (voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') && voucher.parties) {
+                    voucher.parties.forEach(party => {
+                        if (party.partyType === 'ledger' && party.partyId && party.partyId.toString() === ledgerIdStr) {
+                            isMatch = true;
+                            amount += party.amount || 0;
+                        }
+                    });
+                }
+                if (!isMatch && (voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') && voucher.account) {
+                    if (voucher.account.toString() === ledgerIdStr) {
+                        const totalAmount = voucher.parties ? voucher.parties.reduce((sum, p) => sum + (p.amount || 0), 0) : 0;
+                        isMatch = true;
+                        amount += totalAmount;
+                    }
+                }
+
+                if (isMatch) {
+                    // Logic: Journal included
+                    if (voucher.voucherType !== 'Receipt' && voucher.voucherType !== 'Payment') {
+                        discountAndOther += amount;
+                    }
+                }
+            });
+        }
 
         return {
-            debitTotal,
-            creditTotal,
-            finalBalance: finalSigned
+            debitTotal: periodDebit,
+            creditTotal: periodCredit,
+            finalBalance: finalSigned,
+            openingBalance: calculatedOpening,
+            discountAndOther
         };
     } catch (error) {
         console.error('Error calculating ledger balance:', error);
-        return { debitTotal: 0, creditTotal: 0, finalBalance: 0 };
+        return { debitTotal: 0, creditTotal: 0, finalBalance: 0, openingBalance: 0 };
     }
 };
 
@@ -330,7 +498,7 @@ const calculateCustomerBalance = async (customerId, customerName, openingBalance
         if (!vouchers) {
             const voucherQuery = {
                 isActive: true,
-                status: 'posted'
+                // status: 'posted'
             };
             if (end) {
                 voucherQuery.date = { $lte: end };
@@ -342,7 +510,7 @@ const calculateCustomerBalance = async (customerId, customerName, openingBalance
         vouchers.forEach(voucher => {
             const vDate = new Date(voucher.date);
             if (end && vDate > end) return;
-            if (voucher.status !== 'posted') return;
+            // if (voucher.status !== 'posted') return;
 
             const isBeforeStart = start && vDate < start;
             let vDebit = 0;
@@ -427,13 +595,77 @@ const calculateCustomerBalance = async (customerId, customerName, openingBalance
         const calculatedOpening = openingSigned + openingMovement;
         const finalSigned = calculatedOpening + periodDebit - periodCredit;
 
+        // Calculate Discount & Other (Matching customer.controller.js logic)
+        let discountAndOther = 0;
+
+        // 1. From Vouchers
+        if (Array.isArray(vouchers)) {
+            vouchers.forEach(voucher => {
+                const vDate = new Date(voucher.date);
+                if (end && vDate > end) return;
+                // if (voucher.status !== 'posted') return; // consistency with main loop
+
+                let isMatch = false;
+                let amount = 0;
+
+                // Check parties
+                if (voucher.parties) {
+                    voucher.parties.forEach(party => {
+                        if (party.partyId && party.partyId.toString() === customerId.toString() && party.partyType === 'customer') {
+                            isMatch = true;
+                            amount += party.amount || 0;
+                        }
+                    });
+                }
+
+                // Check entries (backup)
+                if (!isMatch && voucher.entries) {
+                    voucher.entries.forEach(entry => {
+                        if (entry.account && entry.account.trim().toLowerCase() === customerName.trim().toLowerCase()) {
+                            isMatch = true;
+                            // Add max(debit, credit) as amount
+                            amount += (entry.debitAmount || 0) + (entry.creditAmount || 0);
+                        }
+                    });
+                }
+
+                if (isMatch) {
+                    // Logic: 
+                    // Payment Voucher -> 'RECEIPT' (Excluded)
+                    // Receipt Voucher -> 'PAYMENT' (Included) - Customer pays us
+                    // Journal Voucher -> 'JOURNAL' (Included)
+
+                    if (voucher.voucherType !== 'Receipt' && voucher.voucherType !== 'Payment') {
+                        discountAndOther += amount;
+                    }
+                }
+            });
+        }
+
+        // 2. From Trips (Sales)
+        if (Array.isArray(trips)) {
+            trips.forEach(trip => {
+                const tDate = new Date(trip.createdAt);
+                if (end && tDate > end) return;
+
+                if (trip.sales) {
+                    trip.sales.forEach(sale => {
+                        if (sale.client && sale.client.toString() === customerId.toString()) {
+                            discountAndOther += sale.discount || 0;
+                        }
+                    });
+                }
+            });
+        }
+
         return {
             debitTotal: periodDebit,
             creditTotal: periodCredit,
             finalBalance: finalSigned,
             openingBalance: calculatedOpening,
             birdsTotal,
-            weightTotal
+            weightTotal,
+            discountAndOther
         };
     } catch (error) {
         console.error('Error calculating customer balance:', error);
@@ -458,7 +690,7 @@ const calculateVendorBalance = async (vendorId, vendorName, startDate = null, en
         if (!vouchers) {
             const voucherQuery = {
                 isActive: true,
-                status: 'posted'
+                // status: 'posted'
             };
             if (end) {
                 voucherQuery.date = { $lte: end };
@@ -470,7 +702,7 @@ const calculateVendorBalance = async (vendorId, vendorName, startDate = null, en
         vouchers.forEach(voucher => {
             const vDate = new Date(voucher.date);
             if (end && vDate > end) return;
-            if (voucher.status !== 'posted') return;
+            // if (voucher.status !== 'posted') return;
 
             const isBeforeStart = start && vDate < start;
             let vDebit = 0;
@@ -557,13 +789,52 @@ const calculateVendorBalance = async (vendorId, vendorName, startDate = null, en
         const calculatedOpening = openingSigned + openingMovement;
         const finalSigned = calculatedOpening + periodDebit - periodCredit;
 
+        // Calculate Discount & Other
+        // Logic: Journal + Receipt (Money In). Exclude Payment (Money Out).
+        let discountAndOther = 0;
+
+        if (Array.isArray(vouchers)) {
+            vouchers.forEach(voucher => {
+                const vDate = new Date(voucher.date);
+                if (end && vDate > end) return;
+
+                let isMatch = false;
+                let amount = 0;
+
+                if (voucher.parties) {
+                    voucher.parties.forEach(party => {
+                        if (party.partyId && party.partyId.toString() === vendorId.toString() && party.partyType === 'vendor') {
+                            isMatch = true;
+                            amount += party.amount || 0;
+                        }
+                    });
+                }
+
+                if (!isMatch && voucher.entries) {
+                    voucher.entries.forEach(entry => {
+                        if (entry.account && entry.account.trim().toLowerCase() === vendorName.trim().toLowerCase()) {
+                            isMatch = true;
+                            amount += (entry.debitAmount || 0) + (entry.creditAmount || 0);
+                        }
+                    });
+                }
+
+                if (isMatch) {
+                    if (voucher.voucherType === 'Receipt' || voucher.voucherType === 'Journal') {
+                        discountAndOther += amount;
+                    }
+                }
+            });
+        }
+
         return {
             debitTotal: periodDebit,
             creditTotal: periodCredit,
             finalBalance: finalSigned,
             openingBalance: calculatedOpening,
             birdsTotal,
-            weightTotal
+            weightTotal,
+            discountAndOther
         };
     } catch (error) {
         console.error('Error calculating vendor balance:', error);
@@ -628,7 +899,15 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
 
     const allLedgers = await getAllLedgersInGroup(groupId);
     const allCustomers = await getAllCustomersInGroup(groupId);
-    const allVendors = await getAllVendorsInGroup(groupId);
+
+    // Check group name for Purchase Account special case
+    let allVendors = [];
+    const groupDoc = await Group.findById(groupId).select('name');
+    if (groupDoc && (groupDoc.name.trim().toLowerCase() === 'purchase account' || groupDoc.name.trim().toLowerCase() === 'purchase accounts')) {
+        allVendors = await Vendor.find({ isActive: true }).lean();
+    } else {
+        allVendors = await getAllVendorsInGroup(groupId);
+    }
 
     let totalDebit = 0; // Closing Debit
     let totalCredit = 0; // Closing Credit
@@ -636,6 +915,7 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
     let totalWeight = 0;
     let totalTransactionDebit = 0;
     let totalTransactionCredit = 0;
+    let totalDiscountAndOther = 0;
 
     // Calculate from ledgers
     for (const ledger of allLedgers) {
@@ -644,16 +924,19 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
 
         const ledgerBalance = await calculateLedgerBalance(
             ledger._id,
+            ledger.name, // Pass ledger name
             openingBalance,
             openingBalanceType,
             startDate,
             endDate,
-            preFetchedVouchers
+            preFetchedVouchers,
+            preFetchedTrips
         );
 
         const finalSigned = ledgerBalance.finalBalance;
         totalTransactionDebit += ledgerBalance.debitTotal || 0;
         totalTransactionCredit += ledgerBalance.creditTotal || 0;
+        totalDiscountAndOther += ledgerBalance.discountAndOther || 0;
 
         if (groupType === 'Assets' || groupType === 'Expenses') {
             if (finalSigned >= 0) {
@@ -699,6 +982,7 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
         totalWeight += customerBalance.weightTotal || 0;
         totalTransactionDebit += customerBalance.debitTotal || 0;
         totalTransactionCredit += customerBalance.creditTotal || 0;
+        totalDiscountAndOther += customerBalance.discountAndOther || 0;
 
         if (groupType === 'Assets' || groupType === 'Expenses') {
             if (finalSigned >= 0) {
@@ -739,6 +1023,7 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
         totalWeight += vendorBalance.weightTotal || 0;
         totalTransactionDebit += vendorBalance.debitTotal || 0;
         totalTransactionCredit += vendorBalance.creditTotal || 0;
+        totalDiscountAndOther += vendorBalance.discountAndOther || 0;
 
         if (groupType === 'Assets' || groupType === 'Expenses') {
             if (finalSigned >= 0) {
@@ -767,7 +1052,8 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
         birds: totalBirds,
         weight: totalWeight,
         transactionDebit: totalTransactionDebit,
-        transactionCredit: totalTransactionCredit
+        transactionCredit: totalTransactionCredit,
+        discountAndOther: totalDiscountAndOther
     };
 };
 
@@ -793,11 +1079,12 @@ export const getGroupSummary = async (req, res, next) => {
 
         // Fetch all vouchers and trips once
         const voucherQuery = {
-            isActive: true,
-            status: 'posted'
+            isActive: true
         };
         if (finalEndDate) {
-            voucherQuery.date = { $lte: new Date(finalEndDate) };
+            const endDateObj = new Date(finalEndDate);
+            endDateObj.setHours(23, 59, 59, 999);
+            voucherQuery.date = { $lte: endDateObj };
         }
         const vouchers = await Voucher.find(voucherQuery).lean();
 
@@ -811,13 +1098,20 @@ export const getGroupSummary = async (req, res, next) => {
         const subGroups = await Group.find({ parentGroup: id, isActive: true }).sort({ name: 1 }).lean();
         const directLedgers = await Ledger.find({ group: id, isActive: true }).sort({ name: 1 }).lean();
         const directCustomers = await Customer.find({ group: id, isActive: true }).sort({ shopName: 1 }).lean();
-        const directVendors = await Vendor.find({ group: id, isActive: true }).sort({ vendorName: 1 }).lean();
+
+        // Special handling for Purchase Account group - include all vendors
+        let directVendors = [];
+        if (group.name.trim().toLowerCase() === 'purchase account' || group.name.trim().toLowerCase() === 'purchase accounts') {
+            directVendors = await Vendor.find({ isActive: true }).sort({ vendorName: 1 }).lean();
+        } else {
+            directVendors = await Vendor.find({ group: id, isActive: true }).sort({ vendorName: 1 }).lean();
+        }
 
         let entries = [];
 
         // Add sub-groups with their calculated debit/credit (sum of all ledgers in that group)
         for (const subGroup of subGroups) {
-            const { debit, credit, birds, weight, transactionDebit, transactionCredit } = await calculateGroupDebitCredit(
+            const { debit, credit, birds, weight, transactionDebit, transactionCredit, discountAndOther } = await calculateGroupDebitCredit(
                 subGroup._id,
                 group.type,
                 finalStartDate,
@@ -836,6 +1130,7 @@ export const getGroupSummary = async (req, res, next) => {
                 weight: weight || 0,
                 transactionDebit: transactionDebit || 0,
                 transactionCredit: transactionCredit || 0,
+                discountAndOther: discountAndOther || 0,
                 closingBalance: (debit - credit)
             });
         }
@@ -847,11 +1142,13 @@ export const getGroupSummary = async (req, res, next) => {
 
             const ledgerBalance = await calculateLedgerBalance(
                 ledger._id,
+                ledger.name, // Pass ledger name
                 openingBalance,
                 openingBalanceType,
                 finalStartDate,
                 finalEndDate,
-                vouchers
+                vouchers,
+                trips
             );
 
             const finalSigned = ledgerBalance.finalBalance;
@@ -894,6 +1191,7 @@ export const getGroupSummary = async (req, res, next) => {
                 weight: 0,
                 transactionDebit: ledgerBalance.debitTotal || 0,
                 transactionCredit: ledgerBalance.creditTotal || 0,
+                discountAndOther: ledgerBalance.discountAndOther || 0,
                 closingBalance: finalSigned
             });
         }
@@ -948,6 +1246,7 @@ export const getGroupSummary = async (req, res, next) => {
                 credit: credit,
                 transactionDebit: customerBalance.debitTotal,
                 transactionCredit: customerBalance.creditTotal,
+                discountAndOther: customerBalance.discountAndOther || 0,
                 closingBalance: finalSigned,
                 birds: customerBalance.birdsTotal || 0,
                 weight: customerBalance.weightTotal || 0
@@ -1001,6 +1300,7 @@ export const getGroupSummary = async (req, res, next) => {
                 weight: vendorBalance.weightTotal || 0,
                 transactionDebit: vendorBalance.debitTotal || 0,
                 transactionCredit: vendorBalance.creditTotal || 0,
+                discountAndOther: vendorBalance.discountAndOther || 0,
                 closingBalance: finalSigned
             });
         }
@@ -1010,8 +1310,9 @@ export const getGroupSummary = async (req, res, next) => {
             debit: acc.debit + (entry.debit || 0),
             credit: acc.credit + (entry.credit || 0),
             birds: acc.birds + (entry.birds || 0),
-            weight: acc.weight + (entry.weight || 0)
-        }), { debit: 0, credit: 0, birds: 0, weight: 0 });
+            weight: acc.weight + (entry.weight || 0),
+            discountAndOther: acc.discountAndOther + (entry.discountAndOther || 0)
+        }), { debit: 0, credit: 0, birds: 0, weight: 0, discountAndOther: 0 });
 
         successResponse(res, "Group summary retrieved", 200, {
             group: {

@@ -8,6 +8,8 @@ import authorize from '../middleware/authorization.js';
 // Trip CRUD operations (Supervisor can create, Admin/Superadmin can view)
 router.post('/', authenticateToken, authorize(['supervisor']), tripController.addTrip);
 router.get('/', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTrips);
+router.get('/stats/monthly', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getMonthlyTripStats);
+router.get('/stats/overview', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripStats);
 router.get('/:id', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripById);
 router.put('/:id', authenticateToken, authorize(['admin', 'superadmin']), tripController.updateTrip);
 router.delete('/:id', authenticateToken, authorize(['superadmin']), tripController.deleteTrip);
@@ -33,8 +35,5 @@ router.put('/:id/status', authenticateToken, authorize(['supervisor']), tripCont
 // Trip transfer routes (Supervisor)
 router.post('/:id/transfer', authenticateToken, authorize(['supervisor']), tripController.transferTrip);
 router.get('/:id/transfer-history', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripTransferHistory);
-
-// Trip statistics (Admin/Supervisor)
-router.get('/stats/overview', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripStats);
 
 export default router;
