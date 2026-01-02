@@ -16,6 +16,7 @@ import dieselStationRouter from './dieselStation.routes.js';
 import balanceSheetRouter from './balanceSheet.routes.js';
 import securityRouter from './security.routes.js';
 import settingRouter from './setting.routes.js';
+import inventoryStockRouter from './inventoryStock.routes.js';
 
 router.use('/auth', authRouter);
 router.use('/user', userRouter);
@@ -33,5 +34,6 @@ router.use('/diesel-stations', dieselStationRouter);
 router.use('/balance-sheet', balanceSheetRouter);
 router.use('/security', securityRouter);
 router.use('/settings', settingRouter);
+router.use('/inventory-stock', inventoryStockRouter);
 
 export default router;

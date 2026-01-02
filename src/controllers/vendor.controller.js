@@ -3,6 +3,7 @@ import Group from "../models/Group.js";
 import Trip from "../models/Trip.js";
 import Voucher from "../models/Voucher.js";
 import IndirectSale from "../models/IndirectSale.js";
+import InventoryStock from "../models/InventoryStock.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
@@ -254,6 +255,18 @@ export const getVendorLedger = async (req, res, next) => {
         };
         const indirectSales = await IndirectSale.find(indirectSaleQuery).lean().populate('customer', '_id shopName ownerName');
 
+        // 4. Fetch Inventory Stock Purchases (Direct Stock Additions)
+        const stockQuery = {
+            vendorId: id,
+            type: { $in: ['purchase', 'opening'] }, // Include opening? maybe, check logic. Opening is usually separate. Let's stick to purchase if type is purchase.
+            // But wait, the form saves type as 'purchase'. 
+            ...dateQuery
+        };
+        const inventoryStocks = await InventoryStock.find(stockQuery)
+            .populate('vehicleId', 'vehicleNumber')
+            .populate('supervisorId', 'name')
+            .lean();
+
         // 3. Calculate Opening Balance for the filtered period
         let periodOpeningBalance = vendor.openingBalance || 0;
         if (filterType === 'PURCHASE') {
@@ -356,6 +369,23 @@ export const getVendorLedger = async (req, res, next) => {
             for (const sale of prevIndirectSales) {
                 periodOpeningBalance += sale.summary?.totalPurchaseAmount || 0;
             }
+
+            // Fetch previous Inventory Stocks
+            const prevStocks = await InventoryStock.find({
+                vendorId: id,
+                type: { $in: ['purchase', 'opening'] },
+                date: { $lt: new Date(startDate) }
+            }).lean();
+
+            for (const stock of prevStocks) {
+                let stockAmount = stock.amount || 0;
+                // Add TDS logic if needed here too, assuming consistent 
+                if (vendor.tdsApplicable && (vendor.tdsUpdatedAt && new Date(stock.date) > new Date(vendor.tdsUpdatedAt))) {
+                    const tdsAmount = stockAmount * 0.001;
+                    stockAmount -= tdsAmount;
+                }
+                periodOpeningBalance += stockAmount;
+            }
         }
 
         // 3. Normalize Data
@@ -423,6 +453,38 @@ export const getVendorLedger = async (req, res, next) => {
                     voucherNo: sale.invoiceNumber || '-',
                     timestamp: new Date(sale.date).getTime()
                 });
+            });
+        }
+
+        // Process Inventory Stocks
+        for (const stock of inventoryStocks) {
+            let lessTDS = 0;
+            if (vendor.tdsApplicable && (vendor.tdsUpdatedAt && new Date(stock.date) > new Date(vendor.tdsUpdatedAt))) {
+                lessTDS = (stock.amount || 0) * 0.001;
+            }
+
+            ledgerEntries.push({
+                _id: stock._id,
+                uniqueId: `STOCK-${stock._id}`,
+                date: stock.date,
+                type: 'PURCHASE',
+                particulars: 'STOCK_PURCHASE',
+                liftingDate: stock.date,
+                deliveryDate: stock.date,
+                vehicleNo: stock.vehicleId?.vehicleNumber || stock.vehicleNumber || '-',
+                driverName: '-', // Stock doesn't usually track driver unless added
+                supervisor: stock.supervisorId?.name || '-',
+                dcNumber: stock.refNo || '-',
+                birds: stock.birds,
+                weight: stock.weight,
+                avgWeight: stock.avgWeight || (stock.birds > 0 ? stock.weight / stock.birds : 0),
+                rate: stock.rate,
+                amount: stock.amount,
+                lessTDS: lessTDS,
+                tripId: '-',
+                voucherNo: '-', // Could use RefNo if needed
+                timestamp: new Date(stock.date).getTime(),
+                narration: stock.notes || ''
             });
         }
 
@@ -536,9 +598,17 @@ export const getVendorLedger = async (req, res, next) => {
         const paginatedEntries = calculatedEntries.slice(skip, skip + limit);
 
         const totals = {
-            totalBirds: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.birds || 0), 0) + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseBirds || 0), 0),
-            totalWeight: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.weight || 0), 0) + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseWeight || 0), 0),
-            totalAmount: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.amount || 0), 0) + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseAmount || 0), 0)
+            totalBirds: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.birds || 0), 0)
+                + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseBirds || 0), 0)
+                + inventoryStocks.reduce((sum, s) => sum + (s.birds || 0), 0),
+
+            totalWeight: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.weight || 0), 0)
+                + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseWeight || 0), 0)
+                + inventoryStocks.reduce((sum, s) => sum + (s.weight || 0), 0),
+
+            totalAmount: trips.reduce((sum, t) => sum + (t.purchases.find(p => p.supplier && p.supplier._id.toString() === id)?.amount || 0), 0)
+                + indirectSales.reduce((sum, s) => sum + (s.summary?.totalPurchaseAmount || 0), 0)
+                + inventoryStocks.reduce((sum, s) => sum + (s.amount || 0), 0)
         };
 
         // Update Vendor Outstanding Balance (Only if no date filter is applied)

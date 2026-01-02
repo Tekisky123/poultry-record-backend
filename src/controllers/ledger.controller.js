@@ -4,6 +4,7 @@ import Vendor from "../models/Vendor.js";
 import Customer from "../models/Customer.js";
 import Trip from "../models/Trip.js";
 import Voucher from "../models/Voucher.js";
+import InventoryStock from "../models/InventoryStock.js";
 import { toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
@@ -529,9 +530,23 @@ export const getLedgerTransactions = async (req, res, next) => {
             if (queryEndDate) tripQuery.date.$lte = queryEndDate;
         }
 
-        const [vouchers, trips] = await Promise.all([
+        // Inventory Stock Query
+        const stockQuery = {
+            $or: [
+                { 'cashLedgerId': id },
+                { 'onlineLedgerId': id }
+            ]
+        };
+        if (queryStartDate || queryEndDate) {
+            stockQuery.date = {};
+            if (queryStartDate) stockQuery.date.$gte = queryStartDate;
+            if (queryEndDate) stockQuery.date.$lte = queryEndDate;
+        }
+
+        const [vouchers, trips, stocks] = await Promise.all([
             Voucher.find(voucherQuery).lean().populate('party', 'shopName vendorName').populate('parties.partyId', 'shopName vendorName'),
-            Trip.find(tripQuery).lean().populate('vehicle', 'registrationNumber').populate('supervisor', 'name')
+            Trip.find(tripQuery).lean().populate('vehicle', 'registrationNumber').populate('supervisor', 'name'),
+            InventoryStock.find(stockQuery).lean().populate('customerId', 'shopName ownerName')
         ]);
 
         let transactions = [];
@@ -624,6 +639,41 @@ export const getLedgerTransactions = async (req, res, next) => {
                     }
                 });
             }
+
+        });
+
+        // Process Inventory Stocks (Sales/Receipts)
+        stocks.forEach(s => {
+            let debit = 0;
+            let credit = 0;
+            let isRelevant = false;
+
+            // Cash Payment
+            if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) {
+                debit += s.cashPaid || 0;
+                isRelevant = true;
+            }
+
+            // Online Payment
+            if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) {
+                debit += s.onlinePaid || 0;
+                isRelevant = true;
+            }
+
+            if (isRelevant && (debit > 0)) {
+                transactions.push({
+                    _id: s._id,
+                    date: s.date,
+                    type: s.type === 'receipt' ? 'Receipt' : 'Stock Sale',
+                    refNo: s.billNumber || s.refNo || '-',
+                    description: s.type === 'receipt'
+                        ? `STOCK_RECEIPT_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'}`
+                        : `STOCK_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'} (${s.birds || 0} birds)`,
+                    debit,
+                    credit,
+                    source: 'stock'
+                });
+            }
         });
 
         // Calculate Opening Balance if StartDate is present
@@ -652,9 +702,18 @@ export const getLedgerTransactions = async (req, res, next) => {
                 ]
             };
 
-            const [preVouchers, preTrips] = await Promise.all([
+            const stackQuery = {
+                date: { $lt: queryStartDate },
+                $or: [
+                    { 'cashLedgerId': id },
+                    { 'onlineLedgerId': id }
+                ]
+            };
+
+            const [preVouchers, preTrips, preStocks] = await Promise.all([
                 Voucher.find(preVoucherQuery).lean().select('voucherType date account parties entries'),
-                Trip.find(preTripQuery).lean().select('sales date')
+                Trip.find(preTripQuery).lean().select('sales date'),
+                InventoryStock.find(stackQuery).lean().select('cashLedgerId onlineLedgerId cashPaid onlinePaid type')
             ]);
 
             preVouchers.forEach(v => {
@@ -694,6 +753,13 @@ export const getLedgerTransactions = async (req, res, next) => {
                         signedOpening += debit;
                     });
                 }
+            });
+
+            preStocks.forEach(s => {
+                let debit = 0;
+                if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) debit += s.cashPaid || 0;
+                if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) debit += s.onlinePaid || 0;
+                signedOpening += debit; // Sales/Receipts receiving money into Cash/Bank are debits
             });
         }
 

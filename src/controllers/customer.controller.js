@@ -2,6 +2,7 @@ import Customer from "../models/Customer.js";
 import User from "../models/User.js";
 import Trip from "../models/Trip.js";
 import IndirectSale from "../models/IndirectSale.js";
+import InventoryStock from "../models/InventoryStock.js";
 import Group from "../models/Group.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
@@ -583,8 +584,106 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             ]
         }).populate('account', 'name')
             .sort({ date: 1, createdAt: 1 });
+
+        // Fetch Inventory Stock Sales (Direct Sales via Manage Stocks)
+        const stockSales = await InventoryStock.find({
+            customerId: customerId,
+            type: { $in: ['sale', 'receipt'] } // Include receipts from Manage Stocks
+        }).populate('supervisorId', 'name').populate('vehicleId', 'vehicleNumber').lean();
+
         // Transform sales into ledger entries
         const ledgerEntries = [];
+
+        // Process Stock Sales (Manage Stocks)
+        const stockSaleParticularsTitle = req.user.role === 'customer' ? 'STOCK_PURCHASE' : 'STOCK_SALE';
+
+        stockSales.forEach(stock => {
+            let particulars = '';
+            if (stock.type === 'sale') {
+                particulars = stockSaleParticularsTitle;
+            } else if (stock.type === 'receipt') {
+                particulars = req.user.role === 'customer' ? 'PAYMENT' : 'RECEIPT';
+            }
+
+            // Create main entry
+            ledgerEntries.push({
+                _id: `stock_${stock._id}`,
+                date: stock.date,
+                vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
+                driverName: '-',
+                supervisor: stock.supervisorId?.name || '-',
+                product: 'Broiler Chicken',
+                particulars: particulars,
+                invoiceNo: stock.billNumber || stock.refNo || '-',
+                birds: stock.birds || 0,
+                weight: stock.weight || 0,
+                avgWeight: stock.birds > 0 ? (stock.weight / stock.birds) : 0,
+                rate: stock.rate || 0,
+                amount: stock.amount || 0,
+                outstandingBalance: 0, // Calculated later
+                trip: null,
+                isStockSale: true
+            });
+
+            // Handle payments within the sale/receipt
+            if (stock.cashPaid > 0) {
+                ledgerEntries.push({
+                    _id: `stock_${stock._id}_cash`,
+                    date: stock.date,
+                    vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
+                    driverName: '-',
+                    supervisor: stock.supervisorId?.name || '-',
+                    product: '',
+                    particulars: 'BY CASH RECEIPT',
+                    invoiceNo: stock.billNumber || stock.refNo || '-',
+                    birds: 0,
+                    weight: 0,
+                    avgWeight: 0,
+                    rate: 0,
+                    amount: stock.cashPaid,
+                    outstandingBalance: 0,
+                    trip: null
+                });
+            }
+            if (stock.onlinePaid > 0) {
+                ledgerEntries.push({
+                    _id: `stock_${stock._id}_online`,
+                    date: stock.date,
+                    vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
+                    driverName: '-',
+                    supervisor: stock.supervisorId?.name || '-',
+                    product: '',
+                    particulars: 'BY BANK RECEIPT',
+                    invoiceNo: stock.billNumber || stock.refNo || '-',
+                    birds: 0,
+                    weight: 0,
+                    avgWeight: 0,
+                    rate: 0,
+                    amount: stock.onlinePaid,
+                    outstandingBalance: 0,
+                    trip: null
+                });
+            }
+            if (stock.discount > 0) {
+                ledgerEntries.push({
+                    _id: `stock_${stock._id}_discount`,
+                    date: stock.date,
+                    vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
+                    driverName: '-',
+                    supervisor: stock.supervisorId?.name || '-',
+                    product: '',
+                    particulars: 'DISCOUNT',
+                    invoiceNo: stock.billNumber || stock.refNo || '-',
+                    birds: 0,
+                    weight: 0,
+                    avgWeight: 0,
+                    rate: 0,
+                    amount: stock.discount,
+                    outstandingBalance: 0,
+                    trip: null
+                });
+            }
+        });
 
         // Determine particulars primarily based on role, but specific entry types override
         // Admin sees SALES, Customer sees PURCHASE for the same transaction
@@ -872,6 +971,8 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         // Sort by date ascending (oldest first for chronological ledger)
         // But ensure OP BAL always stays first
         // Use stable sorting with secondary sort keys to prevent duplicates
+        // Keep consistent chronological order (Ascending: Oldest -> Newest)
+        // This is standard for ledgers so balances make sense sequentially
         ledgerEntries.sort((a, b) => {
             // OP BAL entry always comes first
             if (a._id === 'opening_balance') return -1;
@@ -884,18 +985,38 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 return dateA - dateB;
             }
 
-            // If dates are equal, sort by particulars order to maintain consistent sequence:
-            // OP BAL -> SALES/RECEIPT -> BY CASH RECEIPT -> BY BANK RECEIPT -> DISCOUNT -> PAYMENT -> other
+            // Helper to extract transaction ID for grouping
+            const getGroupId = (id) => {
+                const strId = String(id);
+                if (strId.startsWith('stock_')) return strId.split('_')[1];
+                if (strId.startsWith('sale_')) return strId.split('_')[1]; // Trip sales
+                if (strId.startsWith('payment_')) return strId.split('_')[1];
+                if (strId.startsWith('voucher_')) return strId.split('_')[1];
+                return strId;
+            };
+
+            const groupA = getGroupId(a._id);
+            const groupB = getGroupId(b._id);
+
+            // Compare Group IDs (Transaction IDs) to group transaction parts together
+            if (groupA !== groupB) {
+                return groupA.localeCompare(groupB);
+            }
+
+            // If Group IDs are equal (same transaction), sort by particulars order:
+            // OP BAL -> SALES/STOCK_SALE/STOCK_PURCHASE -> BY CASH -> BY BANK -> DISCOUNT
             const order = {
                 'OP BAL': 0,
                 'SALES': 1,
+                'STOCK_PURCHASE': 1,
+                'STOCK_SALE': 1,
                 'INDIRECT_PURCHASE': 1,
                 'INDIRECT_SALES': 1,
-                'RECEIPT': 1,  // Same as SALES since they're mutually exclusive
+                'RECEIPT': 1,
+                'PAYMENT': 1, // Main payment entry
                 'BY CASH RECEIPT': 2,
                 'BY BANK RECEIPT': 3,
-                'DISCOUNT': 4,
-                'PAYMENT': 5
+                'DISCOUNT': 4
             };
             const orderA = order[a.particulars] || 99;
             const orderB = order[b.particulars] || 99;
@@ -922,7 +1043,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             // So we'll recalculate all balances sequentially
 
             // Update balance based on entry type and amount
-            if (entry.particulars === 'SALES' || entry.particulars === 'PURCHASE') {
+            if (['SALES', 'PURCHASE', 'STOCK_SALE', 'STOCK_PURCHASE', 'INDIRECT_SALES', 'INDIRECT_PURCHASE'].includes(entry.particulars)) {
                 // Add sale amount (Indirect or Direct)
                 // PURCHASE tag is used for Customer View of Indirect Sale (which is a Sale from Company to Cust)
                 runningBalance = runningBalance + (entry.amount || 0);
@@ -977,9 +1098,9 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         const receiptParticulars = ['RECEIPT', 'PAYMENT', 'BY CASH RECEIPT', 'BY BANK RECEIPT'];
 
         const totals = {
-            totalBirds: ledgerEntries.reduce((sum, entry) => sum + (entry.isIndirect || entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.birds : 0), 0),
+            totalBirds: ledgerEntries.reduce((sum, entry) => sum + (entry.isIndirect || entry.isStockSale || entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.birds : 0), 0),
             totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
-            totalAmount: ledgerEntries.reduce((sum, entry) => sum + (entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.amount : 0), 0),
+            totalAmount: ledgerEntries.reduce((sum, entry) => sum + (['SALES', 'PURCHASE', 'STOCK_SALE', 'STOCK_PURCHASE', 'INDIRECT_SALES', 'INDIRECT_PURCHASE'].includes(entry.particulars) ? entry.amount : 0), 0),
             totalReceipt: ledgerEntries.reduce((sum, entry) => {
                 if (receiptParticulars.includes(entry.particulars)) {
                     return sum + (entry.amount || 0);
