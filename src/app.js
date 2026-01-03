@@ -12,10 +12,8 @@ const app = express();
 const port = process.env.PORT || 8889;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const BASE_URL = NODE_ENV === 'production'
-  ? 'https://poultry-record-backend.vercel.app/api'
-  : NODE_ENV === 'qa'
-    ? 'https://poultry-record-backend-qa.vercel.app/api'
-    : `http://localhost:${port}`;
+  ? 'https://poultry-record-backend-qa.vercel.app/api'
+  : `http://localhost:${port}`;
 
 // ✅ CORS must be FIRST middleware
 app.use(corsConfig());
