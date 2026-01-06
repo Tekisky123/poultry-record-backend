@@ -6,6 +6,7 @@ import apiLogger from './utils/apiLogger.js';
 import corsConfig from './utils/cors.js';
 import globalErrorHandler from './utils/globalErrorHandler.js';
 import http from 'http';
+import cors from 'cors';
 // import initializeSocket from './utils/socket.js';
 
 const app = express();
