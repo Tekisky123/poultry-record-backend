@@ -23,9 +23,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(apiLogger);
 
-// Handle preflight requests explicitly
-app.options("/*splat", corsConfig());
-
 
 const server = http.createServer(app);
 
