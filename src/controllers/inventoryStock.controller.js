@@ -11,17 +11,26 @@ import { addToBalance, subtractFromBalance, toSignedValue, fromSignedValue } fro
 // Add Purchase to Inventory
 export const addPurchase = async (req, res, next) => {
     try {
+        const type = req.body.inventoryType || "bird";
         const purchaseData = {
             ...req.body,
             type: req.body.type || "purchase", // Allow override for 'opening' stock
-            inventoryType: "bird", // Default to bird for now, can be dynamic later
+            inventoryType: type, // Default to bird for now, can be dynamic later
             supervisorId: req.user._id,
-            date: req.body.date || new Date()
+            date: req.body.date || new Date(),
+            birds: type === 'feed' ? 0 : (req.body.birds || 0)
         };
 
         // Basic validation
-        if (!purchaseData.birds || !purchaseData.weight || !purchaseData.rate) {
-            throw new AppError("Birds, Weight, and Rate are required", 400);
+        if (type === 'bird') {
+            if (!purchaseData.birds || !purchaseData.weight || !purchaseData.rate) {
+                throw new AppError("Birds, Weight, and Rate are required", 400);
+            }
+        } else {
+            // Feed or other types
+            if (!purchaseData.weight || !purchaseData.rate) {
+                throw new AppError("Weight/Quantity and Rate are required", 400);
+            }
         }
 
         // --- Vendor Balance Update Logic ---
@@ -109,6 +118,79 @@ export const addWeightLoss = async (req, res, next) => {
         await stock.save();
 
         successResponse(res, "Weight Loss/Gain added successfully", 201, stock);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Add Consume (Feed or other)
+export const addConsume = async (req, res, next) => {
+    try {
+        const consumeData = {
+            ...req.body,
+            type: "consume",
+            inventoryType: req.body.inventoryType || "feed", // Default to feed
+            supervisorId: req.user._id,
+            date: req.body.date || new Date(),
+            birds: 0 // Usually 0 for feed consume
+        };
+
+        // Basic validation
+        if (!consumeData.weight || !consumeData.rate) {
+            throw new AppError("Quantity (Weight) and Rate are required", 400);
+        }
+
+        // Auto calculate amount if not provided (though frontend sends it)
+        if (!consumeData.amount) {
+            consumeData.amount = Number(consumeData.weight) * Number(consumeData.rate);
+        }
+
+        // 1. Find or Create "FEED CONSUME" Ledger
+        let ledger = await Ledger.findOne({ name: { $regex: /^feed consume$/i } });
+        if (!ledger) {
+            // Find a suitable group
+            let group = await Group.findOne({ slug: 'direct-expenses' });
+            if (!group) group = await Group.findOne({ slug: 'expenses' }); // Fallback
+            if (!group) group = await Group.findOne({ name: { $regex: /expense/i } });
+
+            if (group) {
+                ledger = await Ledger.create({
+                    name: 'FEED CONSUME',
+                    group: group._id,
+                    ledgerType: 'general',
+                    openingBalance: 0,
+                    openingBalanceType: 'debit',
+                    outstandingBalance: 0,
+                    outstandingBalanceType: 'debit',
+                    createdBy: req.user._id,
+                    updatedBy: req.user._id
+                });
+            } else {
+                console.warn("Could not find Expense group to create FEED CONSUME ledger");
+            }
+        }
+
+        if (ledger) {
+            consumeData.expenseLedgerId = ledger._id;
+        }
+
+        const stock = new InventoryStock(consumeData);
+        await stock.save();
+
+        // 2. Update Ledger Balance (Debit)
+        if (ledger) {
+            const newBalance = addToBalance(
+                ledger.outstandingBalance,
+                ledger.outstandingBalanceType,
+                stock.amount,
+                'debit'
+            );
+            ledger.outstandingBalance = newBalance.amount;
+            ledger.outstandingBalanceType = newBalance.type;
+            await ledger.save();
+        }
+
+        successResponse(res, "Consumption added successfully", 201, stock);
     } catch (error) {
         next(error);
     }
@@ -626,6 +708,40 @@ export const updateStock = async (req, res, next) => {
                     newOnlineLedger.outstandingBalance = updated.amount;
                     newOnlineLedger.outstandingBalanceType = updated.type;
                     await newOnlineLedger.save();
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // CONSUME UPDATE LOGIC (Feed Consume)
+        // ---------------------------------------------------------
+        if (type === 'consume') {
+            const oldAmount = Number(oldStock.amount) || 0;
+            const newAmount = updates.amount !== undefined ? Number(updates.amount) : oldAmount;
+
+            const oldLedgerId = oldStock.expenseLedgerId?.toString();
+            // Assuming frontend might not send expenseLedgerId on update if it's hidden, so use old one if not provided
+            // Or better, we always want to target the same ledger unless we support moving ledgers.
+            // For now, assume ledger doesn't change unless we specifically want to support it. 
+            // If we did want to support ledger change, we'd look for updates.expenseLedgerId.
+            const targetLedgerId = oldLedgerId; // Simplify: user can't change ledger in frontend
+
+            if (targetLedgerId && newAmount !== oldAmount) {
+                const ledger = await Ledger.findById(targetLedgerId);
+                if (ledger) {
+                    // Revert Old (Credit)
+                    // Apply New (Debit)
+                    // Net difference: (New - Old) -> Add to Balance (Debit)
+                    // If New > Old, expense increases (Debit increases)
+                    // If New < Old, expense decreases (Debit decreases -> Credit)
+
+                    // Let's use clean Revert/Apply pattern
+                    const reverted = addToBalance(ledger.outstandingBalance, ledger.outstandingBalanceType, oldAmount, 'credit');
+                    const reapplied = addToBalance(reverted.amount, reverted.type, newAmount, 'debit');
+
+                    ledger.outstandingBalance = reapplied.amount;
+                    ledger.outstandingBalanceType = reapplied.type;
+                    await ledger.save();
                 }
             }
         }

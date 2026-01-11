@@ -12,6 +12,7 @@ router.post('/purchase', authorize(['supervisor', 'admin', 'superadmin']), inven
 router.post('/sale', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addSale);
 router.post('/receipt', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addReceipt);
 router.post('/mortality', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addMortality);
+router.post('/consume', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addConsume);
 router.post('/weight-loss', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addWeightLoss);
 
 router.get('/', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.getStocks);

@@ -20,6 +20,18 @@ router.get(
 );
 
 router.get(
+    '/stats/monthly',
+    authorize(['admin', 'superadmin']),
+    indirectSaleController.getMonthlyStats
+);
+
+router.get(
+    '/stats/daily',
+    authorize(['admin', 'superadmin']),
+    indirectSaleController.getDailyStats
+);
+
+router.get(
     '/:id',
     authorize(['admin', 'superadmin']),
     indirectSaleController.getIndirectSaleById

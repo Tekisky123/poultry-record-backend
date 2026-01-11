@@ -47,6 +47,7 @@ const inventoryStockSchema = new mongoose.Schema({
   // Ledger tracking for Sales/Receipts
   cashLedgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledger" },
   onlineLedgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledger" },
+  expenseLedgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledger" },
 
   // Payment Details
   cashPaid: { type: Number, default: 0 },

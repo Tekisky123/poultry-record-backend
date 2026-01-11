@@ -120,8 +120,14 @@ export const getTrips = async (req, res, next) => {
 
         if (startDate || endDate) {
             query.date = {};
-            if (startDate) query.date.$gte = new Date(startDate);
-            if (endDate) query.date.$lte = new Date(endDate);
+            if (startDate) {
+                query.date.$gte = new Date(startDate);
+            }
+            if (endDate) {
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                query.date.$lte = end;
+            }
         }
 
         const transferPopulate = buildTransferPopulate(5);
@@ -1948,6 +1954,64 @@ export const getMonthlyTripStats = async (req, res, next) => {
         };
 
         successResponse(res, "Monthly trip stats retrieved", 200, { months, totals });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Get daily trip statistics (profit, rent, etc.)
+export const getDailyTripStats = async (req, res, next) => {
+    try {
+        const { year, month } = req.query;
+
+        const today = new Date();
+        const targetYear = year ? parseInt(year) : today.getFullYear();
+        // Month is 1-indexed in query, so subtract 1. If not provided, use current month.
+        const targetMonth = month ? parseInt(month) - 1 : today.getMonth();
+
+        const startDate = new Date(targetYear, targetMonth, 1);
+        const endDate = new Date(targetYear, targetMonth + 1, 1);
+
+        // Generate days array for the month
+        const days = [];
+        const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+
+        for (let i = 1; i <= daysInMonth; i++) {
+            const dCurrent = new Date(targetYear, targetMonth, i);
+            days.push({
+                day: i,
+                date: dCurrent.toLocaleDateString('en-CA'), // YYYY-MM-DD
+                displayDate: dCurrent.toLocaleDateString('en-GB'), // DD/MM/YYYY
+                netProfit: 0,
+                grossRent: 0,
+                tripCount: 0
+            });
+        }
+
+        // We only want trips within this date range
+        const trips = await Trip.find({
+            date: { $gte: startDate, $lt: endDate }
+        }).select('date summary.netProfit summary.grossRent tripId');
+
+        trips.forEach(trip => {
+            const tDate = new Date(trip.date);
+            const dayOfMonth = tDate.getDate(); // 1-31
+
+            const dayEntry = days.find(d => d.day === dayOfMonth);
+            if (dayEntry) {
+                dayEntry.netProfit += (trip.summary?.netProfit || 0);
+                dayEntry.grossRent += (trip.summary?.grossRent || 0);
+                dayEntry.tripCount += 1;
+            }
+        });
+
+        const totals = {
+            netProfit: days.reduce((acc, d) => acc + d.netProfit, 0),
+            grossRent: days.reduce((acc, d) => acc + d.grossRent, 0),
+            tripCount: days.reduce((acc, d) => acc + d.tripCount, 0),
+        };
+
+        successResponse(res, "Daily trip stats retrieved", 200, { days, totals, year: targetYear, month: targetMonth + 1 });
     } catch (error) {
         next(error);
     }

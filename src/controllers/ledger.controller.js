@@ -482,6 +482,235 @@ export const getMonthlySummary = async (req, res, next) => {
     }
 };
 
+export const getDailySummary = async (req, res, next) => {
+    const { id } = req.params;
+    const { type, year, month } = req.query;
+
+    try {
+        let subject = null;
+        let subjectType = type;
+
+        if (!subjectType) {
+            subject = await Customer.findById(id);
+            if (subject) subjectType = 'customer';
+            else {
+                subject = await Vendor.findById(id);
+                if (subject) subjectType = 'vendor';
+                else {
+                    subject = await Ledger.findById(id);
+                    if (subject) subjectType = 'ledger';
+                }
+            }
+        } else {
+            if (subjectType === 'customer') subject = await Customer.findById(id);
+            else if (subjectType === 'vendor') subject = await Vendor.findById(id);
+            else if (subjectType === 'ledger') subject = await Ledger.findById(id);
+        }
+
+        if (!subject) {
+            throw new AppError('Subject not found', 404);
+        }
+
+        const today = new Date();
+        const targetYear = year ? parseInt(year) : today.getFullYear();
+        // Month 1-12 from query, convert to 0-11. Default to current month.
+        const targetMonth = month ? parseInt(month) - 1 : today.getMonth();
+
+        const startDate = new Date(targetYear, targetMonth, 1);
+        const endDate = new Date(targetYear, targetMonth + 1, 1);
+
+        const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+        const days = [];
+        for (let i = 1; i <= daysInMonth; i++) {
+            const dCurrent = new Date(targetYear, targetMonth, i);
+            days.push({
+                day: i,
+                date: dCurrent.toLocaleDateString('en-CA'), // YYYY-MM-DD
+                displayDate: dCurrent.toLocaleDateString('en-GB'), // DD/MM/YYYY
+                debit: 0,
+                credit: 0,
+                voucherCount: 0
+            });
+        }
+
+        let vouchers = await Voucher.find({
+            isActive: true,
+            date: { $gte: startDate, $lt: endDate }
+        }).lean();
+
+        let trips = [];
+        // Only fetch trips for relevant period
+        const tripQuery = { createdAt: { $gte: startDate, $lt: endDate } };
+
+        if (subjectType === 'customer') {
+            tripQuery['sales.client'] = id;
+            trips = await Trip.find(tripQuery).lean();
+        } else if (subjectType === 'vendor') {
+            tripQuery['purchases.supplier'] = id;
+            trips = await Trip.find(tripQuery).lean();
+        } else if (subjectType === 'ledger') {
+            tripQuery.$or = [
+                { 'sales.cashLedger': id },
+                { 'sales.onlineLedger': id }
+            ];
+            trips = await Trip.find(tripQuery).lean();
+        }
+
+        const subjectIdStr = id.toString();
+        const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
+            subjectType === 'vendor' ? subject.vendorName : subject.name;
+        const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+
+        // Process Vouchers
+        vouchers.forEach(v => {
+            let debit = 0;
+            let credit = 0;
+            let isMatch = false;
+
+            const vDate = new Date(v.date);
+            const dayOfMonth = vDate.getDate(); // 1-31
+            const dayIndex = dayOfMonth - 1;
+
+            if (dayIndex < 0 || dayIndex >= days.length) return; // Should not happen given query
+
+            // 1. Check entries
+            if (v.entries) {
+                v.entries.forEach(e => {
+                    let entryMatch = false;
+                    const entryAcc = e.account ? e.account.toString().trim().toLowerCase() : '';
+
+                    if (entryAcc === subjectIdStr || entryAcc === subjectNameStr) {
+                        entryMatch = true;
+                    }
+                    if (!entryMatch && e.name && e.name.trim().toLowerCase() === subjectNameStr) {
+                        entryMatch = true;
+                    }
+
+                    if (entryMatch) {
+                        debit += e.debitAmount || 0;
+                        credit += e.creditAmount || 0;
+                        isMatch = true;
+                    }
+                });
+            }
+
+            // 2. Check Parties (Payment/Receipt)
+            if ((v.voucherType === 'Payment' || v.voucherType === 'Receipt') && v.parties) {
+                v.parties.forEach(p => {
+                    if (p.partyId && p.partyId.toString() === subjectIdStr) {
+                        let isTypeMatch = false;
+                        if (subjectType === 'ledger' && p.partyType === 'ledger') isTypeMatch = true;
+                        else if (subjectType === 'customer' && p.partyType === 'customer') isTypeMatch = true;
+                        else if (subjectType === 'vendor' && p.partyType === 'vendor') isTypeMatch = true;
+                        else if (!p.partyType) isTypeMatch = true;
+
+                        if (isTypeMatch) {
+                            if (v.voucherType === 'Payment') {
+                                debit += p.amount || 0;
+                            } else {
+                                credit += p.amount || 0;
+                            }
+                            isMatch = true;
+                        }
+                    }
+                });
+            }
+
+            // 3. Check Account Header (For Ledgers - Payment/Receipt)
+            if (subjectType === 'ledger' && (v.voucherType === 'Payment' || v.voucherType === 'Receipt') && v.account) {
+                if (v.account.toString() === subjectIdStr) {
+                    const totalAmount = v.parties ? v.parties.reduce((sum, p) => sum + (p.amount || 0), 0) : 0;
+                    if (v.voucherType === 'Payment') {
+                        credit += totalAmount;
+                    } else {
+                        debit += totalAmount;
+                    }
+                    isMatch = true;
+                }
+            }
+
+            if (isMatch) {
+                days[dayIndex].debit += debit;
+                days[dayIndex].credit += credit;
+                days[dayIndex].voucherCount += 1;
+            }
+        });
+
+        // Process Trips
+        trips.forEach(t => {
+            let debit = 0;
+            let credit = 0;
+            let isMatch = false;
+
+            const tDate = new Date(t.createdAt);
+            const dayOfMonth = tDate.getDate();
+            const dayIndex = dayOfMonth - 1;
+
+            if (dayIndex < 0 || dayIndex >= days.length) return;
+
+            if (subjectType === 'customer') {
+                t.sales.forEach(s => {
+                    if (s.client && s.client.toString() === id.toString() && !s.isReceipt) {
+                        debit += s.amount || 0;
+                        credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        isMatch = true;
+                    }
+                });
+            } else if (subjectType === 'vendor') {
+                t.purchases.forEach(p => {
+                    if (p.supplier && p.supplier.toString() === id.toString()) {
+                        credit += p.amount || 0;
+                        isMatch = true;
+                    }
+                });
+            } else if (subjectType === 'ledger') {
+                if (t.sales) {
+                    t.sales.forEach(s => {
+                        let localDebit = 0;
+                        if (s.cashLedger && s.cashLedger.toString() === id.toString()) {
+                            localDebit += s.cashPaid || 0;
+                        }
+                        if (s.onlineLedger && s.onlineLedger.toString() === id.toString()) {
+                            localDebit += s.onlinePaid || 0;
+                        }
+                        if (localDebit > 0) {
+                            debit += localDebit;
+                            isMatch = true;
+                        }
+                    });
+                }
+            }
+
+            if (isMatch) {
+                days[dayIndex].debit += debit;
+                days[dayIndex].credit += credit;
+                days[dayIndex].voucherCount += 1; // Count trip as one transaction entry source
+            }
+        });
+
+        const totals = {
+            debit: days.reduce((acc, d) => acc + d.debit, 0),
+            credit: days.reduce((acc, d) => acc + d.credit, 0),
+            voucherCount: days.reduce((acc, d) => acc + d.voucherCount, 0)
+        };
+
+        successResponse(res, "Daily summary retrieved", 200, {
+            subject: {
+                id: subject._id,
+                name: subject.name || subject.shopName || subject.vendorName,
+                type: subjectType
+            },
+            days,
+            totals,
+            year: targetYear,
+            month: targetMonth + 1
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const getLedgerTransactions = async (req, res, next) => {
     const { id } = req.params;
     const { startDate, endDate } = req.query;
@@ -534,7 +763,8 @@ export const getLedgerTransactions = async (req, res, next) => {
         const stockQuery = {
             $or: [
                 { 'cashLedgerId': id },
-                { 'onlineLedgerId': id }
+                { 'onlineLedgerId': id },
+                { 'expenseLedgerId': id }
             ]
         };
         if (queryStartDate || queryEndDate) {
@@ -660,6 +890,12 @@ export const getLedgerTransactions = async (req, res, next) => {
                 isRelevant = true;
             }
 
+            // Expense (Feed Consume, etc.)
+            if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) {
+                debit += s.amount || 0; // Usage is an expense (Debit)
+                isRelevant = true;
+            }
+
             if (isRelevant && (debit > 0)) {
                 transactions.push({
                     _id: s._id,
@@ -668,7 +904,9 @@ export const getLedgerTransactions = async (req, res, next) => {
                     refNo: s.billNumber || s.refNo || '-',
                     description: s.type === 'receipt'
                         ? `STOCK_RECEIPT_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'}`
-                        : `STOCK_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'} (${s.birds || 0} birds)`,
+                        : s.type === 'consume'
+                            ? `FEED CONSUMPTION`
+                            : `STOCK_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'} (${s.birds || 0} birds)`,
                     debit,
                     credit,
                     source: 'stock'
@@ -706,7 +944,8 @@ export const getLedgerTransactions = async (req, res, next) => {
                 date: { $lt: queryStartDate },
                 $or: [
                     { 'cashLedgerId': id },
-                    { 'onlineLedgerId': id }
+                    { 'onlineLedgerId': id },
+                    { 'expenseLedgerId': id }
                 ]
             };
 
@@ -759,7 +998,8 @@ export const getLedgerTransactions = async (req, res, next) => {
                 let debit = 0;
                 if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) debit += s.cashPaid || 0;
                 if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) debit += s.onlinePaid || 0;
-                signedOpening += debit; // Sales/Receipts receiving money into Cash/Bank are debits
+                if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) debit += s.amount || 0; // Expense is Debit
+                signedOpening += debit; // Sales/Receipts receiving money into Cash/Bank are debits. Expenses are Debits.
             });
         }
 

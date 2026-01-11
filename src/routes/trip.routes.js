@@ -9,6 +9,7 @@ import authorize from '../middleware/authorization.js';
 router.post('/', authenticateToken, authorize(['supervisor']), tripController.addTrip);
 router.get('/', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTrips);
 router.get('/stats/monthly', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getMonthlyTripStats);
+router.get('/stats/daily', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getDailyTripStats);
 router.get('/stats/overview', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripStats);
 router.get('/:id', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripById);
 router.put('/:id', authenticateToken, authorize(['admin', 'superadmin']), tripController.updateTrip);

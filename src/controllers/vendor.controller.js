@@ -468,7 +468,7 @@ export const getVendorLedger = async (req, res, next) => {
                 uniqueId: `STOCK-${stock._id}`,
                 date: stock.date,
                 type: 'PURCHASE',
-                particulars: 'STOCK_PURCHASE',
+                particulars: stock.inventoryType === 'feed' ? 'Feed Purchase' : 'STOCK_PURCHASE',
                 liftingDate: stock.date,
                 deliveryDate: stock.date,
                 vehicleNo: stock.vehicleId?.vehicleNumber || stock.vehicleNumber || '-',

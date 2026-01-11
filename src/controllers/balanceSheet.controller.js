@@ -1,8 +1,13 @@
 import Group from "../models/Group.js";
 import Ledger from "../models/Ledger.js";
+import Customer from "../models/Customer.js";
+import Vendor from "../models/Vendor.js";
+import InventoryStock from "../models/InventoryStock.js";
 import Voucher from "../models/Voucher.js";
+import Trip from "../models/Trip.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
+import { toSignedValue } from "../utils/balanceUtils.js";
 import mongoose from "mongoose";
 
 // Build hierarchical tree structure
@@ -122,9 +127,129 @@ const calculateLedgerBalance = (ledgerName, voucherBalanceMap) => {
     return { debitTotal: 0, creditTotal: 0, balance: 0 };
   }
 };
+// Calculate customer balance
+const calculateCustomerBalance = (customerId, customerName, openingBalance, openingBalanceType, vouchers, trips, date = null) => {
+  let periodDebit = 0;
+  let periodCredit = 0;
+  let openingMovement = 0;
+  const end = date ? new Date(date) : null;
+  if (end) end.setHours(23, 59, 59, 999);
 
-// Calculate group balance (sum of all ledgers in group and its children) - optimized
-const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, asOnDate = null) => {
+  if (Array.isArray(vouchers)) {
+    vouchers.forEach(voucher => {
+      const vDate = new Date(voucher.date);
+      if (end && vDate > end) return;
+      const isBeforeStart = false; // No start date for balance sheet usually (cumulative)
+
+      let vDebit = 0;
+      let vCredit = 0;
+
+      if ((voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') && voucher.parties) {
+        voucher.parties.forEach(party => {
+          if (party.partyId && party.partyId.toString() === customerId.toString() && party.partyType === 'customer') {
+            if (voucher.voucherType === 'Payment') vDebit += party.amount || 0;
+            else if (voucher.voucherType === 'Receipt') vCredit += party.amount || 0;
+          }
+        });
+      }
+      // Skipping legacy name match for performance in bulk report, can be added if critical
+
+      periodDebit += vDebit;
+      periodCredit += vCredit;
+    });
+  }
+
+  if (Array.isArray(trips)) {
+    trips.forEach(trip => {
+      const tDate = new Date(trip.createdAt);
+      if (end && tDate > end) return;
+
+      let tDebit = 0;
+      let tCredit = 0;
+
+      if (trip.sales) {
+        trip.sales.forEach(sale => {
+          if (sale.client && sale.client.toString() === customerId.toString() && !sale.isReceipt) {
+            tDebit += sale.amount || 0;
+            tCredit += (sale.cashPaid || 0) + (sale.onlinePaid || 0) + (sale.discount || 0);
+          }
+        });
+      }
+      periodDebit += tDebit;
+      periodCredit += tCredit;
+    });
+  }
+
+  const openingSigned = toSignedValue(openingBalance || 0, openingBalanceType || 'debit');
+  return openingSigned + periodDebit - periodCredit;
+};
+
+// Calculate vendor balance
+const calculateVendorBalance = (vendorId, vendorName, openingBalance, openingBalanceType, vouchers, trips, stocks, date = null) => {
+  let periodDebit = 0;
+  let periodCredit = 0;
+  const end = date ? new Date(date) : null;
+  if (end) end.setHours(23, 59, 59, 999);
+
+  if (Array.isArray(vouchers)) {
+    vouchers.forEach(voucher => {
+      const vDate = new Date(voucher.date);
+      if (end && vDate > end) return;
+
+      let vDebit = 0;
+      let vCredit = 0;
+
+      if ((voucher.voucherType === 'Payment' || voucher.voucherType === 'Receipt') && voucher.parties) {
+        voucher.parties.forEach(party => {
+          if (party.partyId && party.partyId.toString() === vendorId.toString() && party.partyType === 'vendor') {
+            if (voucher.voucherType === 'Payment') vDebit += party.amount || 0;
+            else if (voucher.voucherType === 'Receipt') vCredit += party.amount || 0;
+          }
+        });
+      }
+      periodDebit += vDebit;
+      periodCredit += vCredit;
+    });
+  }
+
+  if (Array.isArray(trips)) {
+    trips.forEach(trip => {
+      const tDate = new Date(trip.createdAt);
+      if (end && tDate > end) return;
+
+      let tDebit = 0;
+      let tCredit = 0;
+
+      if (trip.purchases) {
+        trip.purchases.forEach(purchase => {
+          if (purchase.supplier && purchase.supplier.toString() === vendorId.toString()) {
+            tCredit += purchase.amount || 0;
+          }
+        });
+      }
+      periodDebit += tDebit;
+      periodCredit += tCredit;
+    });
+  }
+
+  if (Array.isArray(stocks)) {
+    stocks.forEach(stock => {
+      const sDate = new Date(stock.date);
+      if (end && sDate > end) return;
+      const stockVendorId = stock.vendorId?._id || stock.vendorId;
+      if (stockVendorId && stockVendorId.toString() === vendorId.toString()) {
+        if (stock.type === 'purchase' || stock.type === 'opening') {
+          periodCredit += stock.amount || 0;
+        }
+      }
+    });
+  }
+
+  // Vendors usually have Credit opening balance
+  const openingSigned = toSignedValue(openingBalance || 0, openingBalanceType || 'credit');
+  return openingSigned + periodDebit - periodCredit;
+};
+const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, allVouchers, allTrips, allStocks, asOnDate = null) => {
   let totalBalance = 0;
   let totalDebit = 0;
   let totalCredit = 0;
@@ -152,10 +277,74 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, a
     }
   }
 
+  // Process vendors
+  const vendors = vendorGroupMap.get(groupId.toString()) || [];
+  for (const vendor of vendors) {
+    const balance = calculateVendorBalance(
+      vendor._id,
+      vendor.vendorName,
+      vendor.openingBalance,
+      vendor.openingBalanceType,
+      allVouchers,
+      allTrips,
+      allStocks,
+      asOnDate
+    );
+    // Assuming vendor balance is Debit - Credit (so usually negative for liability)
+
+    // Update totals (approximate debit/credit split is hard without full breakdown return, but balance is key)
+    // For simplicity in Balance Sheet, we care about Net Balance effect.
+    // But we track totalDebit/TotalCredit for display? balanceSheet.controller uses them.
+    // calculateVendorBalance returns NET.
+    // Let's assume net negative is Credit, net positive is Debit.
+    if (balance >= 0) {
+      totalDebit += balance;
+    } else {
+      totalCredit += Math.abs(balance);
+    }
+
+    totalOpeningBalance += vendor.openingBalance || 0;
+    // outstandingBalance logic might be complex, skipping for now or assume balance
+
+    if (group.type === 'Assets') {
+      totalBalance += balance;
+    } else if (group.type === 'Liability') {
+      totalBalance -= balance;
+    }
+  }
+
+  // Process customers
+  const customers = customerGroupMap.get(groupId.toString()) || [];
+  for (const customer of customers) {
+    const balance = calculateCustomerBalance(
+      customer._id,
+      customer.shopName || customer.ownerName,
+      customer.openingBalance,
+      customer.openingBalanceType,
+      allVouchers,
+      allTrips,
+      asOnDate
+    );
+
+    if (balance >= 0) {
+      totalDebit += balance;
+    } else {
+      totalCredit += Math.abs(balance);
+    }
+
+    totalOpeningBalance += customer.openingBalance || 0;
+
+    if (group.type === 'Assets') {
+      totalBalance += balance;
+    } else if (group.type === 'Liability') {
+      totalBalance -= balance;
+    }
+  }
+
   // Recursively calculate children balances
   if (group.children && group.children.length > 0) {
     for (const child of group.children) {
-      const childBalance = await calculateGroupBalance(child, voucherBalanceMap, ledgerGroupMap, asOnDate);
+      const childBalance = await calculateGroupBalance(child, voucherBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, allVouchers, allTrips, allStocks, asOnDate);
       totalBalance += childBalance.totalBalance;
       totalDebit += childBalance.totalDebit;
       totalCredit += childBalance.totalCredit;
@@ -214,9 +403,19 @@ export const getBalanceSheet = async (req, res, next) => {
     const date = asOnDate ? new Date(asOnDate) : new Date();
 
     // OPTIMIZATION: batch fetch all needed data
-    const [voucherBalanceMap, allLedgers, assetsGroups, liabilityGroups] = await Promise.all([
+    // Query for vouchers/trips/stocks (all active)
+    const queryBase = { isActive: true };
+    const dateQuery = date ? { date: { $lte: date } } : {};
+    const createdQuery = date ? { createdAt: { $lte: date } } : {};
+
+    const [voucherBalanceMap, allLedgers, allVendors, allCustomers, allVouchers, allTrips, allStocks, assetsGroups, liabilityGroups] = await Promise.all([
       buildVoucherBalanceMap(date),
       Ledger.find({ isActive: true }).lean(),
+      Vendor.find({ isActive: true }).lean(),
+      Customer.find({ isActive: true }).lean(),
+      Voucher.find({ ...queryBase, ...dateQuery }).lean(),
+      Trip.find(createdQuery).lean(), // Trip uses createdAt
+      InventoryStock.find({ ...dateQuery }).lean(), // InventoryStock uses date
       Group.find({ type: 'Assets', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),
       Group.find({ type: 'Liability', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 })
     ]);
@@ -226,10 +425,28 @@ export const getBalanceSheet = async (req, res, next) => {
     allLedgers.forEach(ledger => {
       if (ledger.group) {
         const groupId = ledger.group.toString();
-        if (!ledgerGroupMap.has(groupId)) {
-          ledgerGroupMap.set(groupId, []);
-        }
+        if (!ledgerGroupMap.has(groupId)) ledgerGroupMap.set(groupId, []);
         ledgerGroupMap.get(groupId).push(ledger);
+      }
+    });
+
+    // Build Vendor Map
+    const vendorGroupMap = new Map();
+    allVendors.forEach(vendor => {
+      if (vendor.group) {
+        const groupId = vendor.group.toString();
+        if (!vendorGroupMap.has(groupId)) vendorGroupMap.set(groupId, []);
+        vendorGroupMap.get(groupId).push(vendor);
+      }
+    });
+
+    // Build Customer Map
+    const customerGroupMap = new Map();
+    allCustomers.forEach(customer => {
+      if (customer.group) {
+        const groupId = customer.group.toString();
+        if (!customerGroupMap.has(groupId)) customerGroupMap.set(groupId, []);
+        customerGroupMap.get(groupId).push(customer);
       }
     });
 
@@ -241,7 +458,17 @@ export const getBalanceSheet = async (req, res, next) => {
     const processGroups = async (groups) => {
       const processedGroups = [];
       for (const group of groups) {
-        const balance = await calculateGroupBalance(group, voucherBalanceMap, ledgerGroupMap, date);
+        const balance = await calculateGroupBalance(
+          group,
+          voucherBalanceMap,
+          ledgerGroupMap,
+          vendorGroupMap,
+          customerGroupMap,
+          allVouchers,
+          allTrips,
+          allStocks,
+          date
+        );
         // Ensure we have a clean plain object
         const groupId = group._id || group.id;
         const processedGroup = {

@@ -53,6 +53,19 @@ const buildListFilter = (query) => {
         });
     }
 
+    if (query.startDate || query.endDate) {
+        const dateQuery = {};
+        if (query.startDate) {
+            dateQuery.$gte = new Date(query.startDate);
+        }
+        if (query.endDate) {
+            const end = new Date(query.endDate);
+            end.setHours(23, 59, 59, 999);
+            dateQuery.$lte = end;
+        }
+        conditions.push({ date: dateQuery });
+    }
+
     if (conditions.length > 0) {
         filter.$and = conditions;
     }
@@ -392,3 +405,131 @@ export const updateSales = async (req, res, next) => {
     }
 };
 
+
+export const getMonthlyStats = async (req, res, next) => {
+    try {
+        const { year } = req.query;
+        const targetYear = year ? parseInt(year) : new Date().getFullYear();
+
+        const startDate = new Date(targetYear, 0, 1);
+        const endDate = new Date(targetYear + 1, 0, 1);
+
+        const records = await IndirectSale.find({
+            date: { $gte: startDate, $lt: endDate },
+            isActive: true
+        }).lean();
+
+        const months = [];
+        for (let i = 0; i < 12; i++) {
+            const mStart = new Date(targetYear, i, 1);
+            const mEnd = new Date(targetYear, i + 1, 1);
+            months.push({
+                month: i + 1,
+                name: mStart.toLocaleString('default', { month: 'long' }),
+                startDate: mStart.toISOString(),
+                endDate: mEnd.toISOString(),
+                count: 0,
+                netProfit: 0,
+                salesAmount: 0,
+                purchaseAmount: 0
+            });
+        }
+
+        records.forEach(record => {
+            const rDate = new Date(record.date);
+            const monthIndex = rDate.getMonth();
+            if (monthIndex >= 0 && monthIndex < 12) {
+                months[monthIndex].count++;
+                months[monthIndex].netProfit += (record.summary?.netProfit || 0);
+
+                // Sum sales amount
+                if (record.sales && record.sales.amount) {
+                    months[monthIndex].salesAmount += record.sales.amount;
+                }
+
+                // Sum purchase amount
+                if (record.summary && record.summary.totalPurchaseAmount) {
+                    months[monthIndex].purchaseAmount += record.summary.totalPurchaseAmount;
+                } else if (record.purchases) {
+                    const pTotal = record.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
+                    months[monthIndex].purchaseAmount += pTotal;
+                }
+            }
+        });
+
+        const totals = {
+            count: months.reduce((acc, m) => acc + m.count, 0),
+            netProfit: months.reduce((acc, m) => acc + m.netProfit, 0),
+            salesAmount: months.reduce((acc, m) => acc + m.salesAmount, 0),
+            purchaseAmount: months.reduce((acc, m) => acc + m.purchaseAmount, 0)
+        };
+
+        successResponse(res, "Monthly stats retrieved", 200, { months, totals, year: targetYear });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getDailyStats = async (req, res, next) => {
+    try {
+        const { year, month } = req.query;
+        const today = new Date();
+        const targetYear = year ? parseInt(year) : today.getFullYear();
+        const targetMonth = month ? parseInt(month) - 1 : today.getMonth();
+
+        const startDate = new Date(targetYear, targetMonth, 1);
+        const endDate = new Date(targetYear, targetMonth + 1, 1);
+
+        const records = await IndirectSale.find({
+            date: { $gte: startDate, $lt: endDate },
+            isActive: true
+        }).lean();
+
+        const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+        const days = [];
+        for (let i = 1; i <= daysInMonth; i++) {
+            const dCurrent = new Date(targetYear, targetMonth, i);
+            days.push({
+                day: i,
+                date: dCurrent.toLocaleDateString('en-CA'),
+                displayDate: dCurrent.toLocaleDateString('en-GB'),
+                count: 0,
+                netProfit: 0,
+                salesAmount: 0,
+                purchaseAmount: 0
+            });
+        }
+
+        records.forEach(record => {
+            const rDate = new Date(record.date);
+            const dayIndex = rDate.getDate() - 1;
+
+            if (dayIndex >= 0 && dayIndex < days.length) {
+                days[dayIndex].count++;
+                days[dayIndex].netProfit += (record.summary?.netProfit || 0);
+
+                if (record.sales && record.sales.amount) {
+                    days[dayIndex].salesAmount += record.sales.amount;
+                }
+
+                if (record.summary && record.summary.totalPurchaseAmount) {
+                    days[dayIndex].purchaseAmount += record.summary.totalPurchaseAmount;
+                } else if (record.purchases) {
+                    const pTotal = record.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
+                    days[dayIndex].purchaseAmount += pTotal;
+                }
+            }
+        });
+
+        const totals = {
+            count: days.reduce((acc, d) => acc + d.count, 0),
+            netProfit: days.reduce((acc, d) => acc + d.netProfit, 0),
+            salesAmount: days.reduce((acc, d) => acc + d.salesAmount, 0),
+            purchaseAmount: days.reduce((acc, d) => acc + d.purchaseAmount, 0)
+        };
+
+        successResponse(res, "Daily stats retrieved", 200, { days, totals, year: targetYear, month: targetMonth + 1 });
+    } catch (error) {
+        next(error);
+    }
+};

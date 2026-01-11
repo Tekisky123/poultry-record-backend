@@ -4,6 +4,7 @@ import Customer from "../models/Customer.js";
 import Vendor from "../models/Vendor.js";
 import Voucher from "../models/Voucher.js";
 import Trip from "../models/Trip.js";
+import InventoryStock from "../models/InventoryStock.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import { toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
@@ -674,7 +675,8 @@ const calculateCustomerBalance = async (customerId, customerName, openingBalance
 };
 
 // Calculate vendor balance from vouchers and purchases up to asOnDate
-const calculateVendorBalance = async (vendorId, vendorName, startDate = null, endDate = null, preFetchedVouchers = null, preFetchedTrips = null) => {
+// Calculate vendor balance from vouchers and purchases up to asOnDate
+const calculateVendorBalance = async (vendorId, vendorName, startDate = null, endDate = null, preFetchedVouchers = null, preFetchedTrips = null, preFetchedStocks = null) => {
     try {
         let periodDebit = 0;
         let periodCredit = 0;
@@ -779,6 +781,53 @@ const calculateVendorBalance = async (vendorId, vendorName, startDate = null, en
                 periodCredit += tCredit;
             }
         });
+
+        // Get Inventory Stocks (Feed Purchases, Opening Stock, etc.)
+        let stocks = preFetchedStocks;
+        if (!stocks) {
+            const stockQuery = {
+                vendorId: vendorId,
+                // type: { $in: ['purchase', 'opening'] }
+            };
+            if (end) {
+                stockQuery.date = { $lte: end };
+            }
+            stocks = await InventoryStock.find(stockQuery).lean();
+        }
+
+        if (Array.isArray(stocks)) {
+            stocks.forEach(stock => {
+                const sDate = new Date(stock.date);
+                if (end && sDate > end) return;
+
+                // Ensure it belongs to this vendor (double check if preFetched)
+                const stockVendorId = stock.vendorId?._id || stock.vendorId;
+                if (!stockVendorId || stockVendorId.toString() !== vendorId.toString()) return;
+
+                const isBeforeStart = start && sDate < start;
+                let sDebit = 0;
+                let sCredit = 0;
+
+                // Purchase or Opening Stock -> Credit to Vendor (Liability)
+                if (stock.type === 'purchase' || stock.type === 'opening') {
+                    sCredit += stock.amount || 0;
+                }
+
+                if (isBeforeStart) {
+                    openingMovement += (sDebit - sCredit);
+                } else {
+                    periodDebit += sDebit;
+                    periodCredit += sCredit;
+
+                    // Add birds/weight for period
+                    if (stock.type === 'purchase' || stock.type === 'opening') {
+                        birdsTotal += stock.birds || 0;
+                        weightTotal += stock.weight || 0;
+                    }
+                }
+            });
+        }
+
 
         // Vendors don't have opening balance usually, but if they do:
         // Start with opening balance (assuming 0 if not provided)
@@ -893,7 +942,7 @@ const getAllVendorsInGroup = async (groupId) => {
 
 // Calculate group debit/credit from all ledgers, customers, and vendors
 // OPTIMIZED: Uses pre-fetched data
-const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, endDate = null, preFetchedVouchers = null, preFetchedTrips = null) => {
+const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, endDate = null, preFetchedVouchers = null, preFetchedTrips = null, preFetchedStocks = null) => {
     // Note: getAllLedgers/Customers/Vendors still do recursive DB calls. 
     // Optimization: We could optimize these formatted calls too, but passing vouchers down is the biggest win.
 
@@ -1015,7 +1064,8 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
             startDate,
             endDate,
             preFetchedVouchers,
-            preFetchedTrips
+            preFetchedTrips,
+            preFetchedStocks
         );
 
         const finalSigned = vendorBalance.finalBalance;
@@ -1095,6 +1145,13 @@ export const getGroupSummary = async (req, res, next) => {
         }
         const trips = await Trip.find(tripQuery).lean();
 
+        // Fetch all inventory stocks for optimization
+        const stockQuery = {};
+        if (finalEndDate) {
+            stockQuery.date = { $lte: new Date(finalEndDate) };
+        }
+        const stocks = await InventoryStock.find(stockQuery).lean();
+
         const subGroups = await Group.find({ parentGroup: id, isActive: true }).sort({ name: 1 }).lean();
         const directLedgers = await Ledger.find({ group: id, isActive: true }).sort({ name: 1 }).lean();
         const directCustomers = await Customer.find({ group: id, isActive: true }).sort({ shopName: 1 }).lean();
@@ -1117,7 +1174,8 @@ export const getGroupSummary = async (req, res, next) => {
                 finalStartDate,
                 finalEndDate,
                 vouchers,
-                trips
+                trips,
+                stocks
             );
 
             entries.push({
@@ -1263,7 +1321,8 @@ export const getGroupSummary = async (req, res, next) => {
                 finalStartDate,
                 finalEndDate,
                 vouchers,
-                trips
+                trips,
+                stocks
             );
 
             const finalSigned = vendorBalance.finalBalance;
