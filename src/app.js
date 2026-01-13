@@ -31,15 +31,13 @@ app.use(cors({
 }));
 
 // VERY IMPORTANT for preflight
-app.options("*", cors());
+app.options("/{*splat}", cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(apiLogger);
 
-
-
-const server = http.createServer(app);
+// const server = http.createServer(app);
 
 app.use("/api", router);
 
@@ -62,7 +60,7 @@ connectDB()
   .then(async () => {
     console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
 
-    server.listen(port, () =>
+    app.listen(port, () =>
       console.log(
         `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
       )
