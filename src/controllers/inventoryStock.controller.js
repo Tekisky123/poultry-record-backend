@@ -763,6 +763,182 @@ export const updateStock = async (req, res, next) => {
     }
 };
 
+// Get Monthly Stock Stats
+export const getMonthlyStockStats = async (req, res, next) => {
+    try {
+        const { year } = req.query;
+        const currentYear = year ? parseInt(year) : new Date().getFullYear();
+
+        // Month names helper
+        const monthNames = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
+
+        const pipeline = [
+            {
+                $match: {
+                    date: {
+                        $gte: new Date(`${currentYear}-01-01`),
+                        $lte: new Date(`${currentYear}-12-31`)
+                    }
+                }
+            },
+            {
+                $group: {
+                    _id: { $month: "$date" },
+                    // Purchase
+                    totalPurchaseAmount: {
+                        $sum: {
+                            $cond: [{ $in: ["$type", ["purchase", "opening"]] }, "$amount", 0]
+                        }
+                    },
+                    totalPurchaseBirds: {
+                        $sum: {
+                            $cond: [{ $and: [{ $in: ["$type", ["purchase", "opening"]] }, { $eq: ["$inventoryType", "bird"] }] }, "$birds", 0]
+                        }
+                    },
+                    // Sale
+                    totalSaleAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "sale"] }, "$amount", 0]
+                        }
+                    },
+                    totalSaleBirds: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "sale"] }, "$birds", 0]
+                        }
+                    },
+                    // Mortality
+                    totalMortalityBirds: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "mortality"] }, "$birds", 0]
+                        }
+                    },
+                    // Feed Consume
+                    totalFeedConsumeAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "consume"] }, "$amount", 0]
+                        }
+                    }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ];
+
+        const results = await InventoryStock.aggregate(pipeline);
+
+        // Format for frontend
+        const months = Array.from({ length: 12 }, (_, i) => {
+            const data = results.find(r => r._id === i + 1);
+            return {
+                month: i + 1,
+                name: monthNames[i],
+                purchaseAmount: data ? data.totalPurchaseAmount : 0,
+                saleAmount: data ? data.totalSaleAmount : 0,
+                mortalityBirds: data ? data.totalMortalityBirds : 0,
+                feedConsumeAmount: data ? data.totalFeedConsumeAmount : 0,
+            };
+        });
+
+        // Calculate Totals
+        const totals = months.reduce((acc, curr) => ({
+            purchaseAmount: acc.purchaseAmount + curr.purchaseAmount,
+            saleAmount: acc.saleAmount + curr.saleAmount,
+            mortalityBirds: acc.mortalityBirds + curr.mortalityBirds,
+            feedConsumeAmount: acc.feedConsumeAmount + curr.feedConsumeAmount
+        }), { purchaseAmount: 0, saleAmount: 0, mortalityBirds: 0, feedConsumeAmount: 0 });
+
+        successResponse(res, "Monthly stock stats fetched", 200, { months, year: currentYear, totals });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Get Daily Stock Stats (for a month)
+export const getDailyStockStats = async (req, res, next) => {
+    try {
+        const { year, month } = req.query;
+        if (!year || !month) throw new AppError("Year and Month are required", 400);
+
+        const startDate = new Date(Date.UTC(year, month - 1, 1));
+        const endDate = new Date(Date.UTC(year, month, 0, 23, 59, 59)); // Last day of month
+
+        const pipeline = [
+            {
+                $match: {
+                    date: {
+                        $gte: startDate,
+                        $lte: endDate
+                    }
+                }
+            },
+            {
+                $group: {
+                    _id: { $dayOfMonth: "$date" },
+                    date: { $first: "$date" },
+                    // Purchase
+                    totalPurchaseAmount: {
+                        $sum: {
+                            $cond: [{ $in: ["$type", ["purchase", "opening"]] }, "$amount", 0]
+                        }
+                    },
+                    totalPurchaseBirds: {
+                        $sum: {
+                            $cond: [{ $and: [{ $in: ["$type", ["purchase", "opening"]] }, { $eq: ["$inventoryType", "bird"] }] }, "$birds", 0]
+                        }
+                    },
+                    // Sale
+                    totalSaleAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "sale"] }, "$amount", 0]
+                        }
+                    },
+                    totalSaleBirds: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "sale"] }, "$birds", 0]
+                        }
+                    },
+                    // Mortality
+                    totalMortalityBirds: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "mortality"] }, "$birds", 0]
+                        }
+                    },
+                    // Feed Consume
+                    totalFeedConsumeAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "consume"] }, "$amount", 0]
+                        }
+                    }
+                }
+            },
+            { $sort: { _id: -1 } } // Descending date
+        ];
+
+        const results = await InventoryStock.aggregate(pipeline);
+
+        // Add formatted date string
+        const formattedResults = results.map(r => ({
+            ...r,
+            day: r._id,
+            formattedDate: new Date(r.date).toISOString().split('T')[0]
+        }));
+
+        const totals = formattedResults.reduce((acc, curr) => ({
+            totalPurchaseAmount: acc.totalPurchaseAmount + curr.totalPurchaseAmount,
+            totalSaleAmount: acc.totalSaleAmount + curr.totalSaleAmount,
+            totalMortalityBirds: acc.totalMortalityBirds + curr.totalMortalityBirds,
+            totalFeedConsumeAmount: acc.totalFeedConsumeAmount + curr.totalFeedConsumeAmount
+        }), { totalPurchaseAmount: 0, totalSaleAmount: 0, totalMortalityBirds: 0, totalFeedConsumeAmount: 0 });
+
+        successResponse(res, "Daily stock stats fetched", 200, { days: formattedResults, totals });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
 // Delete Stock
 export const deleteStock = async (req, res, next) => {
     // TODO: Implement delete logic reversing balances

@@ -15,6 +15,9 @@ router.post('/mortality', authorize(['supervisor', 'admin', 'superadmin']), inve
 router.post('/consume', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addConsume);
 router.post('/weight-loss', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.addWeightLoss);
 
+router.get('/stats/monthly', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.getMonthlyStockStats);
+router.get('/stats/daily', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.getDailyStockStats);
+
 router.get('/', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.getStocks);
 
 router.put('/:id', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.updateStock);

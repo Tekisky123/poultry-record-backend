@@ -28,6 +28,7 @@ const inventoryStockSchema = new mongoose.Schema({
 
   // 🌾 Feed inventory fields
   feedQty: { type: Number, default: 0 }, // kg / bags
+  bags: { type: Number, default: 0 },
 
   rate: { type: Number, default: 0 },
   amount: { type: Number, default: 0 },
