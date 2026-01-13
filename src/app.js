@@ -60,16 +60,18 @@ connectDB()
   .then(async () => {
     console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
 
-    app.listen(port, () =>
-      console.log(
-        `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
-      )
-    );
+
   })
   .catch((err) => {
     console.error("❌ Database connection failed!!");
     console.error(err.message);
   });
+
+app.listen(port, () =>
+  console.log(
+    `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
+  )
+);
 
 
 export default app;
