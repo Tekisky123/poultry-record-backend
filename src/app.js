@@ -1,12 +1,13 @@
+import cors from 'cors';
 import express from 'express';
 import connectDB from './configs/database.js';
 import cookieParser from 'cookie-parser';
 import router from './routes/index.routes.js';
 import apiLogger from './utils/apiLogger.js';
-import corsConfig from './utils/cors.js';
+//import corsConfig from './utils/cors.js';
 import globalErrorHandler from './utils/globalErrorHandler.js';
 import http from 'http';
-import cors from 'cors';
+
 // import initializeSocket from './utils/socket.js';
 
 const app = express();
@@ -16,13 +17,27 @@ const BASE_URL = NODE_ENV === 'production'
   ? 'https://poultry-record-backend-qa.vercel.app/api'
   : `http://localhost:${port}`;
 
+// app.use(corsConfig());
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://poultry-record-frontend.vercel.app",
+    "https://poultry-record-frontend-qa.vercel.app",
+  ],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+// VERY IMPORTANT for preflight
+app.options("*", cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(apiLogger);
 
-// app.use(corsConfig());
-app.use(cors());
+
 
 const server = http.createServer(app);
 
