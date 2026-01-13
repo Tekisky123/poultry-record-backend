@@ -16,18 +16,14 @@ const BASE_URL = NODE_ENV === 'production'
   ? 'https://poultry-record-backend-qa.vercel.app/api'
   : `http://localhost:${port}`;
 
-
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(apiLogger);
 
 // app.use(corsConfig());
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
-}));
+app.use(cors());
+
 const server = http.createServer(app);
 
 app.use("/api", router);
