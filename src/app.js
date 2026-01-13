@@ -31,7 +31,10 @@ app.use(cors({
 }));
 
 // VERY IMPORTANT for preflight
-app.options("/{*splat}", cors());
+
+// Remove explicit options handler that might conflict with global cors
+// app.options("*", cors()); // Global cors middleware handles this
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
@@ -45,7 +48,7 @@ app.get('/health', (req, res) => {
   return res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-app.all('/*splat', (req, res) => {
+app.use((req, res) => {
   return res.status(404).json({
     success: false,
     message: 'Invalid API Call!!',
@@ -60,18 +63,20 @@ connectDB()
   .then(async () => {
     console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
 
-
+    // Only listen if not in production (Vercel/Serverless likely handles the server)
+    // Or strictly if we are running locally.
+    if (process.env.NODE_ENV !== 'production') {
+      app.listen(port, () =>
+        console.log(
+          `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
+        )
+      );
+    }
   })
   .catch((err) => {
     console.error("❌ Database connection failed!!");
     console.error(err.message);
   });
-
-app.listen(port, () =>
-  console.log(
-    `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
-  )
-);
 
 
 export default app;
