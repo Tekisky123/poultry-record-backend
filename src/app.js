@@ -20,7 +20,7 @@ const BASE_URL = NODE_ENV === 'production'
 
 app.use(
   cors({
-    origin: "https://poultry-record-frontend-qa.vercel.app",
+    origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
   })
