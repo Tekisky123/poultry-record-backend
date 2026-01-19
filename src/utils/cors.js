@@ -16,6 +16,6 @@ export default function corsConfig() {
             }
         },
         methods: ['GET', 'POST', 'PUT', 'DELETE', "PATCH"],
-        credentials: true,
+        // credentials: true,
     });
 }
