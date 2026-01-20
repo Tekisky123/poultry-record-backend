@@ -144,8 +144,12 @@ export const logout = async (req, res, next) => {
 };
 
 export const getVerifiedUser = async (req, res, next) => {
-  const user = req.user;
   try {
+    // req.user has the token payload. Use the ID to fetch fresh data.
+    const user = await User.findById(req.user._id).select('-password');
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
     successResponse(res, 'Fetch verified user', 200, user);
   } catch (error) {
     next(error)

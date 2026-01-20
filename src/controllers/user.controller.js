@@ -189,9 +189,9 @@ export const rejectUser = async (req, res, next) => {
 
 export const updateUser = async (req, res, next) => {
     const { id } = req?.params;
-    const { name, email, mobileNumber, role, isActive, password } = req?.body;
+    const { name, email, mobileNumber, role, isActive, password, canManageStock } = req?.body;
     try {
-        let updateData = { name, email, mobileNumber, role, isActive };
+        let updateData = { name, email, mobileNumber, role, isActive, canManageStock };
 
         if (password) {
             const hashPassword = await bcrypt.hash(password, 10);

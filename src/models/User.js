@@ -102,6 +102,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
+    canManageStock: {
+        type: Boolean,
+        default: false
+    },
 
     // Approval workflow
     approvalStatus: {
