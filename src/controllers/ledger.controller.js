@@ -774,7 +774,10 @@ export const getLedgerTransactions = async (req, res, next) => {
         }
 
         const [vouchers, trips, stocks] = await Promise.all([
-            Voucher.find(voucherQuery).lean().populate('party', 'shopName vendorName').populate('parties.partyId', 'shopName vendorName'),
+            Voucher.find(voucherQuery).lean()
+                .populate('party', 'shopName vendorName')
+                .populate('parties.partyId', 'shopName vendorName name') // Populate name for Ledger parties too
+                .populate('account', 'name'), // Populate header Account to get its name
             Trip.find(tripQuery).lean().populate('vehicle', 'registrationNumber').populate('supervisor', 'name'),
             InventoryStock.find(stockQuery).lean().populate('customerId', 'shopName ownerName')
         ]);
@@ -791,6 +794,7 @@ export const getLedgerTransactions = async (req, res, next) => {
             // Determine Debit/Credit for this ledger
             if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
                 // If ledger is the ACCOUNT (Header)
+                // e.g. Payment made FROM Cash (this ledger) TO Vendor
                 if (v.account && v.account.toString() === id.toString()) {
                     const totalAmount = v.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
                     if (v.voucherType === 'Payment') {
@@ -798,17 +802,37 @@ export const getLedgerTransactions = async (req, res, next) => {
                     } else {
                         debit += totalAmount;
                     }
-                    description += ` (Parties: ${v.partyName || 'Multiple'})`;
+
+                    // For Cash/Bank Ledger (Account), the "Particulars" should be the Party Name (Vendor/Expense)
+                    if (v.parties && v.parties.length > 0) {
+                        const firstParty = v.parties[0].partyId; // This is populated object
+                        if (v.parties.length === 1 && firstParty) {
+                            // Use shopName for customer, vendorName for vendor, name for ledger
+                            description = firstParty.shopName || firstParty.vendorName || firstParty.name || 'Unknown Party';
+                        } else {
+                            description = `Multiple Accounts (${v.parties.length})`;
+                        }
+                    } else {
+                        description = v.voucherType; // Fallback
+                    }
                 }
 
                 // If ledger is in PARTIES (Line Items)
+                // e.g. Payment made TO Vendor (this ledger) FROM Cash
                 if (v.parties) {
                     v.parties.forEach(p => {
-                        if (p.partyId && p.partyId.toString() === id.toString()) {
+                        if (p.partyId && p.partyId._id && p.partyId._id.toString() === id.toString()) {
                             if (v.voucherType === 'Payment') {
                                 debit += p.amount || 0;
                             } else {
                                 credit += p.amount || 0;
+                            }
+
+                            // For Vendor/Expense Ledger (Party), the "Particulars" should be the Source Account (Cash/Bank)
+                            if (!v.account || v.account.toString() !== id.toString()) {
+                                // Use header account name as description
+                                // v.account is now populated
+                                description = v.account ? v.account.name : 'Unknown Account';
                             }
                         }
                     });
