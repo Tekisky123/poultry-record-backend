@@ -6,6 +6,7 @@ import InventoryStock from "../models/InventoryStock.js";
 import IndirectSale from "../models/IndirectSale.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
+import mongoose from "mongoose";
 
 // Helper functions (duplicated from balanceSheet.controller.js)
 const buildTree = (groups) => {
@@ -342,7 +343,7 @@ export const getStats = async (req, res, next) => {
 
         let userFilter = {};
         if (req.user.role === 'supervisor') {
-            userFilter.supervisor = req.user._id;
+            userFilter.supervisor = new mongoose.Types.ObjectId(req.user._id);
         }
 
         const query = { ...dateFilter, ...userFilter };
@@ -382,7 +383,7 @@ export const getStats = async (req, res, next) => {
             .sort({ createdAt: -1 })
             .limit(5);
 
-        successResponse(res, "dashboard stats", 200, undefined, {
+        successResponse(res, "dashboard stats", 200, {
             stats: dashboardStats,
             recentTrips
         })
