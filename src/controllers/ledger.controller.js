@@ -6,10 +6,10 @@ import Trip from "../models/Trip.js";
 import Voucher from "../models/Voucher.js";
 import InventoryStock from "../models/InventoryStock.js";
 import IndirectSale from "../models/IndirectSale.js";
-import { toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
+import DieselStation from "../models/DieselStation.js";
+import { toSignedValue, fromSignedValue, syncOutstandingBalance } from "../utils/balanceUtils.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
-import { syncOutstandingBalance } from "../utils/balanceUtils.js";
 
 export const addLedger = async (req, res, next) => {
     try {
@@ -237,12 +237,17 @@ export const getMonthlySummary = async (req, res, next) => {
                 else {
                     subject = await Ledger.findById(id);
                     if (subject) subjectType = 'ledger';
+                    else {
+                        subject = await DieselStation.findById(id);
+                        if (subject) subjectType = 'dieselStation';
+                    }
                 }
             }
         } else {
             if (subjectType === 'customer') subject = await Customer.findById(id);
             else if (subjectType === 'vendor') subject = await Vendor.findById(id);
             else if (subjectType === 'ledger') subject = await Ledger.findById(id);
+            else if (subjectType === 'dieselStation') subject = await DieselStation.findById(id);
         }
 
         if (!subject) {
@@ -273,21 +278,26 @@ export const getMonthlySummary = async (req, res, next) => {
                 credit: 0,
                 birds: 0,
                 weight: 0,
+                volume: 0,
                 discountAndOther: 0
             });
         }
 
         // Fetch Data
+        // Valid Date Query or No Date Query
+        const voucherQuery = { isActive: true };
+        const tripQueryObj = {};
         const fetchQueryDate = { $gte: startDate };
-        const fetchQueryCreated = { $gte: startDate };
 
-        let vouchers = await Voucher.find({
-            isActive: true,
-            date: fetchQueryDate
-        }).lean();
+        if (subjectType !== 'dieselStation') {
+            voucherQuery.date = { $gte: startDate };
+            tripQueryObj.createdAt = { $gte: startDate };
+        }
+
+        let vouchers = await Voucher.find(voucherQuery).lean();
 
         let trips = [];
-        let tripQuery = { createdAt: fetchQueryCreated };
+        let tripQuery = { ...tripQueryObj };
         if (subjectType === 'customer') tripQuery['sales.client'] = id;
         else if (subjectType === 'vendor') tripQuery['purchases.supplier'] = id;
         else if (subjectType === 'ledger') {
@@ -295,30 +305,39 @@ export const getMonthlySummary = async (req, res, next) => {
                 { 'sales.cashLedger': id },
                 { 'sales.onlineLedger': id }
             ];
+        } else if (subjectType === 'dieselStation') {
+            tripQuery['diesel.stations.dieselStation'] = id;
         }
+
         // Only fetch if subjectType is known (it should be)
         if (subjectType) trips = await Trip.find(tripQuery).lean();
 
         let stocks = [];
-        let stockQuery = { date: fetchQueryDate };
-        if (subjectType === 'vendor') stockQuery.vendorId = id;
-        else if (subjectType === 'customer') stockQuery.customerId = id;
-        else if (subjectType === 'ledger') {
-            stockQuery.$or = [
-                { cashLedgerId: id },
-                { onlineLedgerId: id },
-                { expenseLedgerId: id }
-            ];
+        // Stocks not relevant for Diesel Station currently
+        if (subjectType !== 'dieselStation') {
+            let stockQuery = { date: fetchQueryDate };
+            if (subjectType === 'vendor') stockQuery.vendorId = id;
+            else if (subjectType === 'customer') stockQuery.customerId = id;
+            else if (subjectType === 'ledger') {
+                stockQuery.$or = [
+                    { cashLedgerId: id },
+                    { onlineLedgerId: id },
+                    { expenseLedgerId: id }
+                ];
+            }
+            stocks = await InventoryStock.find(stockQuery).lean();
         }
-        stocks = await InventoryStock.find(stockQuery).lean();
 
         let indirectSales = [];
-        let indirectQuery = { date: fetchQueryDate };
-        if (subjectType === 'customer') indirectQuery.customer = id;
-        else if (subjectType === 'vendor') indirectQuery.vendor = id;
-        else indirectQuery = null;
+        // Indirect Sales not relevant for Diesel Station currently
+        if (subjectType !== 'dieselStation') {
+            let indirectQuery = { date: fetchQueryDate };
+            if (subjectType === 'customer') indirectQuery.customer = id;
+            else if (subjectType === 'vendor') indirectQuery.vendor = id;
+            else indirectQuery = null;
 
-        if (indirectQuery) indirectSales = await IndirectSale.find(indirectQuery).lean();
+            if (indirectQuery) indirectSales = await IndirectSale.find(indirectQuery).lean();
+        }
 
         const subjectIdStr = id.toString();
         const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
@@ -326,13 +345,22 @@ export const getMonthlySummary = async (req, res, next) => {
         const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
 
         // Helper
-        const addToStats = (date, debit, credit, birds = 0, weight = 0, discount = 0, isDiscountRelated = false) => {
+        let gapDebit = 0;
+        let gapCredit = 0;
+        let gapBeforeDebit = 0;
+        let gapBeforeCredit = 0;
+
+        const addToStats = (date, debit, credit, birds = 0, weight = 0, volume = 0, discount = 0, isDiscountRelated = false) => {
             if (date >= endDate) {
                 gapDebit += debit;
                 gapCredit += credit;
                 return;
             }
-            if (date < startDate) return;
+            if (date < startDate) {
+                gapBeforeDebit += debit;
+                gapBeforeCredit += credit;
+                return;
+            }
 
             const idx = months.findIndex(m => date >= m.startDate && date < m.endDate);
             if (idx !== -1) {
@@ -340,12 +368,10 @@ export const getMonthlySummary = async (req, res, next) => {
                 months[idx].credit += credit;
                 months[idx].birds += birds;
                 months[idx].weight += weight;
+                months[idx].volume += volume;
                 if (isDiscountRelated) months[idx].discountAndOther += discount;
             }
         };
-
-        let gapDebit = 0;
-        let gapCredit = 0;
 
         // Process Vouchers
         for (const v of vouchers) {
@@ -379,6 +405,7 @@ export const getMonthlySummary = async (req, res, next) => {
                         if (subjectType === 'ledger' && p.partyType === 'ledger') isTypeMatch = true;
                         else if (subjectType === 'customer' && p.partyType === 'customer') isTypeMatch = true;
                         else if (subjectType === 'vendor' && p.partyType === 'vendor') isTypeMatch = true;
+                        else if (subjectType === 'dieselStation' && (!p.partyType || p.partyType === 'dieselStation')) isTypeMatch = true;
 
                         if (isTypeMatch) {
                             if (v.voucherType === 'Payment') debit += p.amount || 0;
@@ -409,14 +436,14 @@ export const getMonthlySummary = async (req, res, next) => {
                     if (v.voucherType === 'Receipt' || v.voucherType === 'Journal') isDiscount = true;
                 }
 
-                addToStats(vDate, debit, credit, 0, 0, isDiscount ? voucherAmount : 0, isDiscount);
+                addToStats(vDate, debit, credit, 0, 0, 0, isDiscount ? voucherAmount : 0, isDiscount);
             }
         }
 
         // Process Trips
         for (const t of trips) {
             const tDate = new Date(t.createdAt);
-            let debit = 0; let credit = 0; let birds = 0; let weight = 0; let discount = 0; let isMatch = false;
+            let debit = 0; let credit = 0; let birds = 0; let weight = 0; let volume = 0; let discount = 0; let isMatch = false;
 
             if (subjectType === 'customer') {
                 if (t.sales) {
@@ -453,8 +480,18 @@ export const getMonthlySummary = async (req, res, next) => {
                         }
                     });
                 }
+            } else if (subjectType === 'dieselStation') {
+                if (t.diesel && t.diesel.stations) {
+                    t.diesel.stations.forEach(s => {
+                        if (s.dieselStation && s.dieselStation.toString() === id.toString()) {
+                            credit += s.amount || 0; // Purchase for Station is Credit (Liability Increase)
+                            volume += s.volume || 0;
+                            isMatch = true;
+                        }
+                    });
+                }
             }
-            if (isMatch) addToStats(tDate, debit, credit, birds, weight, discount, true);
+            if (isMatch) addToStats(tDate, debit, credit, birds, weight, volume, discount, true);
         }
 
         // Process Stocks
@@ -491,7 +528,7 @@ export const getMonthlySummary = async (req, res, next) => {
                 if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) { debit += s.amount || 0; isMatch = true; }
             }
 
-            if (isMatch) addToStats(sDate, debit, credit, birds, weight, discount, true);
+            if (isMatch) addToStats(sDate, debit, credit, birds, weight, 0, discount, true);
         }
 
         // Process Indirect Sales
@@ -510,24 +547,72 @@ export const getMonthlySummary = async (req, res, next) => {
                 weight += s.summary?.totalPurchaseWeight || 0;
                 isMatch = true;
             }
-            if (isMatch) addToStats(sDate, debit, credit, birds, weight, 0, false);
+            if (isMatch) addToStats(sDate, debit, credit, birds, weight, 0, 0, false);
         }
 
 
         // Calculate Balances using Outstanding as source of truth
-        const outstandingSigned = toSignedValue(subject.outstandingBalance || 0, subject.outstandingBalanceType || 'debit');
+        // Station: OpeningType usually Credit (Liability)
+        // Group Logic (Assets/Exp = Positive is Dr, Liab/Inc = Positive is Cr)
+        // We use standard balance utils which handles this via type
+        const outstandingSigned = toSignedValue(subject.outstandingBalance || 0, subject.outstandingBalanceType || 'credit');
 
-        let gapNet = gapDebit - gapCredit;
-        let yearEndBalanceSigned = outstandingSigned - gapNet;
+        // Let's standardise on the "Signed Value" logic from balanceUtils:
+        // toSignedValue: 
+        //   Credit/Liab/Inc: Credit is Positive, Debit is Negative
+        //   Debit/Asset/Exp: Debit is Positive, Credit is Negative
 
+        // We need to know if it's Credit-nature or Debit-nature account.
+        // Vendor/DieselStation usually Credit-nature (Liability)
+        // Customer usually Debit-nature (Asset)
+        // Ledger depends on Group
+
+        let isCreditNature = false;
+        if (subjectType === 'vendor' || subjectType === 'dieselStation') isCreditNature = true;
+        else if (subjectType === 'customer') isCreditNature = false;
+        else if (subjectType === 'ledger') {
+            const groupType = subject.group?.type || 'Expense'; // default
+            if (groupType === 'Liability' || groupType === 'Income') isCreditNature = true;
+        }
+
+        let yearStartBalanceSigned = 0;
         let totalYearDebit = months.reduce((acc, m) => acc + m.debit, 0);
         let totalYearCredit = months.reduce((acc, m) => acc + m.credit, 0);
 
-        let yearStartBalanceSigned = yearEndBalanceSigned - (totalYearDebit - totalYearCredit);
+        if (subjectType === 'dieselStation') {
+            // Forward Calculation
+            // Use original opening balance + transactions BEFORE start date
+            const origOpenSigned = toSignedValue(subject.openingBalance || 0, subject.openingBalanceType || 'credit');
+            const netBefore = isCreditNature ? (gapBeforeCredit - gapBeforeDebit) : (gapBeforeDebit - gapBeforeCredit);
+            yearStartBalanceSigned = origOpenSigned + netBefore;
+        } else {
+            // Reverse Calculation
+            let gapNet;
+            if (isCreditNature) {
+                gapNet = gapCredit - gapDebit; // Positive means net credit increase
+            } else {
+                gapNet = gapDebit - gapCredit; // Positive means net debit increase
+            }
+
+            let yearEndBalanceSigned = outstandingSigned - gapNet;
+
+            let netYearChange;
+            if (isCreditNature) {
+                netYearChange = totalYearCredit - totalYearDebit;
+            } else {
+                netYearChange = totalYearDebit - totalYearCredit;
+            }
+
+            yearStartBalanceSigned = yearEndBalanceSigned - netYearChange;
+        }
 
         let currentSigned = yearStartBalanceSigned;
         const finalMonths = months.map(m => {
-            currentSigned += (m.debit - m.credit);
+            if (isCreditNature) {
+                currentSigned += (m.credit - m.debit);
+            } else {
+                currentSigned += (m.debit - m.credit);
+            }
             const closing = fromSignedValue(currentSigned);
             return {
                 ...m,
@@ -554,6 +639,7 @@ export const getMonthlySummary = async (req, res, next) => {
                 credit: totalYearCredit,
                 birds: months.reduce((acc, m) => acc + m.birds, 0),
                 weight: months.reduce((acc, m) => acc + m.weight, 0),
+                volume: months.reduce((acc, m) => acc + m.volume, 0),
                 discountAndOther: months.reduce((acc, m) => acc + m.discountAndOther, 0)
             }
         });
@@ -581,12 +667,17 @@ export const getDailySummary = async (req, res, next) => {
                 else {
                     subject = await Ledger.findById(id);
                     if (subject) subjectType = 'ledger';
+                    else {
+                        subject = await DieselStation.findById(id);
+                        if (subject) subjectType = 'dieselStation';
+                    }
                 }
             }
         } else {
             if (subjectType === 'customer') subject = await Customer.findById(id);
             else if (subjectType === 'vendor') subject = await Vendor.findById(id);
             else if (subjectType === 'ledger') subject = await Ledger.findById(id);
+            else if (subjectType === 'dieselStation') subject = await DieselStation.findById(id);
         }
 
         if (!subject) {
@@ -636,6 +727,9 @@ export const getDailySummary = async (req, res, next) => {
                 { 'sales.onlineLedger': id }
             ];
             trips = await Trip.find(tripQuery).lean();
+        } else if (subjectType === 'dieselStation') {
+            tripQuery['diesel.stations.dieselStation'] = id;
+            trips = await Trip.find(tripQuery).lean();
         }
 
         const subjectIdStr = id.toString();
@@ -684,7 +778,7 @@ export const getDailySummary = async (req, res, next) => {
                         if (subjectType === 'ledger' && p.partyType === 'ledger') isTypeMatch = true;
                         else if (subjectType === 'customer' && p.partyType === 'customer') isTypeMatch = true;
                         else if (subjectType === 'vendor' && p.partyType === 'vendor') isTypeMatch = true;
-                        else if (!p.partyType) isTypeMatch = true;
+                        else if (subjectType === 'dieselStation' && (!p.partyType || p.partyType === 'dieselStation')) isTypeMatch = true;
 
                         if (isTypeMatch) {
                             if (v.voucherType === 'Payment') {
@@ -757,6 +851,15 @@ export const getDailySummary = async (req, res, next) => {
                         }
                         if (localDebit > 0) {
                             debit += localDebit;
+                            isMatch = true;
+                        }
+                    });
+                }
+            } else if (subjectType === 'dieselStation') {
+                if (t.diesel && t.diesel.stations) {
+                    t.diesel.stations.forEach(s => {
+                        if (s.dieselStation && s.dieselStation.toString() === id.toString()) {
+                            credit += s.amount || 0;
                             isMatch = true;
                         }
                     });
