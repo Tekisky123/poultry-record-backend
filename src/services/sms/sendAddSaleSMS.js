@@ -26,7 +26,7 @@ export default function sendAddSaleSMS(numbers, messageData, dynamicVariables) {
                 `.trim(),
     };
     console.log("templatePayload", templatePayload);
-    // return null;
+    return null;
 
-    sendSMS(templatePayload);
+    // sendSMS(templatePayload);
 }

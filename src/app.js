@@ -16,7 +16,7 @@ const BASE_URL = NODE_ENV === 'production'
   : `http://localhost:${port}`;
 
 // ✅ CORS must be FIRST middleware
-// app.use(corsConfig());
+app.use(corsConfig());
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

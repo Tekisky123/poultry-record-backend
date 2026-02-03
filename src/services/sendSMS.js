@@ -33,7 +33,7 @@ const sendSMS = async (payload) => {
         }
 
         console.log("payload", payload);
-        // return null
+        return null
 
         const response = await axios.post('https://www.fast2sms.com/dev/bulkV2', payload, {
             headers: {
