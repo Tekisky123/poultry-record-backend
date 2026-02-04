@@ -14,6 +14,11 @@ const dieselStationSchema = new mongoose.Schema({
     maxlength: [200, "Location cannot exceed 200 characters"],
     default: '',
   },
+  mobileNumber: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   isActive: {
     type: Boolean,
     default: true,

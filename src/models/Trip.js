@@ -111,6 +111,7 @@ const tripSchema = new mongoose.Schema({
         balanceForCashPaid: { type: Number, default: 0 }, // Balance after subtracting cashPaid
         balanceForOnlinePaid: { type: Number, default: 0 }, // Balance after subtracting onlinePaid
         balanceForDiscount: { type: Number, default: 0 }, // Balance after subtracting discount
+        narration: { type: String, default: '' },
         timestamp: { type: Date, default: Date.now }
     }],
 
