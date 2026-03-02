@@ -285,14 +285,11 @@ export const getMonthlySummary = async (req, res, next) => {
 
         // Fetch Data
         // Valid Date Query or No Date Query
+        // Fetch Data: Fetching ALL transactions to enable accurate Forward Calculation from openingBalance
         const voucherQuery = { isActive: true };
         const tripQueryObj = {};
-        const fetchQueryDate = { $gte: startDate };
+        // Date filters removed manually to allow gapBeforeDebit counting
 
-        if (subjectType !== 'dieselStation') {
-            voucherQuery.date = { $gte: startDate };
-            tripQueryObj.createdAt = { $gte: startDate };
-        }
 
         let vouchers = await Voucher.find(voucherQuery).lean();
 
@@ -315,7 +312,8 @@ export const getMonthlySummary = async (req, res, next) => {
         let stocks = [];
         // Stocks not relevant for Diesel Station currently
         if (subjectType !== 'dieselStation') {
-            let stockQuery = { date: fetchQueryDate };
+            let stockQuery = {};
+
             if (subjectType === 'vendor') stockQuery.vendorId = id;
             else if (subjectType === 'customer') stockQuery.customerId = id;
             else if (subjectType === 'ledger') {
@@ -331,7 +329,8 @@ export const getMonthlySummary = async (req, res, next) => {
         let indirectSales = [];
         // Indirect Sales not relevant for Diesel Station currently
         if (subjectType !== 'dieselStation') {
-            let indirectQuery = { date: fetchQueryDate };
+            let indirectQuery = {};
+
             if (subjectType === 'customer') indirectQuery.customer = id;
             else if (subjectType === 'vendor') indirectQuery.vendor = id;
             else indirectQuery = null;
@@ -551,68 +550,18 @@ export const getMonthlySummary = async (req, res, next) => {
         }
 
 
-        // Calculate Balances using Outstanding as source of truth
-        // Station: OpeningType usually Credit (Liability)
-        // Group Logic (Assets/Exp = Positive is Dr, Liab/Inc = Positive is Cr)
-        // We use standard balance utils which handles this via type
-        const outstandingSigned = toSignedValue(subject.outstandingBalance || 0, subject.outstandingBalanceType || 'credit');
+        // Calculate Balances natively from Opening fields via Forward Calculation
+        // Use standard balance utils which handles this via type
 
-        // Let's standardise on the "Signed Value" logic from balanceUtils:
-        // toSignedValue: 
-        //   Credit/Liab/Inc: Credit is Positive, Debit is Negative
-        //   Debit/Asset/Exp: Debit is Positive, Credit is Negative
-
-        // We need to know if it's Credit-nature or Debit-nature account.
-        // Vendor/DieselStation usually Credit-nature (Liability)
-        // Customer usually Debit-nature (Asset)
-        // Ledger depends on Group
-
-        let isCreditNature = false;
-        if (subjectType === 'vendor' || subjectType === 'dieselStation') isCreditNature = true;
-        else if (subjectType === 'customer') isCreditNature = false;
-        else if (subjectType === 'ledger') {
-            const groupType = subject.group?.type || 'Expense'; // default
-            if (groupType === 'Liability' || groupType === 'Income') isCreditNature = true;
-        }
-
-        let yearStartBalanceSigned = 0;
-        let totalYearDebit = months.reduce((acc, m) => acc + m.debit, 0);
-        let totalYearCredit = months.reduce((acc, m) => acc + m.credit, 0);
-
-        if (subjectType === 'dieselStation') {
-            // Forward Calculation
-            // Use original opening balance + transactions BEFORE start date
-            const origOpenSigned = toSignedValue(subject.openingBalance || 0, subject.openingBalanceType || 'credit');
-            const netBefore = isCreditNature ? (gapBeforeCredit - gapBeforeDebit) : (gapBeforeDebit - gapBeforeCredit);
-            yearStartBalanceSigned = origOpenSigned + netBefore;
-        } else {
-            // Reverse Calculation
-            let gapNet;
-            if (isCreditNature) {
-                gapNet = gapCredit - gapDebit; // Positive means net credit increase
-            } else {
-                gapNet = gapDebit - gapCredit; // Positive means net debit increase
-            }
-
-            let yearEndBalanceSigned = outstandingSigned - gapNet;
-
-            let netYearChange;
-            if (isCreditNature) {
-                netYearChange = totalYearCredit - totalYearDebit;
-            } else {
-                netYearChange = totalYearDebit - totalYearCredit;
-            }
-
-            yearStartBalanceSigned = yearEndBalanceSigned - netYearChange;
-        }
+        // Forward Calculation
+        // Use original opening balance + transactions BEFORE start date
+        const origOpenSigned = toSignedValue(subject.openingBalance || 0, subject.openingBalanceType || 'debit');
+        const netBefore = gapBeforeDebit - gapBeforeCredit;
+        let yearStartBalanceSigned = origOpenSigned + netBefore;
 
         let currentSigned = yearStartBalanceSigned;
         const finalMonths = months.map(m => {
-            if (isCreditNature) {
-                currentSigned += (m.credit - m.debit);
-            } else {
-                currentSigned += (m.debit - m.credit);
-            }
+            currentSigned += (m.debit - m.credit);
             const closing = fromSignedValue(currentSigned);
             return {
                 ...m,
@@ -635,8 +584,8 @@ export const getMonthlySummary = async (req, res, next) => {
             openingBalanceType: openingYearBalance.type,
             months: finalMonths,
             totals: {
-                debit: totalYearDebit,
-                credit: totalYearCredit,
+                debit: months.reduce((acc, m) => acc + m.debit, 0),
+                credit: months.reduce((acc, m) => acc + m.credit, 0),
                 birds: months.reduce((acc, m) => acc + m.birds, 0),
                 weight: months.reduce((acc, m) => acc + m.weight, 0),
                 volume: months.reduce((acc, m) => acc + m.volume, 0),
@@ -1028,6 +977,21 @@ export const getLedgerTransactions = async (req, res, next) => {
                     if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
                         debit += e.debitAmount || 0;
                         credit += e.creditAmount || 0;
+
+                        if (v.voucherType === 'Journal') {
+                            let oppositeAccountName = '';
+                            if (e.debitAmount > 0) {
+                                const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                if (crEntry) oppositeAccountName = crEntry.account;
+                            } else if (e.creditAmount > 0) {
+                                const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                if (drEntry) oppositeAccountName = drEntry.account;
+                            }
+
+                            if (oppositeAccountName) {
+                                description = oppositeAccountName;
+                            }
+                        }
                     }
                 });
             }
@@ -1068,9 +1032,9 @@ export const getLedgerTransactions = async (req, res, next) => {
                         transactions.push({
                             _id: t._id,
                             date: t.date,
-                            type: 'Trip Sale',
+                            type: 'Receipt',
                             refNo: t.tripId,
-                            description: `Sale Bill: ${s.billNumber} (${s.birds} birds) - ${s.product || 'Bird Sale'}`,
+                            description: `Trip Bill: ${s.billNumber} (${s.birds} birds) - ${s.product || 'Bird Sale'}`,
                             debit,
                             credit,
                             source: 'trip'
@@ -1109,7 +1073,7 @@ export const getLedgerTransactions = async (req, res, next) => {
                 transactions.push({
                     _id: s._id,
                     date: s.date,
-                    type: s.type === 'receipt' ? 'Receipt' : 'Stock Sale',
+                    type: s.type === 'receipt' ? 'Receipt' : s.type === 'sale' ? 'Receipt' : 'Stock Sale',
                     refNo: s.billNumber || s.refNo || '-',
                     description: s.type === 'receipt'
                         ? `STOCK_RECEIPT_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'}`
