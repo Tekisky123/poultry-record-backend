@@ -472,15 +472,20 @@ export const addReceipt = async (req, res, next) => {
 // Get All Stocks (Includes Trip Stocks)
 export const getStocks = async (req, res, next) => {
     try {
-        const { startDate, endDate, supervisor, type } = req.query;
+        const { startDate, endDate, supervisor, type, inventoryType } = req.query;
 
         let query = {};
         if (supervisor) query.supervisorId = supervisor;
         if (type) query.type = type;
+        if (inventoryType) query.inventoryType = inventoryType;
         if (startDate || endDate) {
             query.date = {};
             if (startDate) query.date.$gte = new Date(startDate);
-            if (endDate) query.date.$lte = new Date(endDate);
+            if (endDate) {
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                query.date.$lte = end;
+            }
         }
 
         // 1. Fetch InventoryStock
@@ -538,6 +543,9 @@ export const getStocks = async (req, res, next) => {
             }
             if (endDate) {
                 tripStocks = tripStocks.filter(s => new Date(s.date) <= new Date(endDate));
+            }
+            if (inventoryType) {
+                tripStocks = tripStocks.filter(s => s.inventoryType === inventoryType);
             }
         }
 
