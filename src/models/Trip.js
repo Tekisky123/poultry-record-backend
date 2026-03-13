@@ -552,6 +552,13 @@ tripSchema.pre('save', async function (next) {
     // Calculate trip profit: netRent + birdsProfit
     this.summary.tripProfit = Number(((netRent || 0) + (this.summary.birdsProfit || 0)).toFixed(2));
 
+    // Calculate margin: tripProfit / totalWeightPurchased
+    if (this.summary.totalWeightPurchased > 0) {
+        this.summary.profitPerKg = Number((this.summary.tripProfit / this.summary.totalWeightPurchased).toFixed(2));
+    } else {
+        this.summary.profitPerKg = 0;
+    }
+
     // Validate vehicle readings if closing reading is provided
     if (this.vehicleReadings.opening && this.vehicleReadings.closing) {
         if (this.vehicleReadings.closing < this.vehicleReadings.opening) {
