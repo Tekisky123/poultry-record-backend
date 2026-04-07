@@ -20,6 +20,7 @@ import inventoryStockRouter from './inventoryStock.routes.js';
 import tripExpensesRouter from './tripExpenses.routes.js';
 import birdsMortalityRouter from './birdsMortality.routes.js';
 import birdsWeightLossRouter from './birdsWeightLoss.routes.js';
+import dieselExpensesRouter from './dieselExpenses.routes.js';
 
 router.use('/auth', authRouter);
 router.use('/user', userRouter);
@@ -41,6 +42,7 @@ router.use('/inventory-stock', inventoryStockRouter);
 router.use('/trip-expenses', tripExpensesRouter);
 router.use('/birds-mortality', birdsMortalityRouter);
 router.use('/birds-weight-loss', birdsWeightLossRouter);
+router.use('/diesel-expenses', dieselExpensesRouter);
 //     sendAddSaleSMS("7414969691", {
 //         customerName: "Tauhid Shaikh",
 //         date: "2022-01-01",

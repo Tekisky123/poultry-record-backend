@@ -45,7 +45,7 @@ export const getBirdsMortalityMonthlySummary = async (req, res) => {
             7: "August", 8: "September", 9: "October", 10: "November", 11: "December",
             0: "January", 1: "February", 2: "March"
         };
-        
+
         Object.keys(monthOffsets).forEach(monthIdx => {
             const mIdx = parseInt(monthIdx);
             const y = mIdx >= 3 ? numericYear : numericYear + 1;
@@ -78,7 +78,7 @@ export const getBirdsMortalityMonthlySummary = async (req, res) => {
             const monthName = monthOffsets[monthIdx];
 
             if (monthName && monthlyData[monthName]) {
-                const amt = stock.amount || (stock.birds * stock.rate) || 0;
+                const amt = stock.amount || 0;
                 monthlyData[monthName].amount += amt;
                 totalAmount += amt;
             }
@@ -160,9 +160,13 @@ export const getBirdsMortalityDailyRecords = async (req, res) => {
                         totalAmount += amount;
                         records.push({
                             date: lossDate.toISOString().split('T')[0],
-                            particular: loss.reason || 'Trip Mortality',
+                            particular: (loss.reason && loss.reason.toLowerCase().includes('trip completion')) ? 'Trip Mortality' : (loss.reason || 'Trip Mortality'),
                             reference: trip.tripId || '-',
-                            amount: amount
+                            birds: loss.quantity || 0,
+                            weight: loss.weight || 0,
+                            rate: loss.rate || 0,
+                            amount: amount,
+                            tripDbId: trip._id
                         });
                     }
                 }
@@ -171,7 +175,7 @@ export const getBirdsMortalityDailyRecords = async (req, res) => {
 
         // Process Stocks
         stocks.forEach(stock => {
-            const amount = stock.amount || (stock.birds * stock.rate) || 0;
+            const amount = stock.amount || 0;
             if (amount > 0) {
                 const dateStr = new Date(stock.date).toISOString().split('T')[0];
                 totalAmount += amount;
@@ -179,7 +183,11 @@ export const getBirdsMortalityDailyRecords = async (req, res) => {
                     date: dateStr,
                     particular: stock.notes || stock.narration || 'Stock Mortality',
                     reference: dateStr, // requirements: "if its stock then show date"
-                    amount: amount
+                    birds: stock.birds || 0,
+                    weight: stock.weight || 0,
+                    rate: stock.rate || 0,
+                    amount: amount,
+                    isStock: true
                 });
             }
         });
@@ -191,9 +199,13 @@ export const getBirdsMortalityDailyRecords = async (req, res) => {
                 totalAmount += amount;
                 records.push({
                     date: new Date(sale.date).toISOString().split('T')[0],
-                    particular: sale.notes || 'Indirect Sale Mortality',
+                    particular: (sale.notes && sale.notes.toLowerCase().includes('indirect')) ? 'Indirect Mortality' : (sale.notes || 'Indirect Mortality'),
                     reference: sale.invoiceNumber || '-', // requirements: "if its indirect purchase sale then show invocie no"
-                    amount: amount
+                    birds: sale.mortality?.birds || 0,
+                    weight: sale.mortality?.weight || 0,
+                    rate: sale.mortality?.rate || 0,
+                    amount: amount,
+                    indirectDbId: sale._id
                 });
             }
         });

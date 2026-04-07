@@ -71,7 +71,7 @@ export const getBirdsWeightLossMonthlySummary = async (req, res) => {
             const monthName = monthOffsets[monthIdx];
 
             if (monthName && monthlyData[monthName]) {
-                const amt = stock.amount || (stock.weight * stock.rate) || 0;
+                const amt = stock.amount || 0;
                 monthlyData[monthName].amount += amt;
                 totalAmount += amt;
             }
@@ -142,14 +142,17 @@ export const getBirdsWeightLossDailyRecords = async (req, res) => {
                     date: docDate.toISOString().split('T')[0],
                     particular: 'Trip Weight Loss',
                     reference: trip.tripId || '-',
-                    amount: amount
+                    weight: weightLoss,
+                    rate: avgRate,
+                    amount: amount,
+                    tripDbId: trip._id
                 });
             }
         });
 
         // Process Stocks
         stocks.forEach(stock => {
-            const amount = stock.amount || (stock.weight * stock.rate) || 0;
+            const amount = stock.amount || 0;
             if (amount > 0) {
                 const dateStr = new Date(stock.date).toISOString().split('T')[0];
                 totalAmount += amount;
@@ -157,7 +160,10 @@ export const getBirdsWeightLossDailyRecords = async (req, res) => {
                     date: dateStr,
                     particular: stock.notes || stock.narration || (stock.type === 'natural_weight_loss' ? 'Natural Weight Loss' : 'Stock Weight Loss'),
                     reference: dateStr,
-                    amount: amount
+                    weight: stock.weight || 0,
+                    rate: stock.rate || 0,
+                    amount: amount,
+                    isStock: true
                 });
             }
         });

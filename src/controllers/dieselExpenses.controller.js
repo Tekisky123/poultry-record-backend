@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import Trip from '../models/Trip.js';
 
-export const getTripExpensesMonthlySummary = async (req, res) => {
+export const getDieselExpensesMonthlySummary = async (req, res) => {
     try {
         const { year } = req.query;
         if (!year) {
@@ -13,10 +13,10 @@ export const getTripExpensesMonthlySummary = async (req, res) => {
         const startDate = new Date(`${numericYear}-04-01T00:00:00.000Z`);
         const endDate = new Date(`${numericYear + 1}-03-31T23:59:59.999Z`);
 
-        // Fetch trips in the given date range that have expenses
+        // Fetch trips in the given date range that have diesel stations
         const trips = await Trip.find({
             date: { $gte: startDate, $lte: endDate },
-            'expenses.0': { $exists: true }
+            'diesel.stations.0': { $exists: true }
         }).sort({ date: 1 });
 
         const monthNames = ["April", "May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March"];
@@ -48,8 +48,8 @@ export const getTripExpensesMonthlySummary = async (req, res) => {
             const monthName = monthOffsets[monthIdx];
 
             if (monthName && monthlyData[monthName]) {
-                trip.expenses.forEach(expense => {
-                    const amt = expense.amount || 0;
+                trip.diesel.stations.forEach(station => {
+                    const amt = station.amount || 0;
                     monthlyData[monthName].amount += amt;
                     totalAmount += amt;
                 });
@@ -74,7 +74,7 @@ export const getTripExpensesMonthlySummary = async (req, res) => {
     }
 };
 
-export const getTripExpensesDailyRecords = async (req, res) => {
+export const getDieselExpensesDailyRecords = async (req, res) => {
     try {
         const { year, month } = req.query;
         if (!year || !month) {
@@ -90,7 +90,7 @@ export const getTripExpensesDailyRecords = async (req, res) => {
 
         const trips = await Trip.find({
             date: { $gte: startDate, $lte: endDate },
-            'expenses.0': { $exists: true }
+            'diesel.stations.0': { $exists: true }
         }).sort({ date: 1 });
 
         const records = [];
@@ -100,20 +100,21 @@ export const getTripExpensesDailyRecords = async (req, res) => {
             const dateStr = new Date(trip.date).toISOString().split('T')[0];
             const tripId = trip.tripId || '-';
 
-            trip.expenses.forEach(expense => {
-                const amount = expense.amount || 0;
+            trip.diesel.stations.forEach(station => {
+                const amount = station.amount || 0;
                 if (amount !== 0) {
                     totalAmount += amount;
-                    // Format the category nicely
-                    const formattedCat = expense.category ? expense.category.charAt(0).toUpperCase() + expense.category.slice(1).replace('-', ' ') : 'Other';
                     
                     records.push({
                         date: dateStr,
-                        particular: formattedCat,
+                        particular: station.name || station.stationName || 'Diesel Station',
                         tripId: tripId,
+                        indentNumber: station.indentNumber || '-',
+                        volume: station.volume || 0,
+                        rate: station.rate || 0,
                         amount: amount,
-                        voucherNumber: trip.tripId, // Used internally or for display
-                        narration: expense.description || expense.category || '-',
+                        voucherNumber: trip.tripId, 
+                        narration: station.narration || '-',
                         tripDbId: trip._id
                     });
                 }

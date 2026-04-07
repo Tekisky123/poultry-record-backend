@@ -319,6 +319,7 @@ export const getProfitAndLoss = async (req, res, next) => {
             const isales = await IndirectSale.find({ date: { $gte: sDate, $lte: eDate } }).lean();
 
             let metricPurchase = 0;
+            let metricFeedPurchase = 0;
             let metricSales = 0;
             let metricMortality = 0;
             let metricWeightLoss = 0;
@@ -367,7 +368,13 @@ export const getProfitAndLoss = async (req, res, next) => {
 
                 if (isPeriod) {
                     let amt = s.amount || (s.weight * s.rate) || 0;
-                    if (s.type === 'purchase') metricPurchase += amt;
+                    if (s.type === 'purchase') {
+                        if (s.inventoryType === 'feed') {
+                            metricFeedPurchase += amt;
+                        } else {
+                            metricPurchase += amt;
+                        }
+                    }
                     if (s.type === 'sale') metricSales += amt;
                     if (s.type === 'mortality') metricMortality += amt;
                     if (s.type === 'weight_loss' || s.type === 'natural_weight_loss') metricWeightLoss += amt;
@@ -401,7 +408,8 @@ export const getProfitAndLoss = async (req, res, next) => {
                     let oldBalance = g.balance || 0;
                     let targetValue = null;
 
-                    if (name.includes('LIVE POULTRY BIRDS PURCHASE') || name.includes('LIVE POULTRY BIRDS PURCHASES')) targetValue = metricPurchase;
+                    if (name.includes('POULTRY FEED PURCHASE')) targetValue = metricFeedPurchase;
+                    else if (name.includes('LIVE POULTRY BIRDS PURCHASE') || name.includes('LIVE POULTRY BIRDS PURCHASES')) targetValue = metricPurchase;
                     else if (name.includes('LIVE POULTRY BIRDS SALES') || (name.includes('LIVE POULTRY BIRDS') && name.includes('SALES'))) targetValue = metricSales;
                     else if (name.includes('BIRDS MORTALITY')) targetValue = metricMortality;
                     else if (name.includes('BIRDS WEIGHT LOSS')) targetValue = metricWeightLoss;
