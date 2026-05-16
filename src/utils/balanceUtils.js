@@ -88,4 +88,16 @@ export const subtractFromBalance = (currentAmount, currentType, amountToSubtract
     const newSigned = currentSigned - amountSigned;
     return fromSignedValue(newSigned);
 };
-
+/**
+ * Get the start date of the financial year for a given date
+ * (Assumes FY starts on April 1st)
+ */
+export const getFinancialYearStartDate = (date = new Date()) => {
+    const d = new Date(date);
+    const month = d.getMonth(); // 0-11 (Jan-Dec)
+    const year = d.getFullYear();
+    // If month is Jan(0), Feb(1), or Mar(2), the FY started on April 1st of the PREVIOUS year.
+    // If month is Apr(3) or later, the FY started on April 1st of the CURRENT year.
+    const fyStartYear = month >= 3 ? year : year - 1;
+    return new Date(fyStartYear, 3, 1, 0, 0, 0, 0); // April 1st, 00:00:00
+};

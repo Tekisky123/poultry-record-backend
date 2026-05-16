@@ -7,7 +7,7 @@ import Voucher from "../models/Voucher.js";
 import InventoryStock from "../models/InventoryStock.js";
 import IndirectSale from "../models/IndirectSale.js";
 import DieselStation from "../models/DieselStation.js";
-import { toSignedValue, fromSignedValue, syncOutstandingBalance } from "../utils/balanceUtils.js";
+import { toSignedValue, fromSignedValue, syncOutstandingBalance, getFinancialYearStartDate } from "../utils/balanceUtils.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
@@ -208,7 +208,7 @@ export const deleteLedger = async (req, res, next) => {
         }
 
         if (Math.abs(ledger.openingBalance || 0) >= 1 || Math.abs(ledger.outstandingBalance || 0) >= 1) {
-            throw new AppError("Cannot delete ledger: It has an opening or outstanding balance.", 400);
+            throw new AppError("Cannot delete ledger: It has a balance of 1 RS or more.", 400);
         }
 
         // Soft delete
@@ -568,12 +568,7 @@ export const getMonthlySummary = async (req, res, next) => {
         // Calculate Balances natively from Opening fields via Forward Calculation
         // Use standard balance utils which handles this via type
 
-        const getFYStartDate = (date) => {
-            const d = new Date(date);
-            const year = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
-            return new Date(year, 3, 1); // April 1st
-        };
-        const subjectFYStartDate = getFYStartDate(subject.createdAt);
+        const subjectFYStartDate = getFinancialYearStartDate(subject.createdAt);
 
         // Forward Calculation
         // Use original opening balance + transactions BEFORE start date
@@ -1221,7 +1216,7 @@ export const getLedgerTransactions = async (req, res, next) => {
         // Add Opening Balance Entry
         transactions.unshift({
             _id: 'op_bal',
-            date: queryStartDate || ledger.createdAt || new Date(),
+            date: queryStartDate || getFinancialYearStartDate(ledger.createdAt),
             type: 'OPENING',
             refNo: '-',
             description: 'OP',

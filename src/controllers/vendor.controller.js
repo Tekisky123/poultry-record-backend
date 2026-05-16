@@ -169,7 +169,7 @@ export const deleteVendor = async (req, res, next) => {
         }
 
         if (Math.abs(existingVendor.openingBalance || 0) >= 1 || Math.abs(existingVendor.outstandingBalance || 0) >= 1) {
-            throw new AppError("Cannot delete vendor: It has an opening or outstanding balance.", 400);
+            throw new AppError("Cannot delete vendor: It has a balance of 1 RS or more.", 400);
         }
 
         const vendor = await Vendor.findByIdAndUpdate(
@@ -201,7 +201,15 @@ export const getVendorLedger = async (req, res, next) => {
         const isTdsApplicableForDate = (date) => {
             if (!vendor.tdsApplicable) return false;
             if (!vendor.tdsUpdatedAt) return true;
-            return new Date(date) >= new Date(vendor.tdsUpdatedAt);
+            
+            // Compare only date parts to ensure transactions on the same day are included
+            const transactionDate = new Date(date);
+            transactionDate.setHours(0, 0, 0, 0);
+            
+            const activationDate = new Date(vendor.tdsUpdatedAt);
+            activationDate.setHours(0, 0, 0, 0);
+            
+            return transactionDate >= activationDate;
         };
 
         // Build Date Query
@@ -392,7 +400,15 @@ export const getVendorLedger = async (req, res, next) => {
             }
 
             for (const sale of prevIndirectSales) {
-                periodOpeningBalance += sale.summary?.totalPurchaseAmount || 0;
+                let saleAmount = sale.summary?.totalPurchaseAmount || 0;
+
+                // Deduct TDS from previous indirect sales if applicable
+                if (isTdsApplicableForDate(sale.date)) {
+                    const tdsAmount = saleAmount * 0.001; // 0.1% TDS
+                    saleAmount -= tdsAmount;
+                }
+
+                periodOpeningBalance += saleAmount;
             }
 
             // Fetch previous Inventory Stocks
@@ -456,6 +472,12 @@ export const getVendorLedger = async (req, res, next) => {
         for (const sale of indirectSales) {
             console.log("Indirect sale", sale.customer);
             sale.purchases.forEach((purchase, index) => {
+                // Calculate TDS for current period indirect sales
+                let lessTDS = 0;
+                if (isTdsApplicableForDate(sale.date)) {
+                    lessTDS = (purchase.amount || 0) * 0.001; // 0.1% TDS
+                }
+
                 ledgerEntries.push({
                     _id: sale._id,
                     uniqueId: `INDIRECT-${sale._id}-${index}`,
@@ -473,7 +495,7 @@ export const getVendorLedger = async (req, res, next) => {
                     avgWeight: purchase.avg || (purchase.birds > 0 ? purchase.weight / purchase.birds : 0),
                     rate: purchase.rate,
                     amount: purchase.amount,
-                    lessTDS: 0,
+                    lessTDS: lessTDS,
                     tripId: '-',
                     voucherNo: sale.invoiceNumber || '-',
                     timestamp: new Date(sale.date).getTime()

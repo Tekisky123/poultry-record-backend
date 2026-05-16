@@ -82,10 +82,6 @@ const customerSchema = new mongoose.Schema({
       return this.openingBalanceType || 'debit';
     }
   },
-  tdsApplicable: {
-    type: Boolean,
-    default: false
-  },
   group: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group',

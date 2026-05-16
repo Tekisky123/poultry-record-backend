@@ -1397,12 +1397,11 @@ export const completeTrip = async (req, res, next) => {
     try {
         const { closingOdometer, finalRemarks, mortality } = req.body;
 
-        let query = { _id: req.params.id };
-        if (req.user.role === 'supervisor') {
-            query.supervisor = req.user._id;
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+            throw new AppError('Only admin or superadmin can complete trips', 403);
         }
 
-        const trip = await Trip.findOne(query);
+        const trip = await Trip.findOne({ _id: req.params.id });
 
         if (!trip) throw new AppError('Trip not found!', 404);
 

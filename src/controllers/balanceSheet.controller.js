@@ -69,59 +69,115 @@ const buildTree = (groups) => {
   return rootGroups;
 };
 
-// Build voucher balance map (optimized - fetch once, use many times)
-const buildVoucherBalanceMap = async (asOnDate = null) => {
-  try {
-    const query = {
-      isActive: true
-    };
+// Build unified balance map from Vouchers, Trips, and Inventory Stocks
+const buildUnifiedBalanceMap = (allVouchers, allTrips, allStocks, idToNameMap) => {
+  const map = new Map(); // Key: normalized name (lowercase string)
 
-    if (asOnDate) {
-      query.date = { $lte: new Date(asOnDate) };
+  const updateMap = (nameOrId, debit, credit) => {
+    if (!nameOrId) return;
+
+    // Resolve name if it's an ID
+    let name = nameOrId;
+    if (mongoose.Types.ObjectId.isValid(nameOrId)) {
+      name = idToNameMap.get(nameOrId.toString()) || nameOrId.toString();
+    } else if (typeof nameOrId === 'object' && nameOrId._id) {
+      // Handle populated objects
+      name = idToNameMap.get(nameOrId._id.toString()) || nameOrId.name || nameOrId.vendorName || nameOrId.shopName || nameOrId.toString();
     }
 
-    // Use aggregation to calculate balances efficiently
-    const balanceMap = await Voucher.aggregate([
-      { $match: query },
-      { $unwind: '$entries' },
-      {
-        $group: {
-          _id: '$entries.account',
-          debitTotal: { $sum: { $ifNull: ['$entries.debitAmount', 0] } },
-          creditTotal: { $sum: { $ifNull: ['$entries.creditAmount', 0] } }
-        }
-      }
-    ]);
+    const key = name.toString().trim().toLowerCase();
+    const current = map.get(key) || { debitTotal: 0, creditTotal: 0 };
+    map.set(key, {
+      debitTotal: current.debitTotal + (Number(debit) || 0),
+      creditTotal: current.creditTotal + (Number(credit) || 0)
+    });
+  };
 
-    // Create a map for fast lookup (normalize account names to lowercase)
-    const map = new Map();
-    balanceMap.forEach(item => {
-      if (item._id) {
-        const normalizedName = item._id.toString().trim().toLowerCase();
-        map.set(normalizedName, {
-          debitTotal: item.debitTotal || 0,
-          creditTotal: item.creditTotal || 0
-        });
+  // 1. Process Vouchers
+  allVouchers.forEach(v => {
+    if (!v.isActive) return;
+    (v.entries || []).forEach(e => {
+      updateMap(e.account, e.debitAmount, e.creditAmount);
+    });
+  });
+
+  // 2. Process Inventory Stocks (Purchases, Sales, Receipts, Consumptions)
+  allStocks.forEach(s => {
+    if (s.type === 'purchase' || s.type === 'opening') {
+      // Purchase increases liability to Vendor (Credit)
+      updateMap(s.vendorId, 0, s.amount);
+    } else if (s.type === 'sale') {
+      // Sale increases Customer debt (Debit)
+      updateMap(s.customerId, s.amount, 0);
+      // Payments/Discounts decrease Customer debt (Credit)
+      const totalCredit = (Number(s.cashPaid) || 0) + (Number(s.onlinePaid) || 0) + (Number(s.discount) || 0);
+      updateMap(s.customerId, 0, totalCredit);
+
+      // Payments increase Cash/Bank ledger balance (Debit)
+      if (s.cashPaid > 0) updateMap(s.cashLedgerId, s.cashPaid, 0);
+      if (s.onlinePaid > 0) updateMap(s.onlineLedgerId, s.onlinePaid, 0);
+    } else if (s.type === 'receipt') {
+      // Receipt decreases Customer debt (Credit)
+      const totalCredit = (Number(s.cashPaid) || 0) + (Number(s.onlinePaid) || 0) + (Number(s.discount) || 0);
+      updateMap(s.customerId, 0, totalCredit);
+
+      // Payments increase Cash/Bank ledger balance (Debit)
+      if (s.cashPaid > 0) updateMap(s.cashLedgerId, s.cashPaid, 0);
+      if (s.onlinePaid > 0) updateMap(s.onlineLedgerId, s.onlinePaid, 0);
+    } else if (s.type === 'consume') {
+      // Consumption increases Expense (Debit)
+      updateMap(s.expenseLedgerId, s.amount, 0);
+    }
+  });
+
+  // 3. Process Trips (Purchases, Sales, Diesel, Expenses)
+  allTrips.forEach(t => {
+    // A. Trip Purchases
+    (t.purchases || []).forEach(p => {
+      updateMap(p.supplier, 0, p.amount);
+    });
+
+    // B. Trip Sales
+    (t.sales || []).forEach(s => {
+      // Sale increases Customer debt (Debit)
+      updateMap(s.client, s.amount, 0);
+      // Payments/Discounts decrease Customer debt (Credit)
+      const totalCredit = (Number(s.cashPaid) || 0) + (Number(s.onlinePaid) || 0) + (Number(s.discount) || 0);
+      updateMap(s.client, 0, totalCredit);
+
+      // Payments increase Cash/Bank ledger balance (Debit)
+      if (s.cashPaid > 0) updateMap(s.cashLedger, s.cashPaid, 0);
+      if (s.onlinePaid > 0) updateMap(s.onlineLedger, s.onlinePaid, 0);
+    });
+
+    // C. Trip Diesel (Credit to Station, offset if paid from ledger)
+    (t.diesel?.stations || []).forEach(ds => {
+      updateMap(ds.dieselStation, 0, ds.amount);
+      if (ds.paymentLedger) {
+        // Payment decreases ledger balance (Credit)
+        updateMap(ds.paymentLedger, 0, ds.amount);
+        // Payment decreases station liability (Debit)
+        updateMap(ds.dieselStation, ds.amount, 0);
       }
     });
 
-    return map;
-  } catch (error) {
-    console.error('Error building voucher balance map:', error);
-    return new Map();
-  }
+    // D. Trip Expenses (Debit Expense - for now we just track magnitude for Capital calculation if possible)
+    // Note: Since trip expenses aren't linked to a specific ledger, they only affect Capital via P&L.
+  });
+
+  return map;
 };
 
-// Calculate ledger balance from opening balance + date-filtered voucher entries
-const calculateLedgerBalance = (ledger, voucherBalanceMap) => {
+// Calculate ledger balance from opening balance + date-filtered entries
+const calculateLedgerBalance = (ledger, unifiedBalanceMap) => {
   try {
     const openingSigned = toSignedValue(ledger.openingBalance || 0, ledger.openingBalanceType || 'debit');
 
-    // Look up voucher entries by ledger name
+    // Look up entries by ledger name
     const normalizedName = (ledger.name || '').toString().trim().toLowerCase();
-    const voucherData = voucherBalanceMap ? voucherBalanceMap.get(normalizedName) : null;
-    const debitTotal = voucherData ? voucherData.debitTotal : 0;
-    const creditTotal = voucherData ? voucherData.creditTotal : 0;
+    const entryData = unifiedBalanceMap ? unifiedBalanceMap.get(normalizedName) : null;
+    const debitTotal = entryData ? entryData.debitTotal : 0;
+    const creditTotal = entryData ? entryData.creditTotal : 0;
 
     // Balance = opening balance (signed) + debit entries - credit entries
     const balance = openingSigned + debitTotal - creditTotal;
@@ -137,46 +193,43 @@ const calculateLedgerBalance = (ledger, voucherBalanceMap) => {
   }
 };
 
-// Calculate customer balance from opening balance + date-filtered voucher entries
-const calculateCustomerBalance = (customer, voucherBalanceMap) => {
+// Calculate customer balance from opening balance + date-filtered entries
+const calculateCustomerBalance = (customer, unifiedBalanceMap) => {
   const openingSigned = toSignedValue(customer.openingBalance || 0, customer.openingBalanceType || 'debit');
 
-  // Customers are referenced in vouchers by shopName
   const normalizedName = (customer.shopName || '').toString().trim().toLowerCase();
-  const voucherData = voucherBalanceMap ? voucherBalanceMap.get(normalizedName) : null;
-  const debitTotal = voucherData ? voucherData.debitTotal : 0;
-  const creditTotal = voucherData ? voucherData.creditTotal : 0;
+  const entryData = unifiedBalanceMap ? unifiedBalanceMap.get(normalizedName) : null;
+  const debitTotal = entryData ? entryData.debitTotal : 0;
+  const creditTotal = entryData ? entryData.creditTotal : 0;
 
   return openingSigned + debitTotal - creditTotal;
 };
 
-// Calculate vendor balance from opening balance + date-filtered voucher entries
-const calculateVendorBalance = (vendor, voucherBalanceMap) => {
+// Calculate vendor balance from opening balance + date-filtered entries
+const calculateVendorBalance = (vendor, unifiedBalanceMap) => {
   const openingSigned = toSignedValue(vendor.openingBalance || 0, vendor.openingBalanceType || 'credit');
 
-  // Vendors are referenced in vouchers by vendorName
   const normalizedName = (vendor.vendorName || '').toString().trim().toLowerCase();
-  const voucherData = voucherBalanceMap ? voucherBalanceMap.get(normalizedName) : null;
-  const debitTotal = voucherData ? voucherData.debitTotal : 0;
-  const creditTotal = voucherData ? voucherData.creditTotal : 0;
+  const entryData = unifiedBalanceMap ? unifiedBalanceMap.get(normalizedName) : null;
+  const debitTotal = entryData ? entryData.debitTotal : 0;
+  const creditTotal = entryData ? entryData.creditTotal : 0;
 
   return openingSigned + debitTotal - creditTotal;
 };
 
-// Calculate diesel station balance from opening balance + date-filtered voucher entries
-const calculateDieselStationBalance = (station, voucherBalanceMap) => {
+// Calculate diesel station balance from opening balance + date-filtered entries
+const calculateDieselStationBalance = (station, unifiedBalanceMap) => {
   const openingSigned = toSignedValue(station.openingBalance || 0, station.openingBalanceType || 'credit');
 
-  // Diesel stations are referenced in vouchers by name
   const normalizedName = (station.name || '').toString().trim().toLowerCase();
-  const voucherData = voucherBalanceMap ? voucherBalanceMap.get(normalizedName) : null;
-  const debitTotal = voucherData ? voucherData.debitTotal : 0;
-  const creditTotal = voucherData ? voucherData.creditTotal : 0;
+  const entryData = unifiedBalanceMap ? unifiedBalanceMap.get(normalizedName) : null;
+  const debitTotal = entryData ? entryData.debitTotal : 0;
+  const creditTotal = entryData ? entryData.creditTotal : 0;
 
   return openingSigned + debitTotal - creditTotal;
 };
 
-const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate = null) => {
+const calculateGroupBalance = async (group, unifiedBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate = null) => {
   let totalBalance = 0;
   let totalDebit = 0;
   let totalCredit = 0;
@@ -189,7 +242,7 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
 
   // Process all ledgers
   for (const ledger of ledgers) {
-    const ledgerBalance = calculateLedgerBalance(ledger, voucherBalanceMap);
+    const ledgerBalance = calculateLedgerBalance(ledger, unifiedBalanceMap);
     totalDebit += ledgerBalance.debitTotal;
     totalCredit += ledgerBalance.creditTotal;
     totalOpeningBalance += ledger.openingBalance || 0;
@@ -207,14 +260,9 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
   // Process vendors
   const vendors = vendorGroupMap.get(groupId.toString()) || [];
   for (const vendor of vendors) {
-    const balance = calculateVendorBalance(vendor, voucherBalanceMap);
+    const balance = calculateVendorBalance(vendor, unifiedBalanceMap);
     // Assuming vendor balance is Debit - Credit (so usually negative for liability)
 
-    // Update totals (approximate debit/credit split is hard without full breakdown return, but balance is key)
-    // For simplicity in Balance Sheet, we care about Net Balance effect.
-    // But we track totalDebit/TotalCredit for display? balanceSheet.controller uses them.
-    // calculateVendorBalance returns NET.
-    // Let's assume net negative is Credit, net positive is Debit.
     if (balance >= 0) {
       totalDebit += balance;
     } else {
@@ -222,7 +270,6 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
     }
 
     totalOpeningBalance += vendor.openingBalance || 0;
-    // outstandingBalance logic might be complex, skipping for now or assume balance
 
     if (group.type === 'Assets') {
       totalBalance += balance;
@@ -234,7 +281,7 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
   // Process customers
   const customers = customerGroupMap.get(groupId.toString()) || [];
   for (const customer of customers) {
-    const balance = calculateCustomerBalance(customer, voucherBalanceMap);
+    const balance = calculateCustomerBalance(customer, unifiedBalanceMap);
 
     if (balance >= 0) {
       totalDebit += balance;
@@ -254,16 +301,13 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
   // Process diesel stations
   const dieselStations = dieselStationGroupMap.get(groupId.toString()) || [];
   for (const station of dieselStations) {
-    const balance = calculateDieselStationBalance(station, voucherBalanceMap);
-    // Diesel Station is typically a Creditor (Liability) -> credit balance is normal.
-    // Logic similar to vendors.
+    const balance = calculateDieselStationBalance(station, unifiedBalanceMap);
     if (balance >= 0) {
       totalDebit += balance;
     } else {
       totalCredit += Math.abs(balance);
     }
     totalOpeningBalance += station.openingBalance || 0;
-    // outstandingBalance logic might be complex, skipping for now or assume balance
 
     if (group.type === 'Assets') {
       totalBalance += balance;
@@ -275,7 +319,7 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
   // Recursively calculate children balances
   if (group.children && group.children.length > 0) {
     for (const child of group.children) {
-      const childBalance = await calculateGroupBalance(child, voucherBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate);
+      const childBalance = await calculateGroupBalance(child, unifiedBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate);
       totalBalance += childBalance.totalBalance;
       totalDebit += childBalance.totalDebit;
       totalCredit += childBalance.totalCredit;
@@ -288,14 +332,8 @@ const calculateGroupBalance = async (group, voucherBalanceMap, ledgerGroupMap, v
 };
 
 // Calculate Capital/Equity (Income - Expenses) - optimized
-const calculateCapital = async (voucherBalanceMap, allLedgers) => {
+const calculateCapital = async (unifiedBalanceMap, allLedgers) => {
   try {
-    // Get all income and expense groups to filters ledgers
-    // Better way: Filter allLedgers based on their populated Group type
-    // Since we didn't populate group type in the global fetch, we might need a set of group IDs.
-    // However, the original code fetched groups to get IDs.
-
-    // Efficient approach: Fetch Income/Expense group IDs
     const incomeGroups = await Group.find({ type: 'Income', isActive: true }).select('_id').lean();
     const expenseGroups = await Group.find({ type: 'Expenses', isActive: true }).select('_id').lean();
 
@@ -305,25 +343,19 @@ const calculateCapital = async (voucherBalanceMap, allLedgers) => {
     let totalIncome = 0;
     let totalExpenses = 0;
 
-    // Iterate through all ledgers
     for (const ledger of allLedgers) {
       if (!ledger.group) continue;
       const groupId = ledger.group.toString();
 
       if (incomeGroupIds.has(groupId)) {
-        const balance = calculateLedgerBalance(ledger, voucherBalanceMap);
-        // Income is Credit (Negative in signed value). We want positive magnitude for Total Income.
-        // So we subtract the negative balance (or take abs).
-        // Safest: -balance.balance (if Credit is -100, Income is 100)
+        const balance = calculateLedgerBalance(ledger, unifiedBalanceMap);
         totalIncome -= balance.balance;
       } else if (expenseGroupIds.has(groupId)) {
-        const balance = calculateLedgerBalance(ledger, voucherBalanceMap);
-        // Expense is Debit (Positive in signed value).
+        const balance = calculateLedgerBalance(ledger, unifiedBalanceMap);
         totalExpenses += balance.balance;
       }
     }
 
-    // Capital = Income - Expenses
     return totalIncome - totalExpenses;
   } catch (error) {
     console.error('Error calculating capital:', error);
@@ -343,8 +375,7 @@ export const getBalanceSheet = async (req, res, next) => {
     const dateQuery = date ? { date: { $lte: date } } : {};
     const createdQuery = date ? { createdAt: { $lte: date } } : {};
 
-    const [voucherBalanceMap, allLedgers, allVendors, allCustomers, allVouchers, allTrips, allStocks, assetsGroups, liabilityGroups, allDieselStations] = await Promise.all([
-      buildVoucherBalanceMap(date),
+    const [allLedgers, allVendors, allCustomers, allVouchers, allTrips, allStocks, assetsGroups, liabilityGroups, allDieselStations] = await Promise.all([
       Ledger.find({ isActive: true }).lean(),
       Vendor.find({ isActive: true }).lean(),
       Customer.find({ isActive: true }).lean(),
@@ -400,13 +431,23 @@ export const getBalanceSheet = async (req, res, next) => {
     const assetsTree = buildTree(assetsGroups);
     const liabilityTree = buildTree(liabilityGroups);
 
-    // Calculate balances for each group (pass voucher map to avoid re-fetching)
+    // Build ID to Name Maps for ID resolution in Trips and Stocks
+    const idToNameMap = new Map();
+    allLedgers.forEach(l => idToNameMap.set(l._id.toString(), l.name));
+    allVendors.forEach(v => idToNameMap.set(v._id.toString(), v.vendorName));
+    allCustomers.forEach(c => idToNameMap.set(c._id.toString(), c.shopName));
+    allDieselStations.forEach(d => idToNameMap.set(d._id.toString(), d.name));
+
+    // Build unified balance map
+    const unifiedBalanceMap = buildUnifiedBalanceMap(allVouchers, allTrips, allStocks, idToNameMap);
+
+    // Calculate balances for each group (pass unified map)
     const processGroups = async (groups) => {
       const processedGroups = [];
       for (const group of groups) {
         const balance = await calculateGroupBalance(
           group,
-          voucherBalanceMap,
+          unifiedBalanceMap,
           ledgerGroupMap,
           vendorGroupMap,
           customerGroupMap,
@@ -445,8 +486,8 @@ export const getBalanceSheet = async (req, res, next) => {
     const processedAssets = await processGroups(assetsTree);
     const processedLiabilities = await processGroups(liabilityTree);
 
-    // Calculate capital/equity (pass voucher map)
-    const capital = await calculateCapital(voucherBalanceMap, allLedgers);
+    // Calculate capital/equity (pass unified map)
+    const capital = await calculateCapital(unifiedBalanceMap, allLedgers);
 
     // Calculate totals
     const calculateTotal = (groups) => {

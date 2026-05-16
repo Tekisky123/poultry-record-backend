@@ -128,7 +128,7 @@ export const addCustomer = async (req, res, next) => {
 export const getCustomers = async (req, res, next) => {
     try {
         const customers = await Customer.find({ isActive: true })
-            .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance tdsApplicable')
+            .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance')
             .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
@@ -281,7 +281,7 @@ export const deleteCustomer = async (req, res, next) => {
         }
 
         if (Math.abs(existingCustomer.openingBalance || 0) >= 1 || Math.abs(existingCustomer.outstandingBalance || 0) >= 1) {
-            throw new AppError("Cannot delete customer: It has an opening or outstanding balance.", 400);
+            throw new AppError("Cannot delete customer: It has a balance of 1 RS or more.", 400);
         }
 
         const customer = await Customer.findByIdAndUpdate(

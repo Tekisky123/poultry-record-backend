@@ -93,6 +93,15 @@ export const deleteDieselStation = async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    const existingStation = await DieselStation.findOne({ _id: id, isActive: true });
+    if (!existingStation) {
+      throw new AppError("Diesel station not found", 404);
+    }
+
+    if (Math.abs(existingStation.openingBalance || 0) >= 1 || Math.abs(existingStation.outstandingBalance || 0) >= 1) {
+      throw new AppError("Cannot delete diesel station: It has a balance of 1 RS or more.", 400);
+    }
+
     const station = await DieselStation.findOneAndUpdate(
       { _id: id, isActive: true },
       { isActive: false, updatedBy: req.user._id },
