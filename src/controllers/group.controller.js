@@ -442,51 +442,47 @@ const calculateCustomerBalance = (customerDoc, startDate = null, endDate = null,
                 if (end && vDate > end) return;
                 const isInPeriod = (!start || vDate >= start);
 
-                if (isInPeriod) {
-                    let amount = 0;
-                    let isMatch = false;
-                    let type = '';
+                let amount = 0;
+                let isMatch = false;
+                let type = '';
 
-                    if (v.voucherType === 'Payment') {
-                        const partyData = v.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
-                        if (partyData) {
-                            amount = partyData.amount || 0;
-                            type = 'Payment'; // Treated as RECEIPT in Admin logic? No, wait.
-                            // getCustomerPurchaseLedger: Payment Voucher -> Particulars = "RECEIPT" (Customer balance INCREASES? Line 1063: Balance + Amount)
-                            // This is unusual. Usually Payment to Customer = Debit (Receivable increases or Liability decreases).
-                            // We owe them money/refund? Or we gave them money?
-                            // If we gave them money (Payment), they owe us more (Debit). 
-                            // So Payment -> Debit.
-                            allDebit += amount;
-                            if (isInPeriod) periodDebit += amount;
-                            isMatch = true;
-                        }
-                    } else if (v.voucherType === 'Receipt') {
-                        // Receipt from Customer -> Credit (Decreases Receivable).
-                        const partyData = v.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
-                        if (partyData) {
-                            amount = partyData.amount || 0;
-                            allCredit += amount;
-                            if (isInPeriod) periodCredit += amount;
-                            isMatch = true;
-                        }
-                    } else {
-                        // Journal
-                        const entry = v.entries?.find(e => e.account === customerName);
-                        if (entry) {
-                            amount = entry.debitAmount || entry.creditAmount;
-                            if (entry.debitAmount > 0) {
-                                allDebit += amount;
-                                if (isInPeriod) periodDebit += amount;
-                            } else {
-                                allCredit += amount;
-                                if (isInPeriod) periodCredit += amount;
-                            }
+                if (v.voucherType === 'Payment') {
+                    const partyData = v.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
+                    if (partyData) {
+                        amount = partyData.amount || 0;
+                        type = 'debit';
+                        isMatch = true;
+                    }
+                } else if (v.voucherType === 'Receipt') {
+                    // Receipt from Customer -> Credit (Decreases Receivable).
+                    const partyData = v.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString());
+                    if (partyData) {
+                        amount = partyData.amount || 0;
+                        type = 'credit';
+                        isMatch = true;
+                    }
+                } else {
+                    // Journal
+                    const entry = v.entries?.find(e => e.account === customerName);
+                    if (entry) {
+                        amount = entry.debitAmount || entry.creditAmount;
+                        type = entry.debitAmount > 0 ? 'debit' : 'credit';
+                        isMatch = true;
+                    }
+                }
 
-                            // Add to Discount/Other if Journal
-                            if (isInPeriod) discountAndOther += amount;
-                            isMatch = true;
-                        }
+                if (isMatch && amount > 0) {
+                    if (type === 'debit') {
+                        allDebit += amount;
+                        if (isInPeriod) periodDebit += amount;
+                    } else if (type === 'credit') {
+                        allCredit += amount;
+                        if (isInPeriod) periodCredit += amount;
+                    }
+
+                    // Add to Discount/Other if Journal
+                    if (isInPeriod && v.voucherType !== 'Payment' && v.voucherType !== 'Receipt') {
+                        discountAndOther += amount;
                     }
                 }
             });
@@ -621,52 +617,51 @@ const calculateVendorBalance = (vendorDoc, startDate = null, endDate = null, pre
                 if (end && vDate > end) return;
                 const isInPeriod = (!start || vDate >= start);
 
-                if (isInPeriod) {
-                    let amount = 0;
-                    let type = 'debit';
+                let amount = 0;
+                let type = 'debit';
+                let isMatch = false;
 
-                    if (v.voucherType === 'Journal') {
-                        const entry = v.entries?.find(e => e.account === vendorName);
-                        if (entry) {
-                            if (entry.creditAmount > 0) {
-                                amount = entry.creditAmount;
-                                type = 'credit';
-                            } else {
-                                amount = entry.debitAmount;
-                                type = 'debit';
-                            }
-                        }
-                    } else {
-                        // Payment/Receipt
-                        let isMatch = false;
-                        if (v.parties && v.parties.length > 0) {
-                            const partyEntry = v.parties.find(p => p.partyId && p.partyId.toString() === vendorId.toString() && p.partyType === 'vendor');
-                            if (partyEntry) {
-                                amount = partyEntry.amount || 0;
-                                isMatch = true;
-                            }
-                        } else if (v.party && v.party.toString() === vendorId.toString()) { // Old schema support
-                            amount = v.totalDebit || v.totalCredit;
-                            isMatch = true;
-                        }
-
-                        if (isMatch) {
-                            // Payment/Receipt usually reduces payable -> Debit
+                if (v.voucherType === 'Journal') {
+                    const entry = v.entries?.find(e => e.account === vendorName);
+                    if (entry) {
+                        if (entry.creditAmount > 0) {
+                            amount = entry.creditAmount;
+                            type = 'credit';
+                        } else {
+                            amount = entry.debitAmount;
                             type = 'debit';
                         }
+                        isMatch = true;
+                    }
+                } else {
+                    // Payment/Receipt
+                    if (v.parties && v.parties.length > 0) {
+                        const partyEntry = v.parties.find(p => p.partyId && p.partyId.toString() === vendorId.toString() && p.partyType === 'vendor');
+                        if (partyEntry) {
+                            amount = partyEntry.amount || 0;
+                            isMatch = true;
+                        }
+                    } else if (v.party && v.party.toString() === vendorId.toString()) { // Old schema support
+                        amount = v.totalDebit || v.totalCredit;
+                        isMatch = true;
                     }
 
-                    if (amount > 0) {
-                        if (type === 'credit') {
-                            allCredit += amount;
-                            if (isInPeriod) {
-                                periodCredit += amount;
-                                if (v.voucherType === 'Journal' || v.voucherType === 'Receipt') discountAndOther += amount;
-                            }
-                        } else {
-                            allDebit += amount;
-                            if (isInPeriod) periodDebit += amount;
+                    if (isMatch) {
+                        // Payment/Receipt usually reduces payable -> Debit
+                        type = 'debit';
+                    }
+                }
+
+                if (isMatch && amount > 0) {
+                    if (type === 'credit') {
+                        allCredit += amount;
+                        if (isInPeriod) {
+                            periodCredit += amount;
+                            if (v.voucherType === 'Journal' || v.voucherType === 'Receipt') discountAndOther += amount;
                         }
+                    } else {
+                        allDebit += amount;
+                        if (isInPeriod) periodDebit += amount;
                     }
                 }
             });
@@ -710,9 +705,16 @@ const calculateVendorBalance = (vendorDoc, startDate = null, endDate = null, pre
 
                 if (sale.vendor && sale.vendor.toString() === vendorId.toString()) {
                     const purchaseAmt = sale.summary?.totalPurchaseAmount || 0;
+                    let tdsAmount = 0;
+                    if (vendorDoc.tdsApplicable && (vendorDoc.tdsUpdatedAt && new Date(sale.date) > new Date(vendorDoc.tdsUpdatedAt))) {
+                        tdsAmount = purchaseAmt * 0.001;
+                    }
+
                     allCredit += purchaseAmt;
+                    allDebit += tdsAmount;
 
                     if (isInPeriod) {
+                        if (tdsAmount > 0) periodDebit += tdsAmount;
                         periodCredit += purchaseAmt;
                         birdsTotal += sale.summary?.totalPurchaseBirds || 0;
                         weightTotal += sale.summary?.totalPurchaseWeight || 0;
@@ -845,45 +847,43 @@ const calculateDieselStationBalance = (stationDoc, startDate = null, endDate = n
                 if (end && vDate > end) return;
                 const isInPeriod = (!start || vDate >= start);
 
-                if (isInPeriod) {
-                    let amount = 0;
-                    let isMatch = false;
-                    let type = 'debit';
+                let amount = 0;
+                let isMatch = false;
+                let type = 'debit';
 
-                    if (v.voucherType === 'Payment') {
-                        // Check parties
-                        const partyData = v.parties?.find(p => p.partyId && p.partyId.toString() === stationId.toString());
-                        if (partyData) {
-                            amount = partyData.amount || 0;
-                            isMatch = true;
-                            type = 'debit'; // Payment reduces liability
-                        }
-                    } else if (v.voucherType === 'Journal') {
-                        // Journal check entries
-                        const entry = v.entries?.find(e => e.account === stationName); // Assuming account name match for journal
-                        if (entry) {
-                            if (entry.creditAmount > 0) {
-                                amount = entry.creditAmount;
-                                type = 'credit';
-                            } else {
-                                amount = entry.debitAmount;
-                                type = 'debit';
-                            }
-                            isMatch = true;
-                        }
+                if (v.voucherType === 'Payment') {
+                    // Check parties
+                    const partyData = v.parties?.find(p => p.partyId && p.partyId.toString() === stationId.toString());
+                    if (partyData) {
+                        amount = partyData.amount || 0;
+                        isMatch = true;
+                        type = 'debit'; // Payment reduces liability
                     }
-
-                    if (isMatch) {
-                        if (type === 'credit') {
-                            allCredit += amount;
-                            if (isInPeriod) {
-                                periodCredit += amount;
-                                if (v.voucherType === 'Journal') discountAndOther += amount;
-                            }
+                } else if (v.voucherType === 'Journal') {
+                    // Journal check entries
+                    const entry = v.entries?.find(e => e.account === stationName); // Assuming account name match for journal
+                    if (entry) {
+                        if (entry.creditAmount > 0) {
+                            amount = entry.creditAmount;
+                            type = 'credit';
                         } else {
-                            allDebit += amount;
-                            if (isInPeriod) periodDebit += amount;
+                            amount = entry.debitAmount;
+                            type = 'debit';
                         }
+                        isMatch = true;
+                    }
+                }
+
+                if (isMatch) {
+                    if (type === 'credit') {
+                        allCredit += amount;
+                        if (isInPeriod) {
+                            periodCredit += amount;
+                            if (v.voucherType === 'Journal') discountAndOther += amount;
+                        }
+                    } else {
+                        allDebit += amount;
+                        if (isInPeriod) periodDebit += amount;
                     }
                 }
             });

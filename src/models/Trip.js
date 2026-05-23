@@ -263,6 +263,11 @@ tripSchema.pre('save', async function (next) {
         this.tripId = `TRP-${fallbackNumber}`;
     }
 
+    // Remove any previous auto-calculated mortality entries to avoid duplication
+    if (this.losses) {
+        this.losses = this.losses.filter(loss => loss.reason !== 'Auto-calculated Mortality');
+    }
+
     // Calculate average weights
     if (this.purchases && this.purchases.length > 0) {
         this.purchases.forEach(purchase => {
@@ -510,6 +515,46 @@ tripSchema.pre('save', async function (next) {
 
     // TOTAL WEIGHT SOLD = Customer Sales + Stock + Transfers (for inventory tracking)
     this.summary.totalWeightSold = customerWeightSold + totalStockWeight + totalTransferredWeight;
+
+    // Auto-calculate death birds (mortality) if trip is completed
+    let manualBirdsLost = 0;
+    if (this.losses && this.losses.length > 0) {
+        manualBirdsLost = this.losses.reduce((sum, loss) => sum + (loss.quantity || 0), 0);
+    }
+
+    if (this.status === 'completed') {
+        const unaccountedBirds = (this.summary.totalBirdsPurchased || 0) - (this.summary.totalBirdsSold || 0) - manualBirdsLost;
+        if (unaccountedBirds > 0) {
+            const avgPurchaseWeight = this.summary.totalBirdsPurchased > 0 ?
+                (this.summary.totalWeightPurchased / this.summary.totalBirdsPurchased) : 0;
+            const autoWeight = unaccountedBirds * avgPurchaseWeight;
+            const avgPurchaseRate = this.summary.avgPurchaseRate || 0;
+            const autoLossValue = autoWeight * avgPurchaseRate;
+
+            this.losses.push({
+                quantity: unaccountedBirds,
+                weight: Number(autoWeight.toFixed(2)),
+                avgWeight: Number(avgPurchaseWeight.toFixed(2)),
+                rate: Number(avgPurchaseRate.toFixed(2)),
+                total: Number(autoLossValue.toFixed(2)),
+                reason: 'Auto-calculated Mortality',
+                date: this.date || new Date()
+            });
+        }
+    }
+
+    // Update losses totals to include any auto-calculated mortality
+    if (this.losses && this.losses.length > 0) {
+        this.summary.totalLosses = this.losses.reduce((sum, loss) => sum + (loss.total || 0), 0);
+        this.summary.totalBirdsLost = this.losses.reduce((sum, loss) => sum + (loss.quantity || 0), 0);
+        this.summary.totalWeightLost = this.losses.reduce((sum, loss) => sum + (loss.weight || 0), 0);
+        this.summary.mortality = this.summary.totalBirdsLost;
+    } else {
+        this.summary.totalLosses = 0;
+        this.summary.totalBirdsLost = 0;
+        this.summary.totalWeightLost = 0;
+        this.summary.mortality = 0;
+    }
 
     // TOTAL PROFIT MARGIN = Customer Profit + Stock Profit + Transfer Profit
     this.summary.totalProfitMargin = customerProfitMargin + totalStockProfitMargin + totalTransferredProfitMargin;
