@@ -960,7 +960,10 @@ export const getLedgerTransactions = async (req, res, next) => {
                 .populate('party', 'shopName vendorName')
                 .populate('parties.partyId', 'shopName vendorName name') // Populate name for Ledger parties too
                 .populate('account', 'name'), // Populate header Account to get its name
-            Trip.find(tripQuery).lean().populate('vehicle', 'registrationNumber').populate('supervisor', 'name'),
+            Trip.find(tripQuery).lean()
+                .populate('vehicle', 'registrationNumber')
+                .populate('supervisor', 'name')
+                .populate('sales.client', 'shopName ownerName'),
             InventoryStock.find(stockQuery).lean().populate('customerId', 'shopName ownerName')
         ]);
 
@@ -1082,7 +1085,7 @@ export const getLedgerTransactions = async (req, res, next) => {
                             date: t.date,
                             type: 'Receipt',
                             refNo: t.tripId,
-                            description: `Trip Bill: ${s.billNumber} (${s.birds} birds) - ${s.product || 'Bird Sale'}`,
+                            description: `Trip Bill: ${s.billNumber} (${s.birds} birds) - ${s.client?.shopName || s.client?.ownerName || s.product || 'Bird Sale'}`,
                             debit,
                             credit,
                             source: 'trip'
