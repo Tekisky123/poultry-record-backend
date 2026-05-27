@@ -97,10 +97,9 @@ export const addTrip = async (req, res, next) => {
     }
 };
 
-// Get all trips with role-based filtering
 export const getTrips = async (req, res, next) => {
     try {
-        const { status, startDate, endDate, page = 1, limit = 10, vehicle, supervisor } = req.query;
+        const { status, startDate, endDate, page, limit, vehicle, supervisor } = req.query;
 
         let query = {};
 
@@ -133,14 +132,18 @@ export const getTrips = async (req, res, next) => {
 
         const transferPopulate = buildTransferPopulate(5);
 
+        const pageNum = page ? parseInt(page) : 1;
+        const limitNum = limit ? parseInt(limit) : (req.user.role === 'supervisor' ? 1000 : 10);
+        const skipNum = (pageNum - 1) * limitNum;
+
         let queryBuilder = Trip.find(query)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
             .populate('purchases.supplier', 'vendorName')
             .populate('sales.client', 'shopName')
             .sort({ createdAt: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
+            .limit(limitNum)
+            .skip(skipNum);
 
         if (transferPopulate) {
             queryBuilder = queryBuilder.populate(transferPopulate);
@@ -154,8 +157,8 @@ export const getTrips = async (req, res, next) => {
             trips,
             pagination: {
                 total,
-                page: parseInt(page),
-                pages: Math.ceil(total / limit)
+                page: pageNum,
+                pages: Math.ceil(total / limitNum)
             }
         })
     } catch (error) {

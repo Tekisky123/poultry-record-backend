@@ -9,7 +9,7 @@ import AppError from "../utils/AppError.js";
 import bcrypt from 'bcrypt';
 import validator from 'validator';
 import mongoose from "mongoose";
-import { syncOutstandingBalance } from "../utils/balanceUtils.js";
+import { syncOutstandingBalance, toSignedValue, fromSignedValue } from "../utils/balanceUtils.js";
 
 export const addCustomer = async (req, res, next) => {
     try {
@@ -515,7 +515,7 @@ export const getCustomerDashboardStats = async (req, res, next) => {
             totalWeight,
             pendingPayments,
             openingBalance: customer.openingBalance || 0,
-            outstandingBalance: customer.outstandingBalance || 0,
+            outstandingBalance: toSignedValue(customer.outstandingBalance || 0, customer.outstandingBalanceType || 'debit'),
             totalDiscountAndOther
         };
 
@@ -976,7 +976,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             avgWeight: 0,
             rate: 0,
             amount: 0,
-            outstandingBalance: customer.openingBalance || 0,
+            outstandingBalance: toSignedValue(customer.openingBalance || 0, customer.openingBalanceType || 'debit'),
             trip: null
         });
 
@@ -1042,7 +1042,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Recalculate sequential balances for all entries chronologically
         // This ensures payments and sales are properly interleaved in the ledger
-        let runningBalance = customer.openingBalance || 0;
+        let runningBalance = toSignedValue(customer.openingBalance || 0, customer.openingBalanceType || 'debit');
         ledgerEntries.forEach((entry, index) => {
             if (entry._id === 'opening_balance') {
                 // Opening balance is already set, use it as starting point
@@ -1062,11 +1062,11 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 entry.outstandingBalance = runningBalance;
             } else if (entry.particulars === 'BY CASH RECEIPT' || entry.particulars === 'BY BANK RECEIPT') {
                 // Subtract payment amount (both from sales and standalone payments)
-                runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                runningBalance = runningBalance - (entry.amount || 0);
                 entry.outstandingBalance = runningBalance;
             } else if (entry.particulars === 'DISCOUNT') {
                 // Subtract discount
-                runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                runningBalance = runningBalance - (entry.amount || 0);
                 entry.outstandingBalance = runningBalance;
             } else if (entry.particulars === 'RECEIPT' || entry.particulars === 'PAYMENT' || entry.particulars === 'JOURNAL') {
                 // Handle voucher entries based on voucher type
@@ -1076,12 +1076,12 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         runningBalance = runningBalance + (entry.amount || 0);
                     } else if (entry.voucherType === 'Receipt') {
                         // Receipt voucher: customer balance decreases (they pay us, so they owe us less)
-                        runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                        runningBalance = runningBalance - (entry.amount || 0);
                     } else if (entry.voucherType === 'Journal') {
                         if (entry.amountType === 'debit') {
                             runningBalance = runningBalance + (entry.amount || 0);
                         } else {
-                            runningBalance = Math.max(0, runningBalance - (entry.amount || 0));
+                            runningBalance = runningBalance - (entry.amount || 0);
                         }
                     }
                 } else {
@@ -1131,13 +1131,15 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
 
         // Self-Healing: Sync calculated ledger balance to customer profile if mismatched
         // This fixes issues where intermediate updates (like editing middle sales) might have missed propagating the final balance
-        if (customer.outstandingBalance === undefined || Math.abs(customer.outstandingBalance - totals.currentBalance) > 0.01) {
+        const balanceObj = fromSignedValue(totals.currentBalance);
+        if (customer.outstandingBalance === undefined || 
+            Math.abs(toSignedValue(customer.outstandingBalance, customer.outstandingBalanceType || 'debit') - totals.currentBalance) > 0.01) {
             await Customer.findByIdAndUpdate(customerId, {
-                outstandingBalance: totals.currentBalance,
-                outstandingBalanceType: 'debit', // Ledger usually tracks the debit balance (receivable)
+                outstandingBalance: balanceObj.amount,
+                outstandingBalanceType: balanceObj.type,
                 updatedBy: req.user._id
             });
-            console.log(`Auto-corrected customer ${customer.shopName} balance from ${customer.outstandingBalance} to ${totals.currentBalance}`);
+            console.log(`Auto-corrected customer ${customer.shopName} balance from ${toSignedValue(customer.outstandingBalance, customer.outstandingBalanceType || 'debit')} to ${totals.currentBalance}`);
         }
 
         successResponse(res, "Customer purchase ledger retrieved successfully", 200, {
@@ -1247,7 +1249,7 @@ export const getCustomerOutstandingBalance = async (req, res, next) => {
         successResponse(res, "Customer outstanding balance retrieved successfully", 200, {
             customerId: customer._id,
             shopName: customer.shopName,
-            outstandingBalance: customer.outstandingBalance || 0
+            outstandingBalance: toSignedValue(customer.outstandingBalance || 0, customer.outstandingBalanceType || 'debit')
         });
     } catch (error) {
         next(error);
