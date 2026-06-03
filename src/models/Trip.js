@@ -22,6 +22,7 @@ const tripSchema = new mongoose.Schema({
         to: { type: String, required: true }, // End location
         distance: Number
     },
+    place: { type: String, default: '' },
 
     // Vehicle Readings
     vehicleReadings: {
@@ -112,6 +113,7 @@ const tripSchema = new mongoose.Schema({
         balanceForOnlinePaid: { type: Number, default: 0 }, // Balance after subtracting onlinePaid
         balanceForDiscount: { type: Number, default: 0 }, // Balance after subtracting discount
         narration: { type: String, default: '' },
+        isReceipt: { type: Boolean, default: false }, // True if this entry is a receipt (payment collection), not a sale
         timestamp: { type: Date, default: Date.now }
     }],
 

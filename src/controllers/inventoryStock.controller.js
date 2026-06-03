@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import InventoryStock from "../models/InventoryStock.js";
 import Vendor from "../models/Vendor.js";
 import Customer from "../models/Customer.js";
@@ -21,6 +22,22 @@ export const addPurchase = async (req, res, next) => {
             date: req.body.date || new Date(),
             birds: type === 'feed' ? 0 : (req.body.birds || 0)
         };
+
+        // Check for duplicate purchase in last 5 seconds
+        const existingPurchase = await InventoryStock.findOne({
+            type: purchaseData.type,
+            inventoryType: purchaseData.inventoryType,
+            supervisorId: req.user._id,
+            birds: purchaseData.birds || 0,
+            weight: purchaseData.weight || 0,
+            rate: purchaseData.rate || 0,
+            amount: purchaseData.amount || 0,
+            vendorId: purchaseData.vendorId || null,
+            createdAt: { $gte: new Date(Date.now() - 5000) }
+        });
+        if (existingPurchase) {
+            throw new AppError("Duplicate purchase detected. Please wait a moment.", 409);
+        }
 
         // Basic validation
         if (type === 'bird') {
@@ -80,6 +97,21 @@ export const addMortality = async (req, res, next) => {
             date: req.body.date || new Date()
         };
 
+        // Check for duplicate mortality in last 5 seconds
+        const existingMortality = await InventoryStock.findOne({
+            type: "mortality",
+            inventoryType: "bird",
+            supervisorId: req.user._id,
+            birds: mortalityData.birds || 0,
+            weight: mortalityData.weight || 0,
+            rate: mortalityData.rate || 0,
+            amount: mortalityData.amount || 0,
+            createdAt: { $gte: new Date(Date.now() - 5000) }
+        });
+        if (existingMortality) {
+            throw new AppError("Duplicate mortality detected. Please wait a moment.", 409);
+        }
+
         // Basic validation
         if (!mortalityData.birds || !mortalityData.weight || !mortalityData.rate) {
             throw new AppError("Birds, Weight, and Rate are required", 400);
@@ -109,6 +141,20 @@ export const addWeightLoss = async (req, res, next) => {
             birds: 0 // Always 0 for weight loss/gain
         };
 
+        // Check for duplicate weight loss in last 5 seconds
+        const existingWeightLoss = await InventoryStock.findOne({
+            type: weightLossData.type,
+            inventoryType: "bird",
+            supervisorId: req.user._id,
+            weight: weightLossData.weight || 0,
+            rate: weightLossData.rate || 0,
+            amount: weightLossData.amount || 0,
+            createdAt: { $gte: new Date(Date.now() - 5000) }
+        });
+        if (existingWeightLoss) {
+            throw new AppError("Duplicate weight loss/gain detected. Please wait a moment.", 409);
+        }
+
         // Basic validation
         // Weight can be negative or positive. Rate is required.
         if (weightLossData.weight === undefined || weightLossData.rate === undefined) {
@@ -135,6 +181,20 @@ export const addConsume = async (req, res, next) => {
             date: req.body.date || new Date(),
             birds: 0 // Usually 0 for feed consume
         };
+
+        // Check for duplicate consume in last 5 seconds
+        const existingConsume = await InventoryStock.findOne({
+            type: "consume",
+            inventoryType: consumeData.inventoryType,
+            supervisorId: req.user._id,
+            weight: consumeData.weight || 0,
+            rate: consumeData.rate || 0,
+            amount: consumeData.amount || (Number(consumeData.weight || 0) * Number(consumeData.rate || 0)),
+            createdAt: { $gte: new Date(Date.now() - 5000) }
+        });
+        if (existingConsume) {
+            throw new AppError("Duplicate consumption detected. Please wait a moment.", 409);
+        }
 
         // Basic validation
         if (!consumeData.weight || !consumeData.rate) {
@@ -211,6 +271,22 @@ export const addSale = async (req, res, next) => {
             date: saleData.date || new Date(),
             amount: Number(saleData.amount),
         };
+
+        // Check for duplicate sale in last 5 seconds
+        const existingSale = await InventoryStock.findOne({
+            type: "sale",
+            inventoryType: "bird",
+            supervisorId: req.user._id,
+            customerId: saleData.customerId || null,
+            birds: saleData.birds || 0,
+            weight: saleData.weight || 0,
+            rate: saleData.rate || 0,
+            amount: saleData.amount || 0,
+            createdAt: { $gte: new Date(Date.now() - 5000) }
+        });
+        if (existingSale) {
+            throw new AppError("Duplicate sale detected. Please wait a moment.", 409);
+        }
 
         // Check stock availability (Simple check - can be improved)
         // Need to calculate current stock? For now, we trust the input validation on frontend 
@@ -370,6 +446,20 @@ export const addReceipt = async (req, res, next) => {
             amount: 0
         };
 
+        // Check for duplicate receipt in last 5 seconds
+        const existingReceipt = await InventoryStock.findOne({
+            type: "receipt",
+            supervisorId: req.user._id,
+            customerId: receiptData.customerId || null,
+            cashPaid: receiptData.cashPaid || 0,
+            onlinePaid: receiptData.onlinePaid || 0,
+            discount: receiptData.discount || 0,
+            createdAt: { $gte: new Date(Date.now() - 5000) }
+        });
+        if (existingReceipt) {
+            throw new AppError("Duplicate receipt detected. Please wait a moment.", 409);
+        }
+
         if (!receiptData.cashLedgerId || receiptData.cashLedgerId === '') delete receiptData.cashLedgerId;
         if (!receiptData.onlineLedgerId || receiptData.onlineLedgerId === '') delete receiptData.onlineLedgerId;
         if (!receiptData.customerId || receiptData.customerId === '') delete receiptData.customerId;
@@ -475,7 +565,6 @@ export const getStocks = async (req, res, next) => {
         const { startDate, endDate, supervisor, type, inventoryType } = req.query;
 
         let query = {};
-        if (supervisor) query.supervisorId = supervisor;
         if (type) query.type = type;
         if (inventoryType) query.inventoryType = inventoryType;
         if (startDate || endDate) {
@@ -486,6 +575,18 @@ export const getStocks = async (req, res, next) => {
                 end.setHours(23, 59, 59, 999);
                 query.date.$lte = end;
             }
+        }
+
+        if (req.user.role === 'supervisor') {
+            query = {
+                ...query,
+                $or: [
+                    { supervisorId: req.user._id },
+                    { type: 'opening' }
+                ]
+            };
+        } else {
+            if (supervisor) query.supervisorId = supervisor;
         }
 
         // 1. Fetch InventoryStock
@@ -500,8 +601,11 @@ export const getStocks = async (req, res, next) => {
         let tripStocks = [];
         if (!type || type === 'purchase') {
             let tripQuery = {};
-            // Filter trips by date if needed (Note: stock.addedAt is what matters, but trip.createdAt is approximate)
-            // Ideally we filter after unrolling.
+            if (req.user.role === 'supervisor') {
+                tripQuery.supervisor = req.user._id;
+            } else if (supervisor) {
+                tripQuery.supervisor = supervisor;
+            }
 
             const trips = await Trip.find({
                 ...tripQuery,
@@ -526,7 +630,7 @@ export const getStocks = async (req, res, next) => {
                 }
                 if (!supplierName) {
                     // Fallback just in case
-                    supplierName = "Trip-Stock (" + (trip.vehicle?.vehicleNumber || 'Unassigned') + ")";
+                     supplierName = "Trip-Stock (" + (trip.vehicle?.vehicleNumber || 'Unassigned') + ")";
                 }
 
                 return trip.stocks.map(s => ({
@@ -550,7 +654,9 @@ export const getStocks = async (req, res, next) => {
             });
 
             // Filter flattened trip stocks by params
-            if (supervisor) {
+            if (req.user.role === 'supervisor') {
+                tripStocks = tripStocks.filter(s => s.supervisorId?._id?.toString() === req.user._id.toString());
+            } else if (supervisor) {
                 tripStocks = tripStocks.filter(s => s.supervisorId?._id?.toString() === supervisor);
             }
             if (startDate) {
@@ -584,6 +690,16 @@ export const updateStock = async (req, res, next) => {
         const oldStock = await InventoryStock.findById(id);
         if (!oldStock) {
             return res.status(404).json({ message: "Stock record not found" });
+        }
+
+        // Supervisor validation
+        if (req.user.role === 'supervisor') {
+            if (oldStock.type === 'opening') {
+                throw new AppError("You are not authorized to update opening stock", 403);
+            }
+            if (oldStock.supervisorId?.toString() !== req.user._id.toString()) {
+                throw new AppError("You are not authorized to update this stock record", 403);
+            }
         }
 
         const type = oldStock.type;
@@ -830,14 +946,23 @@ export const getMonthlyStockStats = async (req, res, next) => {
             "July", "August", "September", "October", "November", "December"
         ];
 
+        const matchQuery = {
+            date: {
+                $gte: new Date(`${currentYear}-04-01`),
+                $lte: new Date(`${currentYear + 1}-03-31`)
+            }
+        };
+
+        if (req.user.role === 'supervisor') {
+            matchQuery.$or = [
+                { supervisorId: new mongoose.Types.ObjectId(req.user._id) },
+                { type: 'opening' }
+            ];
+        }
+
         const pipeline = [
             {
-                $match: {
-                    date: {
-                        $gte: new Date(`${currentYear}-04-01`),
-                        $lte: new Date(`${currentYear + 1}-03-31`)
-                    }
-                }
+                $match: matchQuery
             },
             {
                 $group: {
@@ -919,14 +1044,23 @@ export const getDailyStockStats = async (req, res, next) => {
         const startDate = new Date(Date.UTC(year, month - 1, 1));
         const endDate = new Date(Date.UTC(year, month, 0, 23, 59, 59)); // Last day of month
 
+        const matchQuery = {
+            date: {
+                $gte: startDate,
+                $lte: endDate
+            }
+        };
+
+        if (req.user.role === 'supervisor') {
+            matchQuery.$or = [
+                { supervisorId: new mongoose.Types.ObjectId(req.user._id) },
+                { type: 'opening' }
+            ];
+        }
+
         const pipeline = [
             {
-                $match: {
-                    date: {
-                        $gte: startDate,
-                        $lte: endDate
-                    }
-                }
+                $match: matchQuery
             },
             {
                 $group: {

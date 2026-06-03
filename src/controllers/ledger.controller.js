@@ -11,6 +11,12 @@ import { toSignedValue, fromSignedValue, syncOutstandingBalance, getFinancialYea
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
+const getObjectIdStr = (val) => {
+    if (!val) return '';
+    if (val._id) return val._id.toString();
+    return val.toString();
+};
+
 export const addLedger = async (req, res, next) => {
     try {
         const { name, group, openingBalance, openingBalanceType, outstandingBalance, outstandingBalanceType } = req.body;
@@ -980,7 +986,7 @@ export const getLedgerTransactions = async (req, res, next) => {
             if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
                 // If ledger is the ACCOUNT (Header)
                 // e.g. Payment made FROM Cash (this ledger) TO Vendor
-                if (v.account && v.account.toString() === id.toString()) {
+                if (v.account && getObjectIdStr(v.account) === id.toString()) {
                     const totalAmount = v.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
                     if (v.voucherType === 'Payment') {
                         credit += totalAmount;
@@ -1006,7 +1012,7 @@ export const getLedgerTransactions = async (req, res, next) => {
                 // e.g. Payment made TO Vendor (this ledger) FROM Cash
                 if (v.parties) {
                     v.parties.forEach(p => {
-                        if (p.partyId && p.partyId._id && p.partyId._id.toString() === id.toString()) {
+                        if (p.partyId && getObjectIdStr(p.partyId) === id.toString()) {
                             if (v.voucherType === 'Payment') {
                                 debit += p.amount || 0;
                             } else {
@@ -1014,10 +1020,34 @@ export const getLedgerTransactions = async (req, res, next) => {
                             }
 
                             // For Vendor/Expense Ledger (Party), the "Particulars" should be the Source Account (Cash/Bank)
-                            if (!v.account || v.account.toString() !== id.toString()) {
+                            if (!v.account || getObjectIdStr(v.account) !== id.toString()) {
                                 // Use header account name as description
                                 // v.account is now populated
                                 description = v.account ? v.account.name : 'Unknown Account';
+                            }
+                        }
+                    });
+                }
+
+                // Fallback: If neither account nor parties matched via ObjectId, try matching via entries (name-based)
+                // This handles Payment/Receipt vouchers matched to this ledger via entries.account string
+                if (debit === 0 && credit === 0 && v.entries && v.entries.length > 0) {
+                    v.entries.forEach(e => {
+                        if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                            debit += e.debitAmount || 0;
+                            credit += e.creditAmount || 0;
+
+                            // Show the opposite account as the description
+                            let oppositeAccountName = '';
+                            if (e.debitAmount > 0) {
+                                const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                if (crEntry) oppositeAccountName = crEntry.account;
+                            } else if (e.creditAmount > 0) {
+                                const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                if (drEntry) oppositeAccountName = drEntry.account;
+                            }
+                            if (oppositeAccountName) {
+                                description = oppositeAccountName;
                             }
                         }
                     });
@@ -1029,12 +1059,15 @@ export const getLedgerTransactions = async (req, res, next) => {
                         debit += e.debitAmount || 0;
                         credit += e.creditAmount || 0;
 
-                        if (v.voucherType === 'Journal') {
+                        // For both Contra and Journal: show the opposite account name in Particulars
+                        if (v.voucherType === 'Journal' || v.voucherType === 'Contra') {
                             let oppositeAccountName = '';
                             if (e.debitAmount > 0) {
+                                // This entry is debit: find the credit entry (opposite)
                                 const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
                                 if (crEntry) oppositeAccountName = crEntry.account;
                             } else if (e.creditAmount > 0) {
+                                // This entry is credit: find the debit entry (opposite)
                                 const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
                                 if (drEntry) oppositeAccountName = drEntry.account;
                             }
@@ -1183,16 +1216,25 @@ export const getLedgerTransactions = async (req, res, next) => {
                 let debit = 0;
                 let credit = 0;
                 if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
-                    if (v.account && v.account.toString() === id.toString()) {
+                    if (v.account && getObjectIdStr(v.account) === id.toString()) {
                         const total = v.parties.reduce((s, p) => s + (p.amount || 0), 0);
                         if (v.voucherType === 'Payment') credit += total;
                         else debit += total;
                     }
                     if (v.parties) {
                         v.parties.forEach(p => {
-                            if (p.partyId && p.partyId.toString() === id.toString()) {
+                            if (p.partyId && getObjectIdStr(p.partyId) === id.toString()) {
                                 if (v.voucherType === 'Payment') debit += p.amount || 0;
                                 else credit += p.amount || 0;
+                            }
+                        });
+                    }
+                    // Fallback: match via entries name if ObjectId match missed
+                    if (debit === 0 && credit === 0 && v.entries && v.entries.length > 0) {
+                        v.entries.forEach(e => {
+                            if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                                debit += e.debitAmount || 0;
+                                credit += e.creditAmount || 0;
                             }
                         });
                     }

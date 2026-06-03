@@ -31,6 +31,39 @@ const buildTransferPopulate = (depth = 3) => {
     return populateConfig;
 };
 
+const populateTripDetails = async (queryBuilder) => {
+    const transferPopulate = buildTransferPopulate(5);
+    let builder = queryBuilder
+        .populate('vehicle', 'vehicleNumber type capacity')
+        .populate('supervisor', 'name mobileNumber')
+        .populate('purchases.supplier', 'vendorName contactNumber')
+        .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
+        .populate({
+            path: 'sales.client',
+            select: "user shopName ownerName contact place",
+            populate: {
+                path: 'user',
+                select: '_id',
+                populate: {
+                    path: 'customer',
+                    select: '_id'
+                }
+            }
+        })
+        .populate({
+            path: 'transferHistory.transferredTo',
+            populate: {
+                path: 'vehicle',
+                select: 'vehicleNumber'
+            }
+        });
+
+    if (transferPopulate) {
+        builder = builder.populate(transferPopulate);
+    }
+    return await builder;
+};
+
 // Create new trip (Supervisor only)
 export const addTrip = async (req, res, next) => {
     try {
@@ -176,40 +209,7 @@ export const getTripById = async (req, res, next) => {
             query.supervisor = req.user._id;
         }
 
-        const transferPopulate = buildTransferPopulate(5);
-
-        let queryBuilder = Trip.findOne(query)
-            .populate('vehicle', 'vehicleNumber type capacity')
-            .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
-            // .populate('sales.client', 'user shopName ownerName contact place')
-            .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
-            .populate({
-                path: 'sales.client',
-                select: "user shopName ownerName contact place",
-                populate: {
-                    path: 'user',
-                    select: '_id',
-                    populate: {
-                        path: 'customer',
-                        select: '_id'
-                    }
-                }
-            })
-
-            .populate({
-                path: 'transferHistory.transferredTo',
-                populate: {
-                    path: 'vehicle',
-                    select: 'vehicleNumber'
-                }
-            });
-
-        if (transferPopulate) {
-            queryBuilder = queryBuilder.populate(transferPopulate);
-        }
-
-        const trip = await queryBuilder;
+        const trip = await populateTripDetails(Trip.findOne(query));
 
         if (!trip) throw new AppError('Trip not found', 404);
 
@@ -294,6 +294,26 @@ export const addPurchase = async (req, res, next) => {
             throw new AppError('Cannot add purchases to transferred trips. This trip contains transferred stock.', 403);
         }
 
+        // Check for duplicate purchase in the last 5 seconds or same dcNumber in the trip
+        const fiveSecondsAgo = new Date(Date.now() - 5000);
+        const isDuplicatePurchase = trip.purchases.some(purchase => {
+            const purchaseTime = new Date(purchase.timestamp);
+            const isMatchingDetails = purchaseTime >= fiveSecondsAgo &&
+                String(purchase.supplier || '') === String(purchaseData.supplier || '') &&
+                (purchase.birds || 0) === (purchaseData.birds || 0) &&
+                (purchase.weight || 0) === (purchaseData.weight || 0) &&
+                (purchase.rate || 0) === (purchaseData.rate || 0) &&
+                (purchase.amount || 0) === (purchaseData.amount || 0);
+
+            const isSameDc = purchaseData.dcNumber && purchase.dcNumber === purchaseData.dcNumber;
+
+            return isMatchingDetails || isSameDc;
+        });
+
+        if (isDuplicatePurchase) {
+            throw new AppError("Duplicate purchase detected. Please wait a moment.", 409);
+        }
+
         // Add purchase
         trip.purchases.push(purchaseData);
 
@@ -349,6 +369,26 @@ export const addSale = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        // Check for duplicate sale in the last 5 seconds or same billNumber in the trip
+        const fiveSecondsAgo = new Date(Date.now() - 5000);
+        const isDuplicateSale = trip.sales.some(sale => {
+            const saleTime = new Date(sale.timestamp);
+            const isMatchingDetails = saleTime >= fiveSecondsAgo &&
+                String(sale.client || '') === String(saleData.client || '') &&
+                (sale.birds || 0) === (saleData.birds || 0) &&
+                (sale.weight || 0) === (saleData.weight || 0) &&
+                (sale.rate || 0) === (saleData.rate || 0) &&
+                (sale.amount || 0) === (saleData.amount || 0);
+
+            const isSameBill = saleData.billNumber && sale.billNumber === saleData.billNumber;
+
+            return isMatchingDetails || isSameBill;
+        });
+
+        if (isDuplicateSale) {
+            throw new AppError("Duplicate sale detected. Please wait a moment.", 409);
+        }
+
         // Get vendor name from first purchase if purchases exist
         if (trip.purchases && trip.purchases.length > 0) {
             // Populate supplier if not already populated
@@ -380,6 +420,9 @@ export const addSale = async (req, res, next) => {
                     const isReceipt = (saleData.birds === 0 || !saleData.birds) &&
                         (saleData.weight === 0 || !saleData.weight) &&
                         (saleData.amount === 0 || !saleData.amount);
+
+                    // Persist the isReceipt flag so it is saved in the database
+                    saleData.isReceipt = isReceipt;
 
                     // Calculate sequential balances for each particular
                     // Starting balance (before sale/receipt) - use absolute value for display
@@ -474,6 +517,10 @@ export const addSale = async (req, res, next) => {
             saleData.balanceForCashPaid = 0;
             saleData.balanceForOnlinePaid = 0;
             saleData.balanceForDiscount = 0;
+            // Persist isReceipt flag even when no client is provided
+            saleData.isReceipt = (saleData.birds === 0 || !saleData.birds) &&
+                (saleData.weight === 0 || !saleData.weight) &&
+                (saleData.amount === 0 || !saleData.amount);
         }
 
         // Add sale
@@ -552,11 +599,7 @@ export const addSale = async (req, res, next) => {
             }
         }
 
-        const populatedTrip = await Trip.findById(trip._id)
-            .populate('vehicle', 'vehicleNumber type')
-            .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
-            .populate('sales.client', 'shopName ownerName contact');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
 
         // await addSaleWhatsappMessage(populatedTrip.sales[0].client.contact);
 
@@ -805,6 +848,9 @@ export const editSale = async (req, res, next) => {
                         (saleData.weight === 0 || !saleData.weight) &&
                         (newAmount === 0 || !saleData.amount);
 
+                    // Persist the isReceipt flag so it is saved in the database
+                    saleData.isReceipt = isReceipt;
+
                     // Apply new sale amount (if it's a sale, not receipt)
                     // Sale increases debt, so add the amount
                     if (!isReceipt && newAmount > 0) {
@@ -1024,11 +1070,7 @@ export const editSale = async (req, res, next) => {
             }
         }
 
-        const populatedTrip = await Trip.findById(trip._id)
-            .populate('vehicle', 'vehicleNumber type')
-            .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
-            .populate('sales.client', 'shopName ownerName contact');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
 
         // Send SMS if requested
         if (sendSms && saleIndex >= 0 && populatedTrip.sales[saleIndex]) {
@@ -1557,10 +1599,9 @@ export const addStock = async (req, res, next) => {
         // Save the trip to trigger pre-save middleware for recalculations
         await trip.save();
 
-        // Populate the trip with references
-        await trip.populate('supervisor vehicle');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
 
-        successResponse(res, "Stock added successfully", 200, trip);
+        successResponse(res, "Stock added successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }
@@ -1603,10 +1644,9 @@ export const updateStock = async (req, res, next) => {
         // Save the trip to trigger pre-save middleware for recalculations
         await trip.save();
 
-        // Populate the trip with references
-        await trip.populate('supervisor vehicle');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
 
-        successResponse(res, "Stock updated successfully", 200, trip);
+        successResponse(res, "Stock updated successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }
@@ -1636,10 +1676,9 @@ export const deleteStock = async (req, res, next) => {
         // Save the trip to trigger pre-save middleware for recalculations
         await trip.save();
 
-        // Populate the trip with references
-        await trip.populate('supervisor vehicle');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
 
-        successResponse(res, "Stock deleted successfully", 200, trip);
+        successResponse(res, "Stock deleted successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }
@@ -1718,7 +1757,9 @@ export const updateTripStatus = async (req, res, next) => {
 
         await trip.save();
 
-        successResponse(res, "Trip status updated successfully", 200, trip);
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
+
+        successResponse(res, "Trip status updated successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }
@@ -1803,7 +1844,7 @@ export const transferTrip = async (req, res, next) => {
         const newTripData = {
             type: 'transferred',
             date: new Date(),
-            // place: '', // To be filled by receiving supervisor
+            place: '', // To be filled by receiving supervisor
             route: { from: 'TBD', to: 'TBD' }, // To be filled by receiving supervisor
             vehicle: vehicleId,
             supervisor: supervisorId,
@@ -1943,7 +1984,7 @@ export const getTripTransferHistory = async (req, res, next) => {
 export const completeTripDetails = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { driver, labour, route, vehicleReadings } = req.body;
+        const { driver, labour, route, vehicleReadings, place } = req.body;
 
         // Only supervisor can complete their own trip details
         let query = { _id: id };
@@ -1976,18 +2017,13 @@ export const completeTripDetails = async (req, res, next) => {
             to: route.to,
             distance: route.distance || 0
         };
-        // trip.place = place || '';
+        trip.place = place || '';
         trip.vehicleReadings.opening = vehicleReadings.opening;
         trip.updatedBy = req.user._id;
 
         await trip.save();
 
-        const populatedTrip = await Trip.findById(trip._id)
-            .populate('vehicle', 'vehicleNumber type')
-            .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
-            .populate('sales.client', 'shopName ownerName contact')
-            .populate('transferredFrom', 'tripId');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
 
         successResponse(res, "Trip details completed successfully", 200, populatedTrip);
     } catch (error) {
