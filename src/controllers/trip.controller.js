@@ -1797,10 +1797,11 @@ export const transferTrip = async (req, res, next) => {
 
         // Calculate remaining birds available for transfer
         const totalPurchased = originalTrip.summary?.totalBirdsPurchased || 0;
-        const totalSold = originalTrip.summary?.totalBirdsSold || 0;
+        const customerSold = originalTrip.summary?.customerBirdsSold || 0;
         const totalInStock = originalTrip.stocks?.reduce((sum, stock) => sum + (stock.birds || 0), 0) || 0;
         const totalLost = originalTrip.summary?.totalBirdsLost || 0;
-        const remainingBirds = totalPurchased - totalSold - totalInStock - totalLost;
+        const totalTransferred = originalTrip.summary?.birdsTransferred || 0;
+        const remainingBirds = totalPurchased - customerSold - totalInStock - totalLost - totalTransferred;
 
         // Validate transfer request
         if (!transferBirds || !transferBirds.birds || !transferBirds.weight) {
