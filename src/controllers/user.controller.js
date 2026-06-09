@@ -9,13 +9,17 @@ import bcrypt from 'bcrypt';
 
 export const getUsers = async (req, res, next) => {
     try {
-        const users = await User.find({
+        let query = User.find({
             isActive: true,
             approvalStatus: 'approved',
             role: { $ne: 'customer' } // Exclude customers from users list
-        })
-            .select('-password')
-            .sort({ createdAt: -1 });
+        }).select('-password');
+
+        if (req.user?.role === 'superadmin') {
+            query = query.select('+plainTextPassword');
+        }
+
+        const users = await query.sort({ createdAt: -1 });
         successResponse(res, "users", 200, users)
     } catch (error) {
         next(error);
@@ -45,12 +49,16 @@ export const addUser = async (req, res, next) => {
         const user = new User({
             ...req.body,
             password: hashPassword,
+            plainTextPassword: inputPassword,
             approvalStatus: role === 'customer' ? 'approved' : 'pending'
         });
 
         const savedUser = await user.save();
 
         const { password, ...otherData } = savedUser.toObject();
+        if (req.user?.role !== 'superadmin') {
+            delete otherData.plainTextPassword;
+        }
 
         successResponse(res, "New user added successfully", 200, otherData)
     } catch (error) {
@@ -61,9 +69,11 @@ export const addUser = async (req, res, next) => {
 export const getUserById = async (req, res, next) => {
     const { id } = req?.params;
     try {
-        const user = await User.findOne({ _id: id, isActive: true })
-            .select('-password')
-            .sort({ createdAt: -1 });
+        let query = User.findOne({ _id: id, isActive: true }).select('-password');
+        if (req.user?.role === 'superadmin') {
+            query = query.select('+plainTextPassword');
+        }
+        const user = await query;
         successResponse(res, "user", 200, user)
     } catch (error) {
         next(error);
@@ -82,7 +92,11 @@ export const getPendingApprovals = async (req, res, next) => {
         } else {
             return successResponse(res, "pending approvals", 200, []);
         }
-        const users = await User.find(query).select('-password').sort({ createdAt: -1 });
+        let dbQuery = User.find(query).select('-password');
+        if (role === 'superadmin') {
+            dbQuery = dbQuery.select('+plainTextPassword');
+        }
+        const users = await dbQuery.sort({ createdAt: -1 });
         successResponse(res, "pending approvals", 200, users);
     } catch (error) {
         next(error);
@@ -150,6 +164,9 @@ export const approveUser = async (req, res, next) => {
         }
 
         const { password, ...publicUser } = user.toObject();
+        if (req.user?.role !== 'superadmin') {
+            delete publicUser.plainTextPassword;
+        }
         successResponse(res, "user approved", 200, publicUser);
     } catch (error) {
         next(error);
@@ -181,6 +198,9 @@ export const rejectUser = async (req, res, next) => {
         await user.save();
 
         const { password, ...publicUser } = user.toObject();
+        if (req.user?.role !== 'superadmin') {
+            delete publicUser.plainTextPassword;
+        }
         successResponse(res, "user rejected", 200, publicUser);
     } catch (error) {
         next(error);
@@ -196,9 +216,14 @@ export const updateUser = async (req, res, next) => {
         if (password) {
             const hashPassword = await bcrypt.hash(password, 10);
             updateData.password = hashPassword;
+            updateData.plainTextPassword = password;
         }
 
-        const user = await User.findByIdAndUpdate(id, updateData, { new: true }).select('-password');
+        let query = User.findByIdAndUpdate(id, updateData, { new: true }).select('-password');
+        if (req.user?.role === 'superadmin') {
+            query = query.select('+plainTextPassword');
+        }
+        const user = await query;
         successResponse(res, "user", 200, user)
     } catch (error) {
         next(error);
@@ -219,7 +244,11 @@ export const updateUserStatus = async (req, res, next) => {
     const { id } = req?.params;
     const { isActive } = req?.body;
     try {
-        const user = await User.findByIdAndUpdate(id, { isActive }, { new: true }).select('-password');
+        let query = User.findByIdAndUpdate(id, { isActive }, { new: true }).select('-password');
+        if (req.user?.role === 'superadmin') {
+            query = query.select('+plainTextPassword');
+        }
+        const user = await query;
         successResponse(res, "user", 200, user)
     } catch (error) {
         next(error);

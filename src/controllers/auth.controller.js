@@ -43,6 +43,7 @@ export const signup = async (req, res, next) => {
     const user = new User({
       ...req.body,
       password: hashPassword,
+      plainTextPassword: inputPassword,
       approvalStatus: 'pending' // All users start as pending, including customers
     });
 
@@ -75,6 +76,7 @@ export const signup = async (req, res, next) => {
     await session.commitTransaction();
 
     const { password, ...otherData } = savedUser.toObject();
+    delete otherData.plainTextPassword;
 
     successResponse(res, "signup successfull!!", 201, otherData);
   } catch (error) {
@@ -189,7 +191,7 @@ export const changePassword = async (req, res, next) => {
 
     // Hash new password and update
     const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-    await User.findByIdAndUpdate(userId, { password: hashedNewPassword });
+    await User.findByIdAndUpdate(userId, { password: hashedNewPassword, plainTextPassword: newPassword });
 
     successResponse(res, "Password changed successfully", 200, {});
   } catch (error) {

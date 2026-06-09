@@ -82,6 +82,7 @@ export const addCustomer = async (req, res, next) => {
             email: email,
             mobileNumber: customerData.contact, // Sync mobile number from customer contact
             password: hashPassword,
+            plainTextPassword: password,
             role: 'customer',
             approvalStatus: 'approved', // Auto-approve customers created by admin
             isActive: true
@@ -113,8 +114,13 @@ export const addCustomer = async (req, res, next) => {
         await savedUser.save();
 
         // Populate customer data for response
+        let userFields = 'name email mobileNumber role approvalStatus';
+        if (req.user?.role === 'superadmin') {
+            userFields += ' +plainTextPassword';
+        }
+
         const populatedCustomer = await Customer.findById(savedCustomer._id)
-            .populate('user', 'name email mobileNumber role approvalStatus')
+            .populate('user', userFields)
             .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
@@ -127,8 +133,13 @@ export const addCustomer = async (req, res, next) => {
 
 export const getCustomers = async (req, res, next) => {
     try {
+        let userFields = 'name email mobileNumber role approvalStatus openingBalance outstandingBalance';
+        if (req.user?.role === 'superadmin') {
+            userFields += ' +plainTextPassword';
+        }
+
         const customers = await Customer.find({ isActive: true })
-            .populate('user', 'name email mobileNumber role approvalStatus openingBalance outstandingBalance')
+            .populate('user', userFields)
             .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
@@ -142,8 +153,13 @@ export const getCustomers = async (req, res, next) => {
 export const getCustomerById = async (req, res, next) => {
     const { id } = req?.params;
     try {
+        let userFields = 'name email mobileNumber role approvalStatus';
+        if (req.user?.role === 'superadmin') {
+            userFields += ' +plainTextPassword';
+        }
+
         const customer = await Customer.findOne({ _id: id, isActive: true })
-            .populate('user', 'name email mobileNumber role approvalStatus')
+            .populate('user', userFields)
             .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
@@ -186,6 +202,7 @@ export const updateCustomer = async (req, res, next) => {
                     throw new AppError('Password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
                 }
                 userUpdateData.password = await bcrypt.hash(password, 10);
+                userUpdateData.plainTextPassword = password;
             }
 
             // Always sync mobile number from customer contact to user
@@ -257,11 +274,16 @@ export const updateCustomer = async (req, res, next) => {
             updateData.openingBalanceType = customerData.openingBalanceType;
         }
 
+        let userFields = 'name email mobileNumber role approvalStatus';
+        if (req.user?.role === 'superadmin') {
+            userFields += ' +plainTextPassword';
+        }
+
         const updatedCustomer = await Customer.findByIdAndUpdate(
             id,
             updateData,
             { new: true, runValidators: true }
-        ).populate('user', 'name email mobileNumber role approvalStatus')
+        ).populate('user', userFields)
             .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
@@ -614,6 +636,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             ledgerEntries.push({
                 _id: `stock_${stock._id}`,
                 date: stock.date,
+                createdAt: stock.createdAt || stock.date,
                 vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
                 driverName: '-',
                 supervisor: stock.supervisorId?.name || '-',
@@ -635,6 +658,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 ledgerEntries.push({
                     _id: `stock_${stock._id}_cash`,
                     date: stock.date,
+                    createdAt: stock.createdAt || stock.date,
                     vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
                     driverName: '-',
                     supervisor: stock.supervisorId?.name || '-',
@@ -654,6 +678,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 ledgerEntries.push({
                     _id: `stock_${stock._id}_online`,
                     date: stock.date,
+                    createdAt: stock.createdAt || stock.date,
                     vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
                     driverName: '-',
                     supervisor: stock.supervisorId?.name || '-',
@@ -673,6 +698,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 ledgerEntries.push({
                     _id: `stock_${stock._id}_discount`,
                     date: stock.date,
+                    createdAt: stock.createdAt || stock.date,
                     vehiclesNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
                     driverName: '-',
                     supervisor: stock.supervisorId?.name || '-',
@@ -700,6 +726,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             ledgerEntries.push({
                 _id: sale._id, // Use string or objectId
                 date: sale.date,
+                createdAt: sale.createdAt || sale.date,
                 vehiclesNo: sale.vehicleNumber || '-',
                 driverName: sale.driver || '-',
                 supervisor: '-',
@@ -759,6 +786,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     ledgerEntries.push({
                         _id: `sale_${sale._id}_${particulars}`,
                         date: sale.timestamp,
+                        createdAt: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
                         driverName: trip.driver || '',
                         supervisor: trip.supervisor?.name || '',
@@ -783,6 +811,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     const byCashEntry = {
                         _id: `sale_${sale._id}_cash`,
                         date: sale.timestamp,
+                        createdAt: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
                         driverName: trip.driver || '',
                         supervisor: trip.supervisor?.name || '',
@@ -806,6 +835,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                     const byOnlineEntry = {
                         _id: `sale_${sale._id}_online`,
                         date: sale.timestamp,
+                        createdAt: sale.timestamp,
                         vehiclesNo: trip.vehicle?.vehicleNumber || '',
                         driverName: trip.driver || '',
                         supervisor: trip.supervisor?.name || '',
@@ -841,6 +871,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         ledgerEntries.push({
                             _id: `${sale._id}_discount`,
                             date: sale.timestamp,
+                            createdAt: sale.timestamp,
                             vehiclesNo: trip.vehicle?.vehicleNumber || '',
                             driverName: trip.driver || '',
                             supervisor: trip.supervisor?.name || '',
@@ -880,6 +911,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             ledgerEntries.push({
                 _id: `payment_${payment._id}`,
                 date: payment.createdAt || payment.verifiedAt || new Date(),
+                createdAt: payment.createdAt || payment.verifiedAt || new Date(),
                 vehiclesNo: payment.trip?.vehicle?.vehicleNumber || '',
                 driverName: '',
                 supervisor: '',
@@ -934,6 +966,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             ledgerEntries.push({
                 _id: `voucher_${voucher._id}_${voucher.voucherType === 'Journal' ? customerForVoucher._id : voucher.parties?.find(p => p.partyId && p.partyId.toString() === customerId.toString())?.partyId}`,
                 date: voucher.date,
+                createdAt: voucher.createdAt || voucher.date,
                 vehiclesNo: '',
                 driverName: '',
                 supervisor: '',
@@ -965,6 +998,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         ledgerEntries.unshift({
             _id: 'opening_balance',
             date: customerFYStartDate, // Use FY start date of creation
+            createdAt: new Date(0), // earliest possible date so it sorts first
             vehiclesNo: '',
             driverName: '',
             supervisor: '',
@@ -990,11 +1024,22 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             if (a._id === 'opening_balance') return -1;
             if (b._id === 'opening_balance') return 1;
 
-            // Sort by date first
-            const dateA = new Date(a.date).getTime();
-            const dateB = new Date(b.date).getTime();
-            if (dateA !== dateB) {
-                return dateA - dateB;
+            // Sort by calendar date first (ignoring time)
+            const dateA = new Date(a.date);
+            const dateB = new Date(b.date);
+
+            const dateOnlyA = new Date(dateA.getFullYear(), dateA.getMonth(), dateA.getDate()).getTime();
+            const dateOnlyB = new Date(dateB.getFullYear(), dateB.getMonth(), dateB.getDate()).getTime();
+
+            if (dateOnlyA !== dateOnlyB) {
+                return dateOnlyA - dateOnlyB;
+            }
+
+            // If same calendar date, sort by data entry time (createdAt)
+            const createdAtA = new Date(a.createdAt || a.date).getTime();
+            const createdAtB = new Date(b.createdAt || b.date).getTime();
+            if (createdAtA !== createdAtB) {
+                return createdAtA - createdAtB;
             }
 
             // Helper to extract transaction ID for grouping
@@ -1229,7 +1274,7 @@ export const updateCustomerPassword = async (req, res, next) => {
         const hashedNewPassword = await bcrypt.hash(newPassword, 10);
 
         // Update password
-        await User.findByIdAndUpdate(id, { password: hashedNewPassword });
+        await User.findByIdAndUpdate(id, { password: hashedNewPassword, plainTextPassword: newPassword });
 
         successResponse(res, "Password updated successfully", 200, null);
     } catch (error) {

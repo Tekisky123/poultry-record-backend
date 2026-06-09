@@ -106,6 +106,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    plainTextPassword: {
+        type: String,
+        select: false
+    },
 
     // Approval workflow
     approvalStatus: {
