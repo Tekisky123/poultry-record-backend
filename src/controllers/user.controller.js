@@ -142,25 +142,41 @@ export const approveUser = async (req, res, next) => {
         user.approvedAt = new Date();
         await user.save();
 
-        // If approved user is a customer, create customer record
-        if (targetIsCustomer && !user.customer) {
-            const customer = new Customer({
-                shopName: user.name, // Use user name as shop name initially
-                ownerName: user.name,
-                contact: user.mobileNumber, // Sync mobile number from user
-                address: user.address || '',
-                group: group, // Set group from approval form
-                openingBalance: openingBalance || 0, // Set opening balance from approval form
-                user: user._id,
-                createdBy: approver._id,
-                updatedBy: approver._id
-            });
+        // If approved user is a customer, create or update customer record
+        if (targetIsCustomer) {
+            if (user.customer) {
+                // Customer profile already exists (e.g. created at signup)
+                const customer = await Customer.findById(user.customer);
+                if (customer) {
+                    if (group) customer.group = group;
+                    if (openingBalance !== undefined) {
+                        customer.openingBalance = Number(openingBalance) || 0;
+                        customer.outstandingBalance = Number(openingBalance) || 0;
+                    }
+                    customer.updatedBy = approver._id;
+                    await customer.save();
+                }
+            } else {
+                // Create customer record
+                const customer = new Customer({
+                    shopName: user.name, // Use user name as shop name initially
+                    ownerName: user.name,
+                    contact: user.mobileNumber, // Sync mobile number from user
+                    address: user.address || '',
+                    group: group, // Set group from approval form
+                    openingBalance: openingBalance || 0, // Set opening balance from approval form
+                    outstandingBalance: openingBalance || 0,
+                    user: user._id,
+                    createdBy: approver._id,
+                    updatedBy: approver._id
+                });
 
-            const savedCustomer = await customer.save();
+                const savedCustomer = await customer.save();
 
-            // Update user with customer reference
-            user.customer = savedCustomer._id;
-            await user.save();
+                // Update user with customer reference
+                user.customer = savedCustomer._id;
+                await user.save();
+            }
         }
 
         const { password, ...publicUser } = user.toObject();
