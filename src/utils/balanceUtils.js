@@ -101,3 +101,57 @@ export const getFinancialYearStartDate = (date = new Date()) => {
     const fyStartYear = month >= 3 ? year : year - 1;
     return new Date(fyStartYear, 3, 1, 0, 0, 0, 0); // April 1st, 00:00:00
 };
+
+/**
+ * Dynamically populate parties.partyId in vouchers
+ * Since Voucher schema does not have a static ref for partyId, Mongoose populate on parties.partyId does not work automatically.
+ */
+export const populateVoucherParties = async (vouchers) => {
+    if (!vouchers) return vouchers;
+    const isArray = Array.isArray(vouchers);
+    const voucherList = isArray ? vouchers : [vouchers];
+
+    const mongoose = (await import('mongoose')).default;
+    const Customer = mongoose.model('Customer');
+    const Vendor = mongoose.model('Vendor');
+    const Ledger = mongoose.model('Ledger');
+
+    for (const v of voucherList) {
+        if (v && v.parties && v.parties.length > 0) {
+            for (const p of v.parties) {
+                if (p.partyId && p.partyType) {
+                    // Check if already populated (object with name/shopName/vendorName)
+                    if (typeof p.partyId === 'object' && (p.partyId.shopName || p.partyId.vendorName || p.partyId.name)) {
+                        continue;
+                    }
+                    const partyIdStr = p.partyId._id ? p.partyId._id.toString() : p.partyId.toString();
+                    let partyDoc = null;
+                    if (p.partyType === 'customer') {
+                        partyDoc = await Customer.findById(partyIdStr).select('shopName ownerName').lean();
+                    } else if (p.partyType === 'vendor') {
+                        partyDoc = await Vendor.findById(partyIdStr).select('vendorName').lean();
+                    } else if (p.partyType === 'ledger') {
+                        partyDoc = await Ledger.findById(partyIdStr).select('name').lean();
+                    }
+                    if (partyDoc) {
+                        p.partyId = {
+                            _id: partyIdStr,
+                            id: partyIdStr,
+                            shopName: partyDoc.shopName,
+                            ownerName: partyDoc.ownerName,
+                            vendorName: partyDoc.vendorName,
+                            name: partyDoc.name
+                        };
+                    } else {
+                        p.partyId = {
+                            _id: partyIdStr,
+                            id: partyIdStr,
+                            name: 'Unknown Party'
+                        };
+                    }
+                }
+            }
+        }
+    }
+    return vouchers;
+};

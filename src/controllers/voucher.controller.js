@@ -6,7 +6,7 @@ import Sequence from "../models/Sequence.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import mongoose from "mongoose";
-import { addToBalance, subtractFromBalance } from "../utils/balanceUtils.js";
+import { addToBalance, subtractFromBalance, populateVoucherParties } from "../utils/balanceUtils.js";
 
 export const createVoucher = async (req, res, next) => {
     try {
@@ -292,10 +292,11 @@ export const createVoucher = async (req, res, next) => {
         // Populate party data for response
         const populatedVoucher = await Voucher.findById(savedVoucher._id)
             .populate('party', 'shopName vendorName')
-            .populate('parties.partyId', 'shopName ownerName')
             .populate('account', 'name')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
+
+        await populateVoucherParties(populatedVoucher);
 
         successResponse(res, "Voucher created successfully", 201, populatedVoucher);
     } catch (error) {
@@ -330,13 +331,14 @@ export const getVouchers = async (req, res, next) => {
 
         const vouchers = await Voucher.find(query)
             .populate('party', 'shopName vendorName')
-            .populate('parties.partyId', 'shopName ownerName vendorName name')
             .populate('account', 'name')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
             .sort({ date: -1, createdAt: -1 })
             .limit(limit * 1)
             .skip((page - 1) * limit);
+
+        await populateVoucherParties(vouchers);
 
         const total = await Voucher.countDocuments(query);
 
@@ -370,10 +372,11 @@ export const getVoucherById = async (req, res, next) => {
 
         const voucher = await Voucher.findOne({ _id: id, isActive: true })
             .populate('party', 'shopName vendorName contact address')
-            .populate('parties.partyId', 'shopName ownerName vendorName name')
             .populate('account', 'name')
             .populate('createdBy', 'name email')
             .populate('updatedBy', 'name email');
+
+        await populateVoucherParties(voucher);
 
         if (!voucher) {
             throw new AppError('Voucher not found', 404);

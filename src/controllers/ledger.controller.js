@@ -7,7 +7,7 @@ import Voucher from "../models/Voucher.js";
 import InventoryStock from "../models/InventoryStock.js";
 import IndirectSale from "../models/IndirectSale.js";
 import DieselStation from "../models/DieselStation.js";
-import { toSignedValue, fromSignedValue, syncOutstandingBalance, getFinancialYearStartDate } from "../utils/balanceUtils.js";
+import { toSignedValue, fromSignedValue, syncOutstandingBalance, getFinancialYearStartDate, populateVoucherParties } from "../utils/balanceUtils.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
@@ -964,7 +964,6 @@ export const getLedgerTransactions = async (req, res, next) => {
         const [vouchers, trips, stocks] = await Promise.all([
             Voucher.find(voucherQuery).lean()
                 .populate('party', 'shopName vendorName')
-                .populate('parties.partyId', 'shopName vendorName name') // Populate name for Ledger parties too
                 .populate('account', 'name'), // Populate header Account to get its name
             Trip.find(tripQuery).lean()
                 .populate('vehicle', 'registrationNumber')
@@ -972,6 +971,8 @@ export const getLedgerTransactions = async (req, res, next) => {
                 .populate('sales.client', 'shopName ownerName'),
             InventoryStock.find(stockQuery).lean().populate('customerId', 'shopName ownerName')
         ]);
+
+        await populateVoucherParties(vouchers);
 
         let transactions = [];
 
