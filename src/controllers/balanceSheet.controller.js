@@ -96,9 +96,34 @@ const buildUnifiedBalanceMap = (allVouchers, allTrips, allStocks, idToNameMap) =
   // 1. Process Vouchers
   allVouchers.forEach(v => {
     if (!v.isActive) return;
-    (v.entries || []).forEach(e => {
-      updateMap(e.account, e.debitAmount, e.creditAmount);
-    });
+    if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+      const isPayment = v.voucherType === 'Payment';
+      if (v.account) {
+        const totalAmount = (v.parties || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+        if (isPayment) {
+          // Payment: Credit header account
+          updateMap(v.account, 0, totalAmount);
+        } else {
+          // Receipt: Debit header account
+          updateMap(v.account, totalAmount, 0);
+        }
+      }
+      (v.parties || []).forEach(p => {
+        if (p.partyId) {
+          if (isPayment) {
+            // Payment: Debit party account
+            updateMap(p.partyId, p.amount, 0);
+          } else {
+            // Receipt: Credit party account
+            updateMap(p.partyId, 0, p.amount);
+          }
+        }
+      });
+    } else {
+      (v.entries || []).forEach(e => {
+        updateMap(e.account, e.debitAmount, e.creditAmount);
+      });
+    }
   });
 
   // 2. Process Inventory Stocks (Purchases, Sales, Receipts, Consumptions)
@@ -368,6 +393,9 @@ export const getBalanceSheet = async (req, res, next) => {
   try {
     const { asOnDate } = req.query;
     const date = asOnDate ? new Date(asOnDate) : new Date();
+    if (asOnDate) {
+      date.setHours(23, 59, 59, 999);
+    }
 
     // OPTIMIZATION: batch fetch all needed data
     // Query for vouchers/trips/stocks (all active)

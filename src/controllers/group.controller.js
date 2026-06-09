@@ -1167,34 +1167,38 @@ export const getGroupSummary = async (req, res, next) => {
         }
 
         // Fetch all vouchers and trips once
+        let endDateObj = null;
+        if (finalEndDate) {
+            endDateObj = new Date(finalEndDate);
+            endDateObj.setHours(23, 59, 59, 999);
+        }
+
         const voucherQuery = {
             isActive: true
         };
-        if (finalEndDate) {
-            const endDateObj = new Date(finalEndDate);
-            endDateObj.setHours(23, 59, 59, 999);
+        if (endDateObj) {
             voucherQuery.date = { $lte: endDateObj };
         }
         const vouchers = await Voucher.find(voucherQuery).lean();
 
         // Fetch all trips for optimization
         const tripQuery = {};
-        if (finalEndDate) {
-            tripQuery.createdAt = { $lte: new Date(finalEndDate) };
+        if (endDateObj) {
+            tripQuery.createdAt = { $lte: endDateObj };
         }
         const trips = await Trip.find(tripQuery).lean();
 
         // Fetch all inventory stocks for optimization
         const stockQuery = {};
-        if (finalEndDate) {
-            stockQuery.date = { $lte: new Date(finalEndDate) };
+        if (endDateObj) {
+            stockQuery.date = { $lte: endDateObj };
         }
         const stocks = await InventoryStock.find(stockQuery).lean();
 
         // Fetch Indirect Sales (was missing)
         const indirectSaleQuery = {};
-        if (finalEndDate) {
-            indirectSaleQuery.date = { $lte: new Date(finalEndDate) };
+        if (endDateObj) {
+            indirectSaleQuery.date = { $lte: endDateObj };
         }
         const indirectSales = await IndirectSale.find(indirectSaleQuery).lean();
 
