@@ -3,6 +3,7 @@ import Trip from '../models/Trip.js';
 import Customer from '../models/Customer.js';
 import AppError from '../utils/AppError.js';
 import { successResponse } from '../utils/responseHandler.js';
+import { addToBalance } from '../utils/balanceUtils.js';
 import mongoose from 'mongoose';
 
 // Customer panel - Submit payment
@@ -136,11 +137,15 @@ export const getPendingPayments = async (req, res, next) => {
 export const verifyPayment = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { status, adminNotes } = req.body;
+        const { status, adminNotes, account } = req.body;
         const adminId = req.user._id;
 
         if (!['verified', 'rejected'].includes(status)) {
             throw new AppError('Invalid status. Must be verified or rejected', 400);
+        }
+
+        if (status === 'verified' && !account) {
+            throw new AppError('Account ledger is required to verify the payment', 400);
         }
 
         const payment = await Payment.findById(id);
@@ -153,29 +158,78 @@ export const verifyPayment = async (req, res, next) => {
         payment.adminNotes = adminNotes;
         payment.verifiedBy = adminId;
         payment.verifiedAt = new Date();
+        if (status === 'verified') {
+            payment.account = account;
+        }
 
         await payment.save();
 
-        // If verified, update the customer's opening balance
+        // If verified, update the customer's opening balance & create Voucher & update ledger balance
         if (status === 'verified') {
             // Find the customer to get current outstanding balance
             const customer = await Customer.findById(payment.customer);
-            if (customer) {
-                // Calculate new outstanding balance
-                const newOutstandingBalance = Math.max(0, (customer.outstandingBalance || 0) - payment.amount);
-                
-                // Update customer's outstanding balance without triggering full validation
-                // This prevents errors if customer has missing required fields like 'place'
-                await Customer.findByIdAndUpdate(
-                    payment.customer,
-                    { 
-                        $set: { 
-                            outstandingBalance: newOutstandingBalance,
-                            updatedBy: adminId
-                        } 
-                    },
-                    { runValidators: false } // Skip validation to avoid "Place is required" error
+            if (!customer) {
+                throw new AppError('Customer not found', 404);
+            }
+
+            const Sequence = mongoose.model('Sequence');
+            const Voucher = mongoose.model('Voucher');
+            const Ledger = mongoose.model('Ledger');
+
+            const nextVoucherNumber = await Sequence.getNextValue('voucherNumber');
+            
+            // Create Receipt Voucher
+            const voucher = new Voucher({
+                voucherNumber: nextVoucherNumber,
+                voucherType: 'Receipt',
+                date: new Date(),
+                parties: [{
+                    partyId: payment.customer,
+                    partyType: 'customer',
+                    amount: payment.amount
+                }],
+                account: account,
+                narration: adminNotes || `Customer payment verified by Admin. Payer: ${payment.customerDetails.name}. Method: ${payment.paymentMethod}. Transaction ID: ${payment.verificationDetails?.transactionId || 'N/A'}`,
+                createdBy: adminId,
+                updatedBy: adminId
+            });
+
+            await voucher.save();
+
+            // Calculate new customer outstanding balance using addToBalance (credits customer)
+            const newCustBalance = addToBalance(
+                customer.outstandingBalance || 0,
+                customer.outstandingBalanceType || 'debit',
+                payment.amount,
+                'credit'
+            );
+
+            await Customer.findByIdAndUpdate(
+                payment.customer,
+                { 
+                    $set: { 
+                        outstandingBalance: newCustBalance.amount,
+                        outstandingBalanceType: newCustBalance.type,
+                        updatedBy: adminId
+                    } 
+                },
+                { runValidators: false }
+            );
+
+            // Update selected account ledger balance (debits ledger)
+            const accountLedger = await Ledger.findById(account);
+            if (accountLedger) {
+                const newAccBalance = addToBalance(
+                    accountLedger.outstandingBalance || 0,
+                    accountLedger.outstandingBalanceType || 'debit',
+                    payment.amount,
+                    'debit'
                 );
+
+                accountLedger.outstandingBalance = newAccBalance.amount;
+                accountLedger.outstandingBalanceType = newAccBalance.type;
+                accountLedger.updatedBy = adminId;
+                await accountLedger.save();
             }
 
             // If this is a sale payment (has trip and sale), also update the sale balance
@@ -184,8 +238,14 @@ export const verifyPayment = async (req, res, next) => {
                 if (trip) {
                     const sale = trip.sales.find(s => s._id.toString() === payment.sale.toString());
                     if (sale) {
-                        // Update sale payment details
-                        sale.cashPaid = (sale.cashPaid || 0) + payment.amount;
+                        // Update sale payment details based on payment method
+                        if (payment.paymentMethod === 'cash') {
+                            sale.cashPaid = (sale.cashPaid || 0) + payment.amount;
+                            sale.cashLedger = account;
+                        } else {
+                            sale.onlinePaid = (sale.onlinePaid || 0) + payment.amount;
+                            sale.onlineLedger = account;
+                        }
                         sale.receivedAmount = (sale.cashPaid || 0) + (sale.onlinePaid || 0);
                         sale.balance = sale.amount - sale.receivedAmount - (sale.discount || 0);
                         
@@ -198,7 +258,8 @@ export const verifyPayment = async (req, res, next) => {
         // Populate the updated payment
         const populateFields = [
             { path: 'customer', select: 'shopName ownerName contact' },
-            { path: 'verifiedBy', select: 'name email' }
+            { path: 'verifiedBy', select: 'name email' },
+            { path: 'account', select: 'name' }
         ];
         
         if (payment.trip) {

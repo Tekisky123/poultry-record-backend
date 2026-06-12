@@ -121,6 +121,10 @@ const paymentSchema = new mongoose.Schema({
   verifiedAt: {
     type: Date
   },
+  account: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Ledger'
+  },
   
   // Metadata
   submittedBy: {
