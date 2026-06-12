@@ -236,6 +236,85 @@ const calculateGroupBalance = async (group, balanceMap, ledgerGroupMap) => {
 };
 
 
+const calculateStockValue = (combinedStocks, inventoryType, targetDate) => {
+    const typeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType);
+    const firstOpStock = typeStocks.find(s => s.type === 'opening');
+    let fyAnchorDate = new Date(0);
+    if (firstOpStock) {
+        const bOpDate = new Date(firstOpStock.date);
+        const bOpYear = bOpDate.getFullYear();
+        const bOpMonth = bOpDate.getMonth();
+        const bOpFyStartYear = bOpMonth >= 3 ? bOpYear : bOpYear - 1;
+        fyAnchorDate = new Date(`${bOpFyStartYear}-04-01T00:00:00.000Z`);
+    }
+
+    let pBags = 0, pWt = 0, pAmt = 0;
+    let outBags = 0, outWt = 0, outAmt = 0;
+
+    typeStocks.forEach(s => {
+        const date = new Date(s.date);
+        if (date > targetDate) return;
+
+        if (s.type === 'opening') {
+            if (!firstOpStock || s._id?.toString() !== firstOpStock._id?.toString()) return;
+        } else {
+            if (date < fyAnchorDate) return;
+        }
+
+        const b = Number(s.bags) || 0;
+        const w = Number(s.weight) || 0;
+        const amt = Number(s.amount) || 0;
+
+        if (s.type === 'purchase' || s.type === 'opening') {
+            pBags += b;
+            pWt += w;
+            pAmt += amt;
+        } else {
+            outBags += b;
+            outWt += w;
+            outAmt += amt;
+        }
+    });
+
+    if (inventoryType === 'bird') {
+        const closingWeight = pWt - outWt;
+        const avgRate = pWt > 0 ? (pAmt / pWt) : 0;
+        return closingWeight * avgRate;
+    } else {
+        return pAmt - outAmt;
+    }
+};
+
+const getOpeningStockValue = (combinedStocks, inventoryType, startDate, endDate) => {
+    const sDate = new Date(startDate);
+    const eDate = new Date(endDate);
+    eDate.setHours(23, 59, 59, 999);
+
+    // 1. Stock value just before the period
+    const beforePeriodDate = new Date(sDate.getTime() - 1);
+    const valBefore = calculateStockValue(combinedStocks, inventoryType, beforePeriodDate);
+
+    // 2. Any opening stock documents within the period
+    let valWithin = 0;
+    const typeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType && s.type === 'opening');
+    if (typeStocks.length > 0) {
+        const allTypeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType);
+        const firstOpStock = allTypeStocks.find(s => s.type === 'opening');
+        
+        typeStocks.forEach(s => {
+            const date = new Date(s.date);
+            if (date >= sDate && date <= eDate) {
+                if (firstOpStock && s._id?.toString() === firstOpStock._id?.toString()) {
+                    valWithin += Number(s.amount) || 0;
+                }
+            }
+        });
+    }
+
+    return valBefore + valWithin;
+};
+
+
 export const getProfitAndLoss = async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
@@ -408,18 +487,7 @@ export const getProfitAndLoss = async (req, res, next) => {
 
             const metricOpeningStockLegacy = Math.max(0, c_pWt - c_outWt) * cRate; // legacy for LIVE POULTRY BIRDS inClosing
 
-            // Compute Closing Stock as sum of all monthly CLOSING balances (matches frontend monthly page total)
-            // Mirrors LiveBirdsClosingStockMonthlySummary / LiveFeedClosingStockMonthlySummary logic:
-            //   closing = apply this month's transactions FIRST, then read balance (opposite of opening)
-
-            // ==============================================================================
-            // NEW MONTHLY-SUM LOGIC FOR BIRDS AND FEED (Matches frontend monthly pages)
-            // ==============================================================================
-            const fyStartYear = sDate.getMonth() >= 3 ? sDate.getFullYear() : sDate.getFullYear() - 1;
-            const fyStart = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
-            const fyEnd = new Date(`${fyStartYear + 1}-03-31T23:59:59.999Z`);
-
-            // 1. Gather all stocks (InventoryStock + Trip Stocks)
+            // Compute period-based opening and closing stocks
             const tripStocks = [];
             trips.forEach(t => {
                 if (t.stocks && t.stocks.length > 0) {
@@ -438,109 +506,14 @@ export const getProfitAndLoss = async (req, res, next) => {
             });
             const combinedStocks = [...stocks, ...tripStocks].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-            // --- BIRDS LOGIC ---
-            const birdStocks = combinedStocks.filter(s => s.inventoryType === 'bird');
-            const firstBirdOpStock = birdStocks.find(s => s.type === 'opening');
-            let birdAnchorDate = new Date(0);
-            if (firstBirdOpStock) {
-                const d = new Date(firstBirdOpStock.date);
-                const bFyYear = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
-                birdAnchorDate = new Date(`${bFyYear}-04-01T00:00:00.000Z`);
-            }
+            const metricBirdsOpeningStock = getOpeningStockValue(combinedStocks, 'bird', sDate, eDate);
+            const metricFeedOpeningStock = getOpeningStockValue(combinedStocks, 'feed', sDate, eDate);
 
-            const b_stocksBeforeFY = [];
-            const b_stocksDuringFY = [];
-            birdStocks.forEach(s => {
-                const date = new Date(s.date);
-                if (s.type === 'opening') {
-                    if (!firstBirdOpStock || s._id?.toString() !== firstBirdOpStock._id?.toString()) return;
-                } else {
-                    if (date < birdAnchorDate) return;
-                }
-                if (date < fyStart) b_stocksBeforeFY.push(s);
-                else if (date <= fyEnd) b_stocksDuringFY.push(s);
-            });
+            const metricBirdsClosingStock = calculateStockValue(combinedStocks, 'bird', eDate);
+            const metricFeedClosingStock = calculateStockValue(combinedStocks, 'feed', eDate);
 
-            const processBirdStock = (s, state) => {
-                const w = Number(s.weight) || 0;
-                const a = Number(s.amount) || 0;
-                if (s.type === 'purchase' || s.type === 'opening') { state.pWt += w; state.pAmt += a; }
-                else if (['sale', 'receipt', 'mortality', 'weight_loss', 'natural_weight_loss'].includes(s.type)) { state.outWt += w; }
-            };
-
-            // --- FEED LOGIC ---
-            const feedStocks = combinedStocks.filter(s => s.inventoryType === 'feed');
-            const firstFeedOpStock = feedStocks.find(s => s.type === 'opening');
-            let feedAnchorDate = new Date(0);
-            if (firstFeedOpStock) {
-                const d = new Date(firstFeedOpStock.date);
-                const fFyYear = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
-                feedAnchorDate = new Date(`${fFyYear}-04-01T00:00:00.000Z`);
-            }
-
-            const f_stocksBeforeFY = [];
-            const f_stocksDuringFY = [];
-            feedStocks.forEach(s => {
-                const date = new Date(s.date);
-                if (s.type === 'opening') {
-                    if (!firstFeedOpStock || s._id?.toString() !== firstFeedOpStock._id?.toString()) return;
-                } else {
-                    if (date < feedAnchorDate) return;
-                }
-                if (date < fyStart) f_stocksBeforeFY.push(s);
-                else if (date <= fyEnd) f_stocksDuringFY.push(s);
-            });
-
-            const processFeedStock = (s, state) => {
-                const w = Number(s.weight) || 0;
-                const a = Number(s.amount) || 0;
-                if (s.type === 'purchase' || s.type === 'opening') { state.pWt += w; state.pAmt += a; }
-                else if (['consume', 'sale', 'receipt', 'mortality', 'weight_loss', 'natural_weight_loss'].includes(s.type)) { state.outWt += w; }
-            };
-
-            // Calculate Metrics
-            let metricBirdsOpeningStock = 0; let metricBirdsClosingStock = 0;
-            let metricFeedOpeningStock = 0; let metricFeedClosingStock = 0;
-
-            const b_opState = { pWt: 0, pAmt: 0, outWt: 0 };
-            const b_clState = { pWt: 0, pAmt: 0, outWt: 0 };
-            b_stocksBeforeFY.forEach(s => { processBirdStock(s, b_opState); processBirdStock(s, b_clState); });
-
-            const f_opState = { pWt: 0, pAmt: 0, outWt: 0 };
-            const f_clState = { pWt: 0, pAmt: 0, outWt: 0 };
-            f_stocksBeforeFY.forEach(s => { processFeedStock(s, f_opState); processFeedStock(s, f_clState); });
-
-            for (let i = 0; i < 12; i++) {
-                const mStart = new Date(fyStartYear, 3 + i, 1);
-                const mEnd = new Date(fyStartYear, 3 + i + 1, 0, 23, 59, 59, 999);
-
-                // --- OPENING BALANCES (Read BEFORE month's transactions) ---
-                const bOpRate = b_opState.pWt > 0 ? b_opState.pAmt / b_opState.pWt : 0;
-                metricBirdsOpeningStock += Math.max(0, b_opState.pWt - b_opState.outWt) * bOpRate;
-
-                const fOpRate = f_opState.pWt > 0 ? f_opState.pAmt / f_opState.pWt : 0;
-                metricFeedOpeningStock += Math.max(0, f_opState.pWt - f_opState.outWt) * fOpRate;
-
-                // --- PROCESS MONTH'S TRANSACTIONS ---
-                b_stocksDuringFY.forEach(s => {
-                    const d = new Date(s.date);
-                    if (d >= mStart && d <= mEnd) { processBirdStock(s, b_opState); processBirdStock(s, b_clState); }
-                });
-                f_stocksDuringFY.forEach(s => {
-                    const d = new Date(s.date);
-                    if (d >= mStart && d <= mEnd) { processFeedStock(s, f_opState); processFeedStock(s, f_clState); }
-                });
-
-                // --- CLOSING BALANCES (Read AFTER month's transactions) ---
-                const bClRate = b_clState.pWt > 0 ? b_clState.pAmt / b_clState.pWt : 0;
-                metricBirdsClosingStock += Math.max(0, b_clState.pWt - b_clState.outWt) * bClRate;
-
-                const fClRate = f_clState.pWt > 0 ? f_clState.pAmt / f_clState.pWt : 0;
-                metricFeedClosingStock += Math.max(0, f_clState.pWt - f_clState.outWt) * fClRate;
-            }
-
-            const metricOpeningStock = Math.max(0, o_pWt - o_outWt) * oRate;
-            const metricClosingStock = metricOpeningStockLegacy;
+            const metricOpeningStock = metricBirdsOpeningStock;
+            const metricClosingStock = metricBirdsClosingStock;
 
             const updateTrees = (grpList, isOpeningParent = false, isClosingParent = false) => {
                 let diffAccumulator = 0;

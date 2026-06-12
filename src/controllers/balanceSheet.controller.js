@@ -254,7 +254,7 @@ const calculateDieselStationBalance = (station, unifiedBalanceMap) => {
   return openingSigned + debitTotal - creditTotal;
 };
 
-const calculateGroupBalance = async (group, unifiedBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate = null) => {
+const calculateGroupBalance = async (group, unifiedBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate = null, stockMetrics = null) => {
   let totalBalance = 0;
   let totalDebit = 0;
   let totalCredit = 0;
@@ -344,7 +344,7 @@ const calculateGroupBalance = async (group, unifiedBalanceMap, ledgerGroupMap, v
   // Recursively calculate children balances
   if (group.children && group.children.length > 0) {
     for (const child of group.children) {
-      const childBalance = await calculateGroupBalance(child, unifiedBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate);
+      const childBalance = await calculateGroupBalance(child, unifiedBalanceMap, ledgerGroupMap, vendorGroupMap, customerGroupMap, dieselStationGroupMap, allVouchers, allTrips, allStocks, asOnDate, stockMetrics);
       totalBalance += childBalance.totalBalance;
       totalDebit += childBalance.totalDebit;
       totalCredit += childBalance.totalCredit;
@@ -353,11 +353,25 @@ const calculateGroupBalance = async (group, unifiedBalanceMap, ledgerGroupMap, v
     }
   }
 
+  // Override stock group balances if stockMetrics are provided
+  if (stockMetrics) {
+    const groupSlug = group.slug ? group.slug.trim().toLowerCase() : '';
+    const groupName = group.name ? group.name.trim().toUpperCase() : '';
+
+    if (groupSlug === 'stock-in-hand' || groupName === 'STOCK-IN-HAND' || groupName === 'STOCK IN HAND') {
+      totalBalance = stockMetrics.totalClosingStock;
+    } else if (groupSlug === 'birds-stock' || groupName === 'BIRDS STOCK') {
+      totalBalance = stockMetrics.metricBirdsClosingStock;
+    } else if (groupSlug === 'feed-stock' || groupName === 'FEED STOCK') {
+      totalBalance = stockMetrics.metricFeedClosingStock;
+    }
+  }
+
   return { totalBalance, totalDebit, totalCredit, totalOpeningBalance, totalOutstandingBalance };
 };
 
 // Calculate Capital/Equity (Income - Expenses) - optimized
-const calculateCapital = async (unifiedBalanceMap, allLedgers) => {
+const calculateCapital = async (unifiedBalanceMap, allLedgers, openingStockValue = 0, closingStockValue = 0) => {
   try {
     const incomeGroups = await Group.find({ type: 'Income', isActive: true }).select('_id').lean();
     const expenseGroups = await Group.find({ type: 'Expenses', isActive: true }).select('_id').lean();
@@ -381,11 +395,90 @@ const calculateCapital = async (unifiedBalanceMap, allLedgers) => {
       }
     }
 
-    return totalIncome - totalExpenses;
+    return (totalIncome + closingStockValue) - (totalExpenses + openingStockValue);
   } catch (error) {
     console.error('Error calculating capital:', error);
     return 0;
   }
+};
+
+// Helpers for stock calculations
+const calculateStockValue = (combinedStocks, inventoryType, targetDate) => {
+  const typeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType);
+  const firstOpStock = typeStocks.find(s => s.type === 'opening');
+  let fyAnchorDate = new Date(0);
+  if (firstOpStock) {
+    const bOpDate = new Date(firstOpStock.date);
+    const bOpYear = bOpDate.getFullYear();
+    const bOpMonth = bOpDate.getMonth();
+    const bOpFyStartYear = bOpMonth >= 3 ? bOpYear : bOpYear - 1;
+    fyAnchorDate = new Date(`${bOpFyStartYear}-04-01T00:00:00.000Z`);
+  }
+
+  let pBags = 0, pWt = 0, pAmt = 0;
+  let outBags = 0, outWt = 0, outAmt = 0;
+
+  typeStocks.forEach(s => {
+    const date = new Date(s.date);
+    if (date > targetDate) return;
+
+    if (s.type === 'opening') {
+      if (!firstOpStock || s._id?.toString() !== firstOpStock._id?.toString()) return;
+    } else {
+      if (date < fyAnchorDate) return;
+    }
+
+    const b = Number(s.bags) || 0;
+    const w = Number(s.weight) || 0;
+    const amt = Number(s.amount) || 0;
+
+    if (s.type === 'purchase' || s.type === 'opening') {
+      pBags += b;
+      pWt += w;
+      pAmt += amt;
+    } else {
+      outBags += b;
+      outWt += w;
+      outAmt += amt;
+    }
+  });
+
+  if (inventoryType === 'bird') {
+    const closingWeight = pWt - outWt;
+    const avgRate = pWt > 0 ? (pAmt / pWt) : 0;
+    return closingWeight * avgRate;
+  } else {
+    return pAmt - outAmt;
+  }
+};
+
+const getOpeningStockValue = (combinedStocks, inventoryType, startDate, endDate) => {
+  const sDate = new Date(startDate);
+  const eDate = new Date(endDate);
+  eDate.setHours(23, 59, 59, 999);
+
+  // 1. Stock value just before the period
+  const beforePeriodDate = new Date(sDate.getTime() - 1);
+  const valBefore = calculateStockValue(combinedStocks, inventoryType, beforePeriodDate);
+
+  // 2. Any opening stock documents within the period
+  let valWithin = 0;
+  const typeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType && s.type === 'opening');
+  if (typeStocks.length > 0) {
+    const allTypeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType);
+    const firstOpStock = allTypeStocks.find(s => s.type === 'opening');
+    
+    typeStocks.forEach(s => {
+      const date = new Date(s.date);
+      if (date >= sDate && date <= eDate) {
+        if (firstOpStock && s._id?.toString() === firstOpStock._id?.toString()) {
+          valWithin += Number(s.amount) || 0;
+        }
+      }
+    });
+  }
+
+  return valBefore + valWithin;
 };
 
 // Get balance sheet data
@@ -469,6 +562,45 @@ export const getBalanceSheet = async (req, res, next) => {
     // Build unified balance map
     const unifiedBalanceMap = buildUnifiedBalanceMap(allVouchers, allTrips, allStocks, idToNameMap);
 
+    // Build combinedStocks
+    const tripStocks = [];
+    allTrips.forEach(t => {
+      if (t.stocks && t.stocks.length > 0) {
+        t.stocks.forEach(st => {
+          tripStocks.push({
+            _id: st._id,
+            type: 'purchase',
+            inventoryType: 'bird',
+            date: st.addedAt || t.date,
+            weight: Number(st.weight) || 0,
+            amount: Number(st.value) || 0,
+            rate: Number(st.rate) || 0
+          });
+        });
+      }
+    });
+    const combinedStocks = [...allStocks, ...tripStocks].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Calculate fiscal year start
+    const fyStartYear = date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
+    const fyStart = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
+
+    // Calculate opening and closing stock values
+    const birdsOpeningStockValue = getOpeningStockValue(combinedStocks, 'bird', fyStart, date);
+    const feedOpeningStockValue = getOpeningStockValue(combinedStocks, 'feed', fyStart, date);
+    
+    const birdsClosingStockValue = calculateStockValue(combinedStocks, 'bird', date);
+    const feedClosingStockValue = calculateStockValue(combinedStocks, 'feed', date);
+
+    const totalOpeningStock = birdsOpeningStockValue + feedOpeningStockValue;
+    const totalClosingStock = birdsClosingStockValue + feedClosingStockValue;
+
+    const stockMetrics = {
+      totalClosingStock,
+      metricBirdsClosingStock: birdsClosingStockValue,
+      metricFeedClosingStock: feedClosingStockValue
+    };
+
     // Calculate balances for each group (pass unified map)
     const processGroups = async (groups) => {
       const processedGroups = [];
@@ -483,7 +615,8 @@ export const getBalanceSheet = async (req, res, next) => {
           allVouchers,
           allTrips,
           allStocks,
-          date
+          date,
+          stockMetrics
         );
         // Ensure we have a clean plain object
         const groupId = group._id || group.id;
@@ -515,7 +648,7 @@ export const getBalanceSheet = async (req, res, next) => {
     const processedLiabilities = await processGroups(liabilityTree);
 
     // Calculate capital/equity (pass unified map)
-    const capital = await calculateCapital(unifiedBalanceMap, allLedgers);
+    const capital = await calculateCapital(unifiedBalanceMap, allLedgers, totalOpeningStock, totalClosingStock);
 
     // Calculate totals
     const calculateTotal = (groups) => {
