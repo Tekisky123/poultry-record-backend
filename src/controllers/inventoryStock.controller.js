@@ -937,7 +937,7 @@ export const updateStock = async (req, res, next) => {
 // Get Monthly Stock Stats
 export const getMonthlyStockStats = async (req, res, next) => {
     try {
-        const { year } = req.query;
+        const { year, supervisorId, inventoryType } = req.query;
         const currentYear = year ? parseInt(year) : new Date().getFullYear();
 
         // Month names helper
@@ -958,6 +958,15 @@ export const getMonthlyStockStats = async (req, res, next) => {
                 { supervisorId: new mongoose.Types.ObjectId(req.user._id) },
                 { type: 'opening' }
             ];
+        } else if (supervisorId && mongoose.Types.ObjectId.isValid(supervisorId)) {
+            matchQuery.$or = [
+                { supervisorId: new mongoose.Types.ObjectId(supervisorId) },
+                { type: 'opening' }
+            ];
+        }
+
+        if (inventoryType) {
+            matchQuery.inventoryType = inventoryType;
         }
 
         const pipeline = [
@@ -1038,7 +1047,7 @@ export const getMonthlyStockStats = async (req, res, next) => {
 // Get Daily Stock Stats (for a month)
 export const getDailyStockStats = async (req, res, next) => {
     try {
-        const { year, month } = req.query;
+        const { year, month, supervisorId, inventoryType } = req.query;
         if (!year || !month) throw new AppError("Year and Month are required", 400);
 
         const startDate = new Date(Date.UTC(year, month - 1, 1));
@@ -1056,6 +1065,15 @@ export const getDailyStockStats = async (req, res, next) => {
                 { supervisorId: new mongoose.Types.ObjectId(req.user._id) },
                 { type: 'opening' }
             ];
+        } else if (supervisorId && mongoose.Types.ObjectId.isValid(supervisorId)) {
+            matchQuery.$or = [
+                { supervisorId: new mongoose.Types.ObjectId(supervisorId) },
+                { type: 'opening' }
+            ];
+        }
+
+        if (inventoryType) {
+            matchQuery.inventoryType = inventoryType;
         }
 
         const pipeline = [
