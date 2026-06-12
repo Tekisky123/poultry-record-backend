@@ -6,6 +6,7 @@ import InventoryStock from "../models/InventoryStock.js";
 import Voucher from "../models/Voucher.js";
 import Trip from "../models/Trip.js";
 import DieselStation from "../models/DieselStation.js";
+import IndirectSale from "../models/IndirectSale.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 import { toSignedValue } from "../utils/balanceUtils.js";
@@ -371,7 +372,14 @@ const calculateGroupBalance = async (group, unifiedBalanceMap, ledgerGroupMap, v
 };
 
 // Calculate Capital/Equity (Income - Expenses) - optimized
-const calculateCapital = async (unifiedBalanceMap, allLedgers, openingStockValue = 0, closingStockValue = 0) => {
+const calculateCapital = async (
+  unifiedBalanceMap,
+  allLedgers,
+  openingStockValue = 0,
+  closingStockValue = 0,
+  totalPeriodPurchases = 0,
+  totalPeriodSales = 0
+) => {
   try {
     const incomeGroups = await Group.find({ type: 'Income', isActive: true }).select('_id').lean();
     const expenseGroups = await Group.find({ type: 'Expenses', isActive: true }).select('_id').lean();
@@ -395,7 +403,7 @@ const calculateCapital = async (unifiedBalanceMap, allLedgers, openingStockValue
       }
     }
 
-    return (totalIncome + closingStockValue) - (totalExpenses + openingStockValue);
+    return (totalIncome + closingStockValue + totalPeriodSales) - (totalExpenses + openingStockValue + totalPeriodPurchases);
   } catch (error) {
     console.error('Error calculating capital:', error);
     return 0;
@@ -496,7 +504,7 @@ export const getBalanceSheet = async (req, res, next) => {
     const dateQuery = date ? { date: { $lte: date } } : {};
     const createdQuery = date ? { createdAt: { $lte: date } } : {};
 
-    const [allLedgers, allVendors, allCustomers, allVouchers, allTrips, allStocks, assetsGroups, liabilityGroups, allDieselStations] = await Promise.all([
+    const [allLedgers, allVendors, allCustomers, allVouchers, allTrips, allStocks, assetsGroups, liabilityGroups, allDieselStations, allIndirectSales] = await Promise.all([
       Ledger.find({ isActive: true }).lean(),
       Vendor.find({ isActive: true }).lean(),
       Customer.find({ isActive: true }).lean(),
@@ -505,7 +513,8 @@ export const getBalanceSheet = async (req, res, next) => {
       InventoryStock.find({ ...dateQuery }).lean(), // InventoryStock uses date
       Group.find({ type: 'Assets', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),
       Group.find({ type: 'Liability', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),
-      DieselStation.find({ isActive: true }).lean()
+      DieselStation.find({ isActive: true }).lean(),
+      IndirectSale.find({ ...dateQuery }).lean() // IndirectSale uses date
     ]);
 
     // Build Ledger Map (GroupId -> Ledgers)
@@ -585,6 +594,48 @@ export const getBalanceSheet = async (req, res, next) => {
     const fyStartYear = date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
     const fyStart = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
 
+    // Calculate total purchases and sales from fyStart to date
+    let metricPurchase = 0;
+    let metricFeedPurchase = 0;
+    let metricSales = 0;
+
+    // 1. From Trips
+    allTrips.forEach(t => {
+      const tDate = new Date(t.date);
+      if (tDate >= fyStart && tDate <= date) {
+        metricPurchase += (t.summary?.totalPurchaseAmount || 0);
+        metricSales += (t.summary?.totalSalesAmount || 0);
+      }
+    });
+
+    // 2. From Stocks
+    allStocks.forEach(s => {
+      const sDateVal = new Date(s.date);
+      if (sDateVal >= fyStart && sDateVal <= date) {
+        let amt = s.amount || (s.weight * s.rate) || 0;
+        if (s.type === 'purchase') {
+          if (s.inventoryType === 'feed') {
+            metricFeedPurchase += amt;
+          } else {
+            metricPurchase += amt;
+          }
+        }
+        if (s.type === 'sale') metricSales += amt;
+      }
+    });
+
+    // 3. From Indirect Sales
+    allIndirectSales.forEach(s => {
+      const sDateVal = new Date(s.date);
+      if (sDateVal >= fyStart && sDateVal <= date) {
+        metricPurchase += (s.summary?.totalPurchaseAmount || 0);
+        metricSales += (s.summary?.salesAmount || 0);
+      }
+    });
+
+    const totalPeriodPurchases = metricPurchase + metricFeedPurchase;
+    const totalPeriodSales = metricSales;
+
     // Calculate opening and closing stock values
     const birdsOpeningStockValue = getOpeningStockValue(combinedStocks, 'bird', fyStart, date);
     const feedOpeningStockValue = getOpeningStockValue(combinedStocks, 'feed', fyStart, date);
@@ -648,7 +699,14 @@ export const getBalanceSheet = async (req, res, next) => {
     const processedLiabilities = await processGroups(liabilityTree);
 
     // Calculate capital/equity (pass unified map)
-    const capital = await calculateCapital(unifiedBalanceMap, allLedgers, totalOpeningStock, totalClosingStock);
+    const capital = await calculateCapital(
+      unifiedBalanceMap,
+      allLedgers,
+      totalOpeningStock,
+      totalClosingStock,
+      totalPeriodPurchases,
+      totalPeriodSales
+    );
 
     // Calculate totals
     const calculateTotal = (groups) => {

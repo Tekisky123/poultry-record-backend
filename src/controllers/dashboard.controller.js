@@ -542,6 +542,8 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name === 'FEED OPENING STOCK') targetValue = metricFeedOpeningStock;
                     else if (name.includes('LIVE POULTRY BIRDS') && inOpening) targetValue = metricOpeningStock;
                     else if (name.includes('LIVE POULTRY BIRDS') && inClosing) targetValue = metricClosingStock;
+                    else if (name === 'PURCHASE ACCOUNTS') targetValue = metricPurchase + metricFeedPurchase;
+                    else if (name === 'SALES ACCOUNTS') targetValue = metricSales;
 
                     if (targetValue !== null) {
                         const localDiff = targetValue - oldBalance;
