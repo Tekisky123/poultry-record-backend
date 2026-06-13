@@ -1146,6 +1146,55 @@ const calculateGroupDebitCredit = async (groupId, groupType, startDate = null, e
     };
 };
 
+const calculateStockValue = (combinedStocks, inventoryType, targetDate) => {
+    const typeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType);
+    const firstOpStock = typeStocks.find(s => s.type === 'opening');
+    let fyAnchorDate = new Date(0);
+    if (firstOpStock) {
+        const bOpDate = new Date(firstOpStock.date);
+        const bOpYear = bOpDate.getFullYear();
+        const bOpMonth = bOpDate.getMonth();
+        const bOpFyStartYear = bOpMonth >= 3 ? bOpYear : bOpYear - 1;
+        fyAnchorDate = new Date(`${bOpFyStartYear}-04-01T00:00:00.000Z`);
+    }
+
+    let pBags = 0, pWt = 0, pAmt = 0;
+    let outBags = 0, outWt = 0, outAmt = 0;
+
+    typeStocks.forEach(s => {
+        const date = new Date(s.date);
+        if (date > targetDate) return;
+
+        if (s.type === 'opening') {
+            if (!firstOpStock || s._id?.toString() !== firstOpStock._id?.toString()) return;
+        } else {
+            if (date < fyAnchorDate) return;
+        }
+
+        const b = Number(s.bags) || 0;
+        const w = Number(s.weight) || 0;
+        const amt = Number(s.amount) || 0;
+
+        if (s.type === 'purchase' || s.type === 'opening') {
+            pBags += b;
+            pWt += w;
+            pAmt += amt;
+        } else {
+            outBags += b;
+            outWt += w;
+            outAmt += amt;
+        }
+    });
+
+    if (inventoryType === 'bird') {
+        const closingWeight = pWt - outWt;
+        const avgRate = pWt > 0 ? (pAmt / pWt) : 0;
+        return closingWeight * avgRate;
+    } else {
+        return pAmt - outAmt;
+    }
+};
+
 // Get group summary with ledgers and sub-groups
 export const getGroupSummary = async (req, res, next) => {
     const { id } = req.params;
@@ -1202,6 +1251,30 @@ export const getGroupSummary = async (req, res, next) => {
         }
         const indirectSales = await IndirectSale.find(indirectSaleQuery).lean();
 
+        // Build combinedStocks for stock valuation if this group or its subgroups are stock-in-hand
+        const tripStocks = [];
+        trips.forEach(t => {
+            if (t.stocks && t.stocks.length > 0) {
+                t.stocks.forEach(st => {
+                    tripStocks.push({
+                        _id: st._id,
+                        type: 'purchase',
+                        inventoryType: 'bird',
+                        date: st.addedAt || t.date,
+                        weight: Number(st.weight) || 0,
+                        amount: Number(st.value) || 0,
+                        rate: Number(st.rate) || 0
+                    });
+                });
+            }
+        });
+        const combinedStocks = [...stocks, ...tripStocks].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        const queryDate = endDateObj || new Date();
+        const birdsClosingStockValue = calculateStockValue(combinedStocks, 'bird', queryDate);
+        const feedClosingStockValue = calculateStockValue(combinedStocks, 'feed', queryDate);
+        const totalClosingStock = birdsClosingStockValue + feedClosingStockValue;
+
         const subGroups = await Group.find({ parentGroup: id, isActive: true }).sort({ name: 1 }).lean();
         const directLedgers = await Ledger.find({ group: id, isActive: true }).sort({ name: 1 }).lean();
         const directCustomers = await Customer.find({ group: id, isActive: true }).sort({ shopName: 1 }).lean();
@@ -1218,16 +1291,44 @@ export const getGroupSummary = async (req, res, next) => {
 
         // Add sub-groups with their calculated debit/credit (sum of all ledgers in that group)
         for (const subGroup of subGroups) {
-            const { debit, credit, birds, weight, transactionDebit, transactionCredit, discountAndOther } = await calculateGroupDebitCredit(
-                subGroup._id,
-                group.type,
-                finalStartDate,
-                finalEndDate,
-                vouchers,
-                trips,
-                stocks,
-                indirectSales
-            );
+            const groupSlug = subGroup.slug ? subGroup.slug.trim().toLowerCase() : '';
+            const groupName = subGroup.name ? subGroup.name.trim().toUpperCase() : '';
+
+            let debit = 0;
+            let credit = 0;
+            let birds = 0;
+            let weight = 0;
+            let transactionDebit = 0;
+            let transactionCredit = 0;
+            let discountAndOther = 0;
+            let closingBalance = 0;
+
+            if (groupSlug === 'stock-in-hand' || groupName === 'STOCK-IN-HAND' || groupName === 'STOCK IN HAND') {
+                closingBalance = totalClosingStock;
+            } else if (groupSlug === 'birds-stock' || groupName === 'BIRDS STOCK') {
+                closingBalance = birdsClosingStockValue;
+            } else if (groupSlug === 'feed-stock' || groupName === 'FEED STOCK') {
+                closingBalance = feedClosingStockValue;
+            } else {
+                const balances = await calculateGroupDebitCredit(
+                    subGroup._id,
+                    group.type,
+                    finalStartDate,
+                    finalEndDate,
+                    vouchers,
+                    trips,
+                    stocks,
+                    indirectSales
+                );
+                debit = balances.debit;
+                credit = balances.credit;
+                birds = balances.birds;
+                weight = balances.weight;
+                transactionDebit = balances.transactionDebit;
+                transactionCredit = balances.transactionCredit;
+                discountAndOther = balances.discountAndOther;
+                closingBalance = debit - credit;
+            }
 
             entries.push({
                 type: 'subgroup',
@@ -1240,7 +1341,7 @@ export const getGroupSummary = async (req, res, next) => {
                 transactionDebit: transactionDebit || 0,
                 transactionCredit: transactionCredit || 0,
                 discountAndOther: discountAndOther || 0,
-                closingBalance: (debit - credit)
+                closingBalance
             });
         }
 
