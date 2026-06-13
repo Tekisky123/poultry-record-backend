@@ -512,8 +512,8 @@ export const getProfitAndLoss = async (req, res, next) => {
             const metricBirdsClosingStock = calculateStockValue(combinedStocks, 'bird', eDate);
             const metricFeedClosingStock = calculateStockValue(combinedStocks, 'feed', eDate);
 
-            const metricOpeningStock = metricBirdsOpeningStock;
-            const metricClosingStock = metricBirdsClosingStock;
+            const metricOpeningStock = metricBirdsOpeningStock + metricFeedOpeningStock;
+            const metricClosingStock = metricBirdsClosingStock + metricFeedClosingStock;
 
             const updateTrees = (grpList, isOpeningParent = false, isClosingParent = false) => {
                 let diffAccumulator = 0;
@@ -544,6 +544,8 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name.includes('LIVE POULTRY BIRDS') && inClosing) targetValue = metricClosingStock;
                     else if (name === 'PURCHASE ACCOUNTS') targetValue = metricPurchase + metricFeedPurchase;
                     else if (name === 'SALES ACCOUNTS') targetValue = metricSales;
+                    else if (name === 'OPENING STOCK') targetValue = metricOpeningStock;
+                    else if (name === 'CLOSING STOCK') targetValue = metricClosingStock;
 
                     if (targetValue !== null) {
                         const localDiff = targetValue - oldBalance;

@@ -71,7 +71,7 @@ const buildTree = (groups) => {
 };
 
 // Build unified balance map from Vouchers, Trips, and Inventory Stocks
-const buildUnifiedBalanceMap = (allVouchers, allTrips, allStocks, idToNameMap) => {
+const buildUnifiedBalanceMap = (allVouchers, allTrips, allStocks, allIndirectSales, idToNameMap) => {
   const map = new Map(); // Key: normalized name (lowercase string)
 
   const updateMap = (nameOrId, debit, credit) => {
@@ -160,7 +160,7 @@ const buildUnifiedBalanceMap = (allVouchers, allTrips, allStocks, idToNameMap) =
   allTrips.forEach(t => {
     // A. Trip Purchases
     (t.purchases || []).forEach(p => {
-      updateMap(p.supplier, 0, p.amount);
+      updateMap(p.supplier || p.vendorName, 0, p.amount);
     });
 
     // B. Trip Sales
@@ -186,9 +186,12 @@ const buildUnifiedBalanceMap = (allVouchers, allTrips, allStocks, idToNameMap) =
         updateMap(ds.dieselStation, ds.amount, 0);
       }
     });
+  });
 
-    // D. Trip Expenses (Debit Expense - for now we just track magnitude for Capital calculation if possible)
-    // Note: Since trip expenses aren't linked to a specific ledger, they only affect Capital via P&L.
+  // 4. Process Indirect Sales
+  (allIndirectSales || []).forEach(s => {
+    updateMap(s.customer, s.summary?.salesAmount || 0, 0);
+    updateMap(s.vendor, 0, s.summary?.totalPurchaseAmount || 0);
   });
 
   return map;
@@ -569,7 +572,7 @@ export const getBalanceSheet = async (req, res, next) => {
     allDieselStations.forEach(d => idToNameMap.set(d._id.toString(), d.name));
 
     // Build unified balance map
-    const unifiedBalanceMap = buildUnifiedBalanceMap(allVouchers, allTrips, allStocks, idToNameMap);
+    const unifiedBalanceMap = buildUnifiedBalanceMap(allVouchers, allTrips, allStocks, allIndirectSales, idToNameMap);
 
     // Build combinedStocks
     const tripStocks = [];
@@ -698,28 +701,19 @@ export const getBalanceSheet = async (req, res, next) => {
     const processedAssets = await processGroups(assetsTree);
     const processedLiabilities = await processGroups(liabilityTree);
 
-    // Calculate capital/equity (pass unified map)
-    const capital = await calculateCapital(
-      unifiedBalanceMap,
-      allLedgers,
-      totalOpeningStock,
-      totalClosingStock,
-      totalPeriodPurchases,
-      totalPeriodSales
-    );
-
-    // Calculate totals
-    const calculateTotal = (groups) => {
+    // Calculate total assets and liabilities using signed values to ensure mathematical correctness
+    const calculateTotalSigned = (groups) => {
       let total = 0;
       groups.forEach(group => {
-        total += Math.abs(group.balance);
+        total += group.balance;
       });
       return total;
     };
 
-    const totalAssets = calculateTotal(processedAssets);
-    const totalLiabilities = calculateTotal(processedLiabilities);
-    const totalCapital = Math.abs(capital);
+    const totalAssets = calculateTotalSigned(processedAssets);
+    const totalLiabilities = calculateTotalSigned(processedLiabilities);
+    const capital = totalAssets - totalLiabilities;
+    const totalCapital = capital;
     const totalLiabilitiesAndCapital = totalLiabilities + totalCapital;
 
     successResponse(res, "Balance sheet retrieved successfully", 200, {
