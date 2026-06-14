@@ -27,7 +27,13 @@ router.put('/:id/expenses/:index', authenticateToken, authorize(['admin', 'super
 // Stock management routes
 router.post('/:id/stock', authenticateToken, authorize(['supervisor']), tripController.addStock);
 router.put('/:id/stock/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.updateStock);
-router.delete('/:id/stock/:index', authenticateToken, authorize(['supervisor']), tripController.deleteStock);
+router.delete('/:id/stock/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteStock);
+router.delete('/:id/purchase/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deletePurchase);
+router.delete('/:id/sale/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteSale);
+router.delete('/:id/diesel/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteTripDiesel);
+router.delete('/:id/expenses/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteExpense);
+router.delete('/:id/losses/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteLoss);
+router.delete('/:id/transfer/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteTransfer);
 router.put('/:id/death-birds', authenticateToken, authorize(['supervisor']), tripController.addDeathBirds);
 router.put('/:id/complete', authenticateToken, authorize(['admin', 'superadmin']), tripController.completeTrip);
 router.put('/:id/complete-details', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.completeTripDetails);

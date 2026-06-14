@@ -35,7 +35,7 @@ const voucherSchema = new mongoose.Schema({
     },
     partyType: {
       type: String,
-      enum: ['customer', 'ledger', 'vendor'],
+      enum: ['customer', 'ledger', 'vendor', 'dieselStation'],
       required: false
     },
     amount: {
@@ -100,6 +100,11 @@ const voucherSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+  payment: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Payment',
+    required: false
   }
 }, {
   timestamps: true,
@@ -143,6 +148,10 @@ voucherSchema.pre('save', async function(next) {
           const Vendor = mongoose.model('Vendor');
           const vendor = await Vendor.findById(party.partyId);
           partyName = vendor ? vendor.vendorName : 'Vendor';
+        } else if (party.partyType === 'dieselStation') {
+          const DieselStation = mongoose.model('DieselStation');
+          const station = await DieselStation.findById(party.partyId);
+          partyName = station ? station.name : 'Diesel Station';
         }
         
         if (this.voucherType === 'Payment') {

@@ -14,5 +14,6 @@ router.get('/admin/pending', authenticateToken, authorize(['admin', 'superadmin'
 router.get('/admin/stats', authenticateToken, authorize(['admin', 'superadmin']), paymentController.getPaymentStats);
 router.get('/:id', authenticateToken, authorize(['admin', 'superadmin']), paymentController.getPaymentById);
 router.put('/:id/verify', authenticateToken, authorize(['admin', 'superadmin']), paymentController.verifyPayment);
+router.delete('/:id', authenticateToken, authorize(['admin', 'superadmin']), paymentController.deletePayment);
 
 export default router;

@@ -2,6 +2,7 @@ import Voucher from "../models/Voucher.js";
 import Customer from "../models/Customer.js";
 import Vendor from "../models/Vendor.js";
 import Ledger from "../models/Ledger.js";
+import DieselStation from "../models/DieselStation.js";
 import Sequence from "../models/Sequence.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
@@ -86,6 +87,11 @@ export const createVoucher = async (req, res, next) => {
                         const vendor = await Vendor.findById(partyItem.partyId);
                         if (vendor) {
                             partyNames.push(vendor.vendorName || 'Vendor');
+                        }
+                    } else if (partyItem.partyType === 'dieselStation') {
+                        const station = await DieselStation.findById(partyItem.partyId);
+                        if (station) {
+                            partyNames.push(station.name || 'Diesel Station');
                         }
                     }
                 } catch (error) {
@@ -173,6 +179,22 @@ export const createVoucher = async (req, res, next) => {
                             vendorLedger.outstandingBalanceType = newBalance.type;
                             vendorLedger.updatedBy = req.user._id;
                             await vendorLedger.save();
+                        }
+                    } else if (partyType === 'dieselStation') {
+                        const station = await DieselStation.findById(partyItem.partyId);
+                        if (station) {
+                            const transactionType = voucherType === 'Payment' ? 'debit' : 'credit';
+                            const newBalance = addToBalance(
+                                station.outstandingBalance || 0,
+                                station.outstandingBalanceType || 'debit',
+                                partyItem.amount,
+                                transactionType
+                            );
+
+                            station.outstandingBalance = newBalance.amount;
+                            station.outstandingBalanceType = newBalance.type;
+                            station.updatedBy = req.user._id;
+                            await station.save();
                         }
                     }
                 } catch (error) {
@@ -441,6 +463,11 @@ export const updateVoucher = async (req, res, next) => {
                         const vendor = await Vendor.findById(partyItem.partyId);
                         if (vendor) {
                             partyNames.push(vendor.vendorName || 'Vendor');
+                        }
+                    } else if (partyItem.partyType === 'dieselStation') {
+                        const station = await DieselStation.findById(partyItem.partyId);
+                        if (station) {
+                            partyNames.push(station.name || 'Diesel Station');
                         }
                     }
                 } catch (error) {

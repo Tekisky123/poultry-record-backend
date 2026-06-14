@@ -2138,13 +2138,397 @@ export const getDailyTripStats = async (req, res, next) => {
             }
         });
 
-        const totals = {
-            netProfit: days.reduce((acc, d) => acc + d.netProfit, 0),
-            grossRent: days.reduce((acc, d) => acc + d.grossRent, 0),
-            tripCount: days.reduce((acc, d) => acc + d.tripCount, 0),
-        };
-
         successResponse(res, "Daily trip stats retrieved", 200, { days, totals, year: targetYear, month: targetMonth + 1 });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete purchase from trip
+export const deletePurchase = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
+            throw new AppError('Cannot delete purchase from a completed trip', 403);
+        }
+
+        if (trip.type === 'transferred') {
+            throw new AppError('Cannot delete purchases in transferred trips.', 403);
+        }
+
+        const purchaseIndex = parseInt(index);
+        if (purchaseIndex < 0 || purchaseIndex >= trip.purchases.length) {
+            throw new AppError('Invalid purchase index', 400);
+        }
+
+        // Remove purchase
+        trip.purchases.splice(purchaseIndex, 1);
+
+        // Update summary
+        trip.summary.totalPurchaseAmount = trip.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
+        trip.summary.totalBirdsPurchased = trip.purchases.reduce((sum, p) => sum + (p.birds || 0), 0);
+        trip.summary.totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
+
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Purchase deleted successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete sale from trip
+export const deleteSale = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
+            throw new AppError('Cannot delete sale/receipt from a completed trip', 403);
+        }
+
+        const saleIndex = parseInt(index);
+        if (saleIndex < 0 || saleIndex >= trip.sales.length) {
+            throw new AppError('Invalid sale index', 400);
+        }
+
+        const oldSale = trip.sales[saleIndex];
+        const oldAmount = Number(oldSale?.amount) || 0;
+        const oldCashPaid = Number(oldSale?.cashPaid) || 0;
+        const oldOnlinePaid = Number(oldSale?.onlinePaid) || 0;
+        const oldDiscount = Number(oldSale?.discount) || 0;
+        const oldCashLedger = oldSale?.cashLedger;
+        const oldOnlineLedger = oldSale?.onlineLedger;
+        const oldClient = oldSale?.client;
+        const isReceipt = (oldSale?.birds === 0 || !oldSale?.birds) &&
+            (oldSale?.weight === 0 || !oldSale?.weight) &&
+            (oldAmount === 0 || !oldSale?.amount);
+
+        // 1. Revert customer balance if client is set
+        if (oldClient) {
+            const customer = await Customer.findById(oldClient);
+            if (customer) {
+                let currentBalanceSigned = toSignedValue(
+                    customer.outstandingBalance || 0,
+                    customer.outstandingBalanceType || 'debit'
+                );
+
+                // Reverse sale (subtract amount)
+                if (!isReceipt && oldAmount > 0) {
+                    currentBalanceSigned = currentBalanceSigned - oldAmount;
+                }
+
+                // Reverse cash payment (add back)
+                if (oldCashPaid > 0) {
+                    currentBalanceSigned = currentBalanceSigned + oldCashPaid;
+                }
+
+                // Reverse online payment (add back)
+                if (oldOnlinePaid > 0) {
+                    currentBalanceSigned = currentBalanceSigned + oldOnlinePaid;
+                }
+
+                // Reverse discount (add back)
+                if (oldDiscount > 0) {
+                    currentBalanceSigned = currentBalanceSigned + oldDiscount;
+                }
+
+                const updatedBalanceObj = fromSignedValue(currentBalanceSigned);
+                customer.outstandingBalance = updatedBalanceObj.amount;
+                customer.outstandingBalanceType = updatedBalanceObj.type;
+                await customer.save();
+            }
+        }
+
+        // 2. Revert cash ledger if cashLedger is set and cashPaid > 0
+        if (oldCashLedger && oldCashPaid > 0) {
+            const cashLedger = await Ledger.findById(oldCashLedger);
+            if (cashLedger) {
+                const updatedLedgerBalance = subtractFromBalance(
+                    cashLedger.outstandingBalance || 0,
+                    cashLedger.outstandingBalanceType || 'debit',
+                    oldCashPaid,
+                    'debit'
+                );
+                cashLedger.outstandingBalance = updatedLedgerBalance.amount;
+                cashLedger.outstandingBalanceType = updatedLedgerBalance.type;
+                await cashLedger.save();
+            }
+        }
+
+        // 3. Revert online ledger if onlineLedger is set and onlinePaid > 0
+        if (oldOnlineLedger && oldOnlinePaid > 0) {
+            const onlineLedger = await Ledger.findById(oldOnlineLedger);
+            if (onlineLedger) {
+                const updatedLedgerBalance = subtractFromBalance(
+                    onlineLedger.outstandingBalance || 0,
+                    onlineLedger.outstandingBalanceType || 'debit',
+                    oldOnlinePaid,
+                    'debit'
+                );
+                onlineLedger.outstandingBalance = updatedLedgerBalance.amount;
+                onlineLedger.outstandingBalanceType = updatedLedgerBalance.type;
+                await onlineLedger.save();
+            }
+        }
+
+        // Remove sale
+        trip.sales.splice(saleIndex, 1);
+
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Sale/Receipt deleted successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete diesel station from trip
+export const deleteTripDiesel = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
+            throw new AppError('Cannot delete diesel from a completed trip', 403);
+        }
+
+        const dieselIndex = parseInt(index);
+        if (dieselIndex < 0 || dieselIndex >= trip.diesel.stations.length) {
+            throw new AppError('Invalid diesel index', 400);
+        }
+
+        const oldStation = trip.diesel.stations[dieselIndex];
+
+        // Revert diesel station vendor balance if predefined station
+        if (oldStation.dieselStation && oldStation.amount > 0) {
+            const station = await DieselStation.findById(oldStation.dieselStation);
+            if (station) {
+                const currentBalance = Number(station.outstandingBalance) || 0;
+                const currentType = station.outstandingBalanceType || 'credit';
+                const newBalance = addToBalance(currentBalance, currentType, oldStation.amount, 'debit');
+
+                station.outstandingBalance = newBalance.amount;
+                station.outstandingBalanceType = newBalance.type;
+                await station.save();
+            }
+        }
+
+        // Remove station record
+        trip.diesel.stations.splice(dieselIndex, 1);
+
+        // Update diesel totals
+        trip.diesel.totalVolume = trip.diesel.stations.reduce((sum, s) => sum + (s.volume || 0), 0);
+        trip.diesel.totalAmount = trip.diesel.stations.reduce((sum, s) => sum + (s.amount || 0), 0);
+        trip.summary.totalDieselAmount = trip.diesel.totalAmount;
+
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Diesel record deleted successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete expense from trip
+export const deleteExpense = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
+            throw new AppError('Cannot delete expense from a completed trip', 403);
+        }
+
+        const expenseIndex = parseInt(index);
+        if (expenseIndex < 0 || expenseIndex >= trip.expenses.length) {
+            throw new AppError('Invalid expense index', 400);
+        }
+
+        // Remove expense
+        trip.expenses.splice(expenseIndex, 1);
+
+        // Update summary
+        trip.summary.totalExpenses = trip.expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Expense deleted successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete loss from trip
+export const deleteLoss = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
+            throw new AppError('Cannot delete loss from a completed trip', 403);
+        }
+
+        const lossIndex = parseInt(index);
+        if (lossIndex < 0 || lossIndex >= trip.losses.length) {
+            throw new AppError('Invalid loss index', 400);
+        }
+
+        // Remove loss
+        trip.losses.splice(lossIndex, 1);
+
+        // Recalculate summary totals
+        trip.summary.totalLosses = trip.losses.reduce((sum, loss) => sum + (loss.total || 0), 0);
+        trip.summary.totalBirdsLost = trip.losses.reduce((sum, loss) => sum + (loss.quantity || 0), 0);
+        trip.summary.totalWeightLost = trip.losses.reduce((sum, loss) => sum + (loss.weight || 0), 0);
+        trip.summary.mortality = trip.summary.totalBirdsLost;
+
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Loss entry deleted successfully", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Delete transfer from trip
+export const deleteTransfer = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
+            throw new AppError('Cannot delete transfer from a completed trip', 403);
+        }
+
+        const transferIndex = parseInt(index);
+        if (transferIndex < 0 || transferIndex >= trip.transferHistory.length) {
+            throw new AppError('Invalid transfer index', 400);
+        }
+
+        const transfer = trip.transferHistory[transferIndex];
+        const receiverTripId = transfer.transferredTo;
+
+        if (receiverTripId) {
+            const receiverTrip = await Trip.findById(receiverTripId);
+            if (receiverTrip) {
+                if (receiverTrip.status === 'completed') {
+                    throw new AppError('Cannot delete transfer: The receiving trip is already completed.', 400);
+                }
+
+                // Reset receiving vehicle status to idle
+                if (receiverTrip.vehicle) {
+                    await Vehicle.findByIdAndUpdate(receiverTrip.vehicle, { currentStatus: 'idle' });
+                }
+
+                // Delete receiving trip
+                await Trip.findByIdAndDelete(receiverTripId);
+            }
+        }
+
+        // Remove transfer history entry
+        trip.transferHistory.splice(transferIndex, 1);
+
+        // Remove receiver trip ID from transferredTo array
+        if (receiverTripId) {
+            trip.transferredTo = trip.transferredTo.filter(tid => tid.toString() !== receiverTripId.toString());
+        }
+
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+        await trip.save();
+
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact');
+
+        successResponse(res, "Transfer reverted and deleted successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }

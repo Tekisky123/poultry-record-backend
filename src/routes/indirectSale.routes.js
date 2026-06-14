@@ -73,5 +73,11 @@ router.put(
     indirectSaleController.updateSales
 );
 
+router.delete(
+    '/:id',
+    authorize(['admin', 'superadmin']),
+    indirectSaleController.deleteIndirectSale
+);
+
 export default router;
 

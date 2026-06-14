@@ -4,6 +4,7 @@ import Vendor from '../models/Vendor.js';
 import AppError from '../utils/AppError.js';
 import { successResponse } from '../utils/responseHandler.js';
 import mongoose from 'mongoose';
+import { toSignedValue, fromSignedValue, addToBalance, subtractFromBalance } from '../utils/balanceUtils.js';
 
 const roundNumber = (value, decimals = 2) => {
     if (Number.isNaN(value) || !Number.isFinite(value)) return 0;
@@ -529,6 +530,69 @@ export const getDailyStats = async (req, res, next) => {
         };
 
         successResponse(res, "Daily stats retrieved", 200, { days, totals, year: targetYear, month: targetMonth + 1 });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const deleteIndirectSale = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const record = await IndirectSale.findById(id);
+        if (!record || !record.isActive) {
+            throw new AppError('Indirect record not found', 404);
+        }
+
+        // Soft delete the record
+        record.isActive = false;
+        record.updatedBy = req.user._id;
+        await record.save();
+
+        // Revert customer outstanding balance
+        if (record.customer && record.sales && record.sales.amount > 0) {
+            const customer = await Customer.findById(record.customer);
+            if (customer) {
+                const newCustBalance = subtractFromBalance(
+                    customer.outstandingBalance || 0,
+                    customer.outstandingBalanceType || 'debit',
+                    record.sales.amount,
+                    'debit'
+                );
+                await Customer.findByIdAndUpdate(
+                    customer._id,
+                    {
+                        outstandingBalance: newCustBalance.amount,
+                        outstandingBalanceType: newCustBalance.type,
+                        updatedBy: req.user._id
+                    },
+                    { runValidators: false }
+                );
+            }
+        }
+
+        // Revert vendor outstanding balance
+        if (record.vendor && record.summary && record.summary.totalPurchaseAmount > 0) {
+            const vendor = await Vendor.findById(record.vendor);
+            if (vendor) {
+                const newVendBalance = subtractFromBalance(
+                    vendor.outstandingBalance || 0,
+                    vendor.outstandingBalanceType || 'credit',
+                    record.summary.totalPurchaseAmount,
+                    'credit'
+                );
+                await Vendor.findByIdAndUpdate(
+                    vendor._id,
+                    {
+                        outstandingBalance: newVendBalance.amount,
+                        outstandingBalanceType: newVendBalance.type,
+                        updatedBy: req.user._id
+                    },
+                    { runValidators: false }
+                );
+            }
+        }
+
+        successResponse(res, 'Indirect purchase and sale record deleted successfully', 200, record);
     } catch (error) {
         next(error);
     }

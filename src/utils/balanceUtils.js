@@ -132,6 +132,9 @@ export const populateVoucherParties = async (vouchers) => {
                         partyDoc = await Vendor.findById(partyIdStr).select('vendorName').lean();
                     } else if (p.partyType === 'ledger') {
                         partyDoc = await Ledger.findById(partyIdStr).select('name').lean();
+                    } else if (p.partyType === 'dieselStation') {
+                        const DieselStation = mongoose.model('DieselStation');
+                        partyDoc = await DieselStation.findById(partyIdStr).select('name').lean();
                     }
                     if (partyDoc) {
                         p.partyId = {

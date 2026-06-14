@@ -21,6 +21,6 @@ router.get('/stats/daily', authorize(['supervisor', 'admin', 'superadmin']), inv
 router.get('/', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.getStocks);
 
 router.put('/:id', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.updateStock);
-router.delete('/:id', authorize(['admin', 'superadmin']), inventoryController.deleteStock);
+router.delete('/:id', authorize(['supervisor', 'admin', 'superadmin']), inventoryController.deleteStock);
 
 export default router;

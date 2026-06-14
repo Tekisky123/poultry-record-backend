@@ -660,10 +660,14 @@ export const getStocks = async (req, res, next) => {
                 tripStocks = tripStocks.filter(s => s.supervisorId?._id?.toString() === supervisor);
             }
             if (startDate) {
-                tripStocks = tripStocks.filter(s => new Date(s.date) >= new Date(startDate));
+                const parts = startDate.split('-');
+                const start = new Date(Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 0, 0, 0, 0));
+                tripStocks = tripStocks.filter(s => new Date(s.date) >= start);
             }
             if (endDate) {
-                tripStocks = tripStocks.filter(s => new Date(s.date) <= new Date(endDate));
+                const parts = endDate.split('-');
+                const end = new Date(Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 23, 59, 59, 999));
+                tripStocks = tripStocks.filter(s => new Date(s.date) <= end);
             }
             if (inventoryType) {
                 tripStocks = tripStocks.filter(s => s.inventoryType === inventoryType);
@@ -1148,6 +1152,125 @@ export const getDailyStockStats = async (req, res, next) => {
 
 // Delete Stock
 export const deleteStock = async (req, res, next) => {
-    // TODO: Implement delete logic reversing balances
-    next(new AppError("Delete not implemented yet", 501));
+    try {
+        const { id } = req.params;
+
+        // 1. Fetch existing stock
+        const oldStock = await InventoryStock.findById(id);
+        if (!oldStock) {
+            return res.status(404).json({ message: "Stock record not found" });
+        }
+
+        // Supervisor validation
+        if (req.user.role === 'supervisor') {
+            if (oldStock.type === 'opening') {
+                throw new AppError("You are not authorized to delete opening stock", 403);
+            }
+            if (oldStock.supervisorId?.toString() !== req.user._id.toString()) {
+                throw new AppError("You are not authorized to delete this stock record", 403);
+            }
+        }
+
+        const type = oldStock.type;
+
+        // ---------------------------------------------------------
+        // PURCHASE & OPENING REVERSION
+        // ---------------------------------------------------------
+        if (type === 'purchase' || type === 'opening') {
+            const oldAmount = Number(oldStock.amount) || 0;
+            const oldVendorId = oldStock.vendorId?.toString();
+            if (oldVendorId && oldAmount > 0) {
+                const oldVendor = await Vendor.findById(oldVendorId);
+                if (oldVendor) {
+                    const revertedBalance = addToBalance(
+                        oldVendor.outstandingBalance || 0,
+                        oldVendor.outstandingBalanceType || 'credit',
+                        oldAmount,
+                        'debit'
+                    );
+                    oldVendor.outstandingBalance = revertedBalance.amount;
+                    oldVendor.outstandingBalanceType = revertedBalance.type;
+                    await oldVendor.save();
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // SALE & RECEIPT REVERSION
+        // ---------------------------------------------------------
+        if (type === 'sale' || type === 'receipt') {
+            const isSale = type === 'sale';
+            const oldCustomerId = oldStock.customerId?.toString();
+            let oldImpact = 0;
+            if (isSale) oldImpact += (Number(oldStock.amount) || 0);
+            oldImpact -= ((Number(oldStock.cashPaid) || 0) + (Number(oldStock.onlinePaid) || 0) + (Number(oldStock.discount) || 0));
+
+            if (oldCustomerId && oldImpact !== 0) {
+                const oldCustomer = await Customer.findById(oldCustomerId);
+                if (oldCustomer) {
+                    const revertedBalance = addToBalance(
+                        oldCustomer.outstandingBalance || 0,
+                        oldCustomer.outstandingBalanceType || 'debit',
+                        Math.abs(oldImpact),
+                        oldImpact > 0 ? 'credit' : 'debit'
+                    );
+                    oldCustomer.outstandingBalance = revertedBalance.amount;
+                    oldCustomer.outstandingBalanceType = revertedBalance.type;
+                    await oldCustomer.save();
+                }
+            }
+
+            // Cash Ledger Update
+            const oldCashLedgerId = oldStock.cashLedgerId?.toString();
+            const oldCashPaid = Number(oldStock.cashPaid) || 0;
+            if (oldCashLedgerId && oldCashPaid > 0) {
+                const oldCashLedger = await Ledger.findById(oldCashLedgerId);
+                if (oldCashLedger) {
+                    const reverted = addToBalance(oldCashLedger.outstandingBalance, oldCashLedger.outstandingBalanceType, oldCashPaid, 'credit');
+                    oldCashLedger.outstandingBalance = reverted.amount;
+                    oldCashLedger.outstandingBalanceType = reverted.type;
+                    await oldCashLedger.save();
+                }
+            }
+
+            // Online Ledger Update
+            const oldOnlineLedgerId = oldStock.onlineLedgerId?.toString();
+            const oldOnlinePaid = Number(oldStock.onlinePaid) || 0;
+            if (oldOnlineLedgerId && oldOnlinePaid > 0) {
+                const oldOnlineLedger = await Ledger.findById(oldOnlineLedgerId);
+                if (oldOnlineLedger) {
+                    const reverted = addToBalance(oldOnlineLedger.outstandingBalance, oldOnlineLedger.outstandingBalanceType, oldOnlinePaid, 'credit');
+                    oldOnlineLedger.outstandingBalance = reverted.amount;
+                    oldOnlineLedger.outstandingBalanceType = reverted.type;
+                    await oldOnlineLedger.save();
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // CONSUME REVERSION
+        // ---------------------------------------------------------
+        if (type === 'consume') {
+            const oldAmount = Number(oldStock.amount) || 0;
+            const oldLedgerId = oldStock.expenseLedgerId?.toString();
+            if (oldLedgerId && oldAmount > 0) {
+                const ledger = await Ledger.findById(oldLedgerId);
+                if (ledger) {
+                    const reverted = addToBalance(ledger.outstandingBalance, ledger.outstandingBalanceType, oldAmount, 'credit');
+                    ledger.outstandingBalance = reverted.amount;
+                    ledger.outstandingBalanceType = reverted.type;
+                    await ledger.save();
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // DELETE RECORD
+        // ---------------------------------------------------------
+        await InventoryStock.findByIdAndDelete(id);
+
+        successResponse(res, "Stock deleted successfully", 200, oldStock);
+    } catch (error) {
+        next(error);
+    }
 };

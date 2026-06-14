@@ -29,12 +29,8 @@ export const signupValidator = (data = {}) => {
     throw new AppError('Invalid mobile number', 400);
   }
 
-  // 5. Age/Date of Birth validation
-  if (role === 'customer') {
-    // For customers, dateOfBirth is required
-    if (!dateOfBirth) {
-      throw new AppError('Date of birth is required for customer registration', 400);
-    }
+  // 5. Age/Date of Birth validation (Optional)
+  if (dateOfBirth) {
     // Validate date format
     const dobDate = new Date(dateOfBirth);
     if (isNaN(dobDate.getTime())) {
@@ -46,17 +42,15 @@ export const signupValidator = (data = {}) => {
     const monthDiff = today.getMonth() - dobDate.getMonth();
     const actualAge = monthDiff < 0 || (monthDiff === 0 && today.getDate() < dobDate.getDate()) ? ageYears - 1 : ageYears;
     if (actualAge < 18) {
-      throw new AppError('You must be at least 18 years old to register as a customer', 400);
+      throw new AppError('You must be at least 18 years old to register', 400);
     }
     if (actualAge > 100) {
       throw new AppError('Invalid date of birth', 400);
     }
-  } else {
+  } else if (age !== undefined) {
     // For non-customers, age is optional but if provided must be within range
-    if (age !== undefined) {
-      if (typeof age !== 'number' || age < 18 || age > 100) {
-        throw new AppError('Age must be a number between 18 and 100', 400);
-      }
+    if (typeof age !== 'number' || age < 18 || age > 100) {
+      throw new AppError('Age must be a number between 18 and 100', 400);
     }
   }
 
