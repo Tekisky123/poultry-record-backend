@@ -107,14 +107,11 @@ export const downloadBackup = async (req, res, next) => {
                 archive.append(csvData, { name: `${name}.csv` });
             }
         } else if (format === 'excel') {
-            // For Excel, we can either create one big workbook or individual files
-            // Given the zip requirement, let's create individual xlsx files for consistency with other formats
-            // Or ideally, one workbook if the user requested excel but we are returning zip? 
-            // The prompt says "download database backup in selected formate in csv, json, xcel by clicking db backup zip is download"
-            // So we zip the result regardless.
-
-            if (buffer) {
-                archive.append(buffer, { name: `${name}.xlsx` });
+            for (const [name, collectionData] of Object.entries(data)) {
+                const buffer = convertToExcel(collectionData, name);
+                if (buffer) {
+                    archive.append(buffer, { name: `${name}.xlsx` });
+                }
             }
         } else if (format === 'bson') {
             for (const [name, collectionData] of Object.entries(data)) {

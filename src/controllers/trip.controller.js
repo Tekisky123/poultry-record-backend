@@ -1124,11 +1124,11 @@ export const addDeathBirds = async (req, res, next) => {
 
         // Validate required fields (rate is no longer required, will be calculated)
         if (!quantity || !weight || !date) {
-            return errorResponse(res, "Quantity, weight, and date are required", 400);
+            throw new AppError("Quantity, weight, and date are required", 400);
         }
 
         if (quantity <= 0 || weight <= 0) {
-            return errorResponse(res, "Quantity and weight must be greater than 0", 400);
+            throw new AppError("Quantity and weight must be greater than 0", 400);
         }
 
         let query = { _id: req.params.id };
@@ -1138,7 +1138,7 @@ export const addDeathBirds = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) {
-            return errorResponse(res, "Trip not found or access denied", 404);
+            throw new AppError("Trip not found or access denied", 404);
         }
 
         // Calculate purchase totals to determine avgPurchaseRate
@@ -1150,7 +1150,7 @@ export const addDeathBirds = async (req, res, next) => {
             totalPurchaseAmount / totalWeightPurchased : 0;
 
         if (avgPurchaseRate <= 0) {
-            return errorResponse(res, "Cannot add death birds: No purchases found or invalid purchase data", 400);
+            throw new AppError("Cannot add death birds: No purchases found or invalid purchase data", 400);
         }
 
         // Calculate derived fields using avgPurchaseRate
@@ -2126,6 +2126,12 @@ export const getDailyTripStats = async (req, res, next) => {
             date: { $gte: startDate, $lt: endDate }
         }).select('date summary.netProfit summary.grossRent tripId');
 
+        const totals = {
+            netProfit: 0,
+            grossRent: 0,
+            tripCount: 0
+        };
+
         trips.forEach(trip => {
             const tDate = new Date(trip.date);
             const dayOfMonth = tDate.getDate(); // 1-31
@@ -2136,6 +2142,9 @@ export const getDailyTripStats = async (req, res, next) => {
                 dayEntry.grossRent += (trip.summary?.grossRent || 0);
                 dayEntry.tripCount += 1;
             }
+            totals.netProfit += (trip.summary?.netProfit || 0);
+            totals.grossRent += (trip.summary?.grossRent || 0);
+            totals.tripCount += 1;
         });
 
         successResponse(res, "Daily trip stats retrieved", 200, { days, totals, year: targetYear, month: targetMonth + 1 });
