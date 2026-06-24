@@ -2542,3 +2542,122 @@ export const deleteTransfer = async (req, res, next) => {
         next(error);
     }
 };
+
+// ─── Update Transfer ────────────────────────────────────────────────────────
+// PUT /trip/:id/transfer/:index
+// Updates birds, weight, rate, reason on a transfer entry and syncs those
+// changes to the receiving trip's purchase record.
+export const updateTransfer = async (req, res, next) => {
+    try {
+        const { id, index } = req.params;
+        const { birds, weight, rate, reason } = req.body;
+
+        // Supervisors can only edit their own trips
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (trip.status === 'completed') {
+            throw new AppError('Cannot edit a transfer on a completed trip', 403);
+        }
+
+        const transferIndex = parseInt(index);
+        if (isNaN(transferIndex) || transferIndex < 0 || transferIndex >= trip.transferHistory.length) {
+            throw new AppError('Invalid transfer index', 400);
+        }
+
+        // Validate incoming values
+        const newBirds  = Number(birds);
+        const newWeight = Number(weight);
+        const newRate   = Number(rate);
+
+        if (!newBirds  || newBirds  <= 0) throw new AppError('Birds must be greater than 0', 400);
+        if (!newWeight || newWeight <= 0) throw new AppError('Weight must be greater than 0', 400);
+        if (!newRate   || newRate   <= 0) throw new AppError('Rate must be greater than 0', 400);
+
+        const currentTransfer = trip.transferHistory[transferIndex];
+
+        // Calculate remaining birds available for re-validation:
+        // Add the current transfer's birds back so we can compare against the new value.
+        const totalPurchased   = trip.summary?.totalBirdsPurchased || 0;
+        const customerSold     = trip.summary?.customerBirdsSold   || 0;
+        const totalInStock     = trip.stocks?.reduce((s, st) => s + (st.birds || 0), 0) || 0;
+        const totalLost        = trip.summary?.totalBirdsLost       || 0;
+        const totalTransferred = trip.summary?.birdsTransferred     || 0;
+        const currentTfrBirds  = currentTransfer.transferredStock?.birds || 0;
+
+        // Available = total remaining + what we're releasing from this transfer
+        const availableBirds = totalPurchased - customerSold - totalInStock - totalLost - totalTransferred + currentTfrBirds;
+
+        if (newBirds > availableBirds) {
+            throw new AppError(
+                `Cannot set ${newBirds} birds. Only ${availableBirds} birds available (including the ${currentTfrBirds} already in this transfer).`,
+                400
+            );
+        }
+
+        const newAvgWeight = Number((newWeight / newBirds).toFixed(2));
+        const newAmount    = Number((newWeight * newRate).toFixed(2));
+
+        // ── 1. Update the transfer history entry on the ORIGINAL trip ────────
+        trip.transferHistory[transferIndex].transferredStock = {
+            birds:     newBirds,
+            weight:    newWeight,
+            avgWeight: newAvgWeight,
+            rate:      newRate
+        };
+        if (reason && reason.trim()) {
+            trip.transferHistory[transferIndex].reason = reason.trim();
+        }
+        trip.updatedBy = req.user._id;
+        await trip.save(); // pre-save recalculates summary.birdsTransferred / weightTransferred
+
+        // ── 2. Sync changes to the RECEIVER trip ────────────────────────────
+        const receiverTripId = currentTransfer.transferredTo;
+        if (receiverTripId) {
+            const receiverTrip = await Trip.findById(receiverTripId);
+            if (receiverTrip) {
+                if (receiverTrip.status === 'completed') {
+                    // The receiver is already completed — surface a warning but don't fail.
+                    // Original trip is already updated; just skip receiver sync.
+                    console.warn(`updateTransfer: receiver trip ${receiverTripId} is completed — skipping purchase sync.`);
+                } else {
+                    // Find the transfer purchase entry (dcNumber starts with "TRANSFER-")
+                    const purchaseIndex = receiverTrip.purchases.findIndex(
+                        p => p.dcNumber && p.dcNumber.startsWith('TRANSFER-')
+                    );
+                    if (purchaseIndex >= 0) {
+                        receiverTrip.purchases[purchaseIndex].birds     = newBirds;
+                        receiverTrip.purchases[purchaseIndex].weight    = newWeight;
+                        receiverTrip.purchases[purchaseIndex].avgWeight = newAvgWeight;
+                        receiverTrip.purchases[purchaseIndex].rate      = newRate;
+                        receiverTrip.purchases[purchaseIndex].amount    = newAmount;
+                    }
+                    receiverTrip.updatedBy = req.user._id;
+                    await receiverTrip.save(); // pre-save recalculates receiver's full summary
+                }
+            }
+        }
+
+        // ── 3. Return the fully-populated original trip ──────────────────────
+        const populatedTrip = await Trip.findById(trip._id)
+            .populate('vehicle', 'vehicleNumber type')
+            .populate('supervisor', 'name mobileNumber')
+            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('sales.client', 'shopName ownerName contact')
+            .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
+            .populate({
+                path: 'transferHistory.transferredTo',
+                populate: { path: 'vehicle', select: 'vehicleNumber' }
+            });
+
+        successResponse(res, 'Transfer updated successfully', 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+

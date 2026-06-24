@@ -4,6 +4,8 @@ import Ledger from "../models/Ledger.js";
 import Voucher from "../models/Voucher.js";
 import InventoryStock from "../models/InventoryStock.js";
 import IndirectSale from "../models/IndirectSale.js";
+import Vendor from "../models/Vendor.js";
+import Customer from "../models/Customer.js";
 import AppError from "../utils/AppError.js";
 import { successResponse } from "../utils/responseHandler.js";
 import mongoose from "mongoose";
@@ -393,9 +395,13 @@ export const getProfitAndLoss = async (req, res, next) => {
             // ensure eDate goes to end of day
             eDate.setHours(23, 59, 59, 999);
 
-            const stocks = await InventoryStock.find({ date: { $lte: eDate } }).lean();
-            const trips = await Trip.find({ date: { $lte: eDate } }).lean();
-            const isales = await IndirectSale.find({ date: { $gte: sDate, $lte: eDate } }).lean();
+            const [stocks, trips, isales, allVendors, allCustomers] = await Promise.all([
+                InventoryStock.find({ date: { $lte: eDate } }).lean(),
+                Trip.find({ date: { $lte: eDate } }).lean(),
+                IndirectSale.find({ date: { $gte: sDate, $lte: eDate } }).lean(),
+                Vendor.find({ isActive: true }).lean(),
+                Customer.find({ isActive: true }).lean()
+            ]);
 
             let metricPurchase = 0;
             let metricFeedPurchase = 0;
@@ -542,8 +548,160 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name === 'FEED OPENING STOCK') targetValue = metricFeedOpeningStock;
                     else if (name.includes('LIVE POULTRY BIRDS') && inOpening) targetValue = metricOpeningStock;
                     else if (name.includes('LIVE POULTRY BIRDS') && inClosing) targetValue = metricClosingStock;
-                    else if (name === 'PURCHASE ACCOUNTS') targetValue = metricPurchase + metricFeedPurchase;
-                    else if (name === 'SALES ACCOUNTS') targetValue = metricSales;
+                    else if (name === 'PURCHASE ACCOUNTS') {
+                        targetValue = metricPurchase + metricFeedPurchase;
+                        
+                        const vendorNodes = [];
+                        let vendorSum = 0;
+                        
+                        allVendors.forEach(v => {
+                            let amount = 0;
+                            
+                            // Trips
+                            trips.forEach(t => {
+                                const tDate = new Date(t.date);
+                                if (tDate >= sDate && tDate <= eDate && t.purchases) {
+                                    t.purchases.forEach(p => {
+                                        if (p.supplier && p.supplier.toString() === v._id.toString()) {
+                                            amount += (p.amount || 0);
+                                        }
+                                    });
+                                }
+                            });
+
+                            // Inventory Stocks
+                            stocks.forEach(s => {
+                                const sDateVal = new Date(s.date);
+                                if (sDateVal >= sDate && sDateVal <= eDate && s.type === 'purchase') {
+                                    const vId = s.vendorId?._id || s.vendorId;
+                                    if (vId && vId.toString() === v._id.toString()) {
+                                        amount += (s.amount || (s.weight * s.rate) || 0);
+                                    }
+                                }
+                            });
+
+                            // Indirect Sales
+                            isales.forEach(s => {
+                                const sDateVal = new Date(s.date);
+                                if (sDateVal >= sDate && sDateVal <= eDate) {
+                                    if (s.vendor && s.vendor.toString() === v._id.toString()) {
+                                        amount += (s.summary?.totalPurchaseAmount || 0);
+                                    }
+                                }
+                            });
+                            
+                            if (amount > 0) {
+                                vendorSum += amount;
+                                vendorNodes.push({
+                                    _id: v._id.toString(),
+                                    id: v._id.toString(),
+                                    name: v.vendorName,
+                                    slug: `vendor-${v._id}`,
+                                    type: 'Expenses',
+                                    balance: amount,
+                                    debitTotal: amount,
+                                    creditTotal: 0,
+                                    children: [],
+                                    ledgers: []
+                                });
+                            }
+                        });
+                        
+                        const diff = targetValue - vendorSum;
+                        if (Math.abs(diff) >= 0.01) {
+                            vendorNodes.push({
+                                _id: 'other-purchases',
+                                id: 'other-purchases',
+                                name: 'Other Purchases',
+                                slug: 'other-purchases',
+                                type: 'Expenses',
+                                balance: diff,
+                                debitTotal: diff,
+                                creditTotal: 0,
+                                children: [],
+                                ledgers: []
+                            });
+                        }
+                        
+                        g.children = vendorNodes;
+                    }
+                    else if (name === 'SALES ACCOUNTS') {
+                        targetValue = metricSales;
+                        
+                        const customerNodes = [];
+                        let customerSum = 0;
+                        
+                        allCustomers.forEach(c => {
+                            let amount = 0;
+                            
+                            // Trips
+                            trips.forEach(t => {
+                                const tDate = new Date(t.date);
+                                if (tDate >= sDate && tDate <= eDate && t.sales) {
+                                    t.sales.forEach(s => {
+                                        if (s.client && s.client.toString() === c._id.toString()) {
+                                            amount += (s.amount || 0);
+                                        }
+                                    });
+                                }
+                            });
+
+                            // Inventory Stocks
+                            stocks.forEach(s => {
+                                const sDateVal = new Date(s.date);
+                                if (sDateVal >= sDate && sDateVal <= eDate && s.type === 'sale') {
+                                    const cId = s.customerId?._id || s.customerId;
+                                    if (cId && cId.toString() === c._id.toString()) {
+                                        amount += (s.amount || (s.weight * s.rate) || 0);
+                                    }
+                                }
+                            });
+
+                            // Indirect Sales
+                            isales.forEach(s => {
+                                const sDateVal = new Date(s.date);
+                                if (sDateVal >= sDate && sDateVal <= eDate) {
+                                    if (s.customer && s.customer.toString() === c._id.toString()) {
+                                        amount += (s.summary?.salesAmount || 0);
+                                    }
+                                }
+                            });
+                            
+                            if (amount > 0) {
+                                customerSum += amount;
+                                customerNodes.push({
+                                    _id: c._id.toString(),
+                                    id: c._id.toString(),
+                                    name: c.shopName || c.ownerName,
+                                    slug: `customer-${c._id}`,
+                                    type: 'Income',
+                                    balance: amount,
+                                    debitTotal: 0,
+                                    creditTotal: amount,
+                                    children: [],
+                                    ledgers: []
+                                });
+                            }
+                        });
+                        
+                        const diff = targetValue - customerSum;
+                        if (Math.abs(diff) >= 0.01) {
+                            customerNodes.push({
+                                _id: 'other-sales',
+                                id: 'other-sales',
+                                name: 'Other Sales',
+                                slug: 'other-sales',
+                                type: 'Income',
+                                balance: diff,
+                                debitTotal: 0,
+                                creditTotal: diff,
+                                children: [],
+                                ledgers: []
+                            });
+                        }
+                        
+                        g.children = customerNodes;
+                    }
                     else if (name === 'OPENING STOCK') targetValue = metricOpeningStock;
                     else if (name === 'CLOSING STOCK') targetValue = metricClosingStock;
 

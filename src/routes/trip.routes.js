@@ -41,6 +41,7 @@ router.put('/:id/status', authenticateToken, authorize(['admin', 'superadmin', '
 
 // Trip transfer routes (Supervisor)
 router.post('/:id/transfer', authenticateToken, authorize(['supervisor']), tripController.transferTrip);
+router.put('/:id/transfer/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.updateTransfer);
 router.get('/:id/transfer-history', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripTransferHistory);
 
 export default router;

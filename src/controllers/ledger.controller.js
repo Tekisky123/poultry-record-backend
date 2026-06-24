@@ -353,6 +353,17 @@ export const getMonthlySummary = async (req, res, next) => {
             subjectType === 'vendor' ? subject.vendorName : subject.name;
         const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
 
+        // Helper: mirrors vendor.controller.js isTdsApplicableForDate exactly
+        const isTdsApplicableForDate = (date) => {
+            if (!subject.tdsApplicable) return false;
+            if (!subject.tdsUpdatedAt) return true; // no activation date → applies to all
+            const txDate = new Date(date);
+            txDate.setHours(0, 0, 0, 0);
+            const activationDate = new Date(subject.tdsUpdatedAt);
+            activationDate.setHours(0, 0, 0, 0);
+            return txDate >= activationDate;
+        };
+
         // Helper
         let gapDebit = 0;
         let gapCredit = 0;
@@ -488,8 +499,8 @@ export const getMonthlySummary = async (req, res, next) => {
                         if (p.supplier && p.supplier.toString() === id.toString()) {
                             credit += p.amount || 0;
                             let tdsAmount = 0;
-                            if (subject.tdsApplicable && (subject.tdsUpdatedAt && new Date(t.date || t.createdAt) > new Date(subject.tdsUpdatedAt))) {
-                                tdsAmount = p.amount * 0.001;
+                            if (isTdsApplicableForDate(t.date || t.createdAt)) {
+                                tdsAmount = (p.amount || 0) * 0.001;
                             }
                             debit += tdsAmount;
                             birds += p.birds || 0;
@@ -547,8 +558,8 @@ export const getMonthlySummary = async (req, res, next) => {
                     if (s.type === 'purchase' || s.type === 'opening') {
                         credit += s.amount || 0;
                         let tdsAmount = 0;
-                        if (subject.tdsApplicable && (subject.tdsUpdatedAt && new Date(s.date) > new Date(subject.tdsUpdatedAt))) {
-                            tdsAmount = s.amount * 0.001;
+                        if (isTdsApplicableForDate(s.date)) {
+                            tdsAmount = (s.amount || 0) * 0.001;
                         }
                         debit += tdsAmount;
                         birds += s.birds || 0;
@@ -579,7 +590,7 @@ export const getMonthlySummary = async (req, res, next) => {
                 const amt = s.summary?.totalPurchaseAmount || 0;
                 credit += amt;
                 let tdsAmount = 0;
-                if (subject.tdsApplicable && (subject.tdsUpdatedAt && new Date(s.date) > new Date(subject.tdsUpdatedAt))) {
+                if (isTdsApplicableForDate(s.date)) {
                     tdsAmount = amt * 0.001;
                 }
                 debit += tdsAmount;
@@ -733,6 +744,17 @@ export const getDailySummary = async (req, res, next) => {
             subjectType === 'vendor' ? subject.vendorName : subject.name;
         const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
 
+        // Helper: mirrors vendor.controller.js isTdsApplicableForDate exactly
+        const isTdsApplicableForDate = (date) => {
+            if (!subject.tdsApplicable) return false;
+            if (!subject.tdsUpdatedAt) return true; // no activation date → applies to all
+            const txDate = new Date(date);
+            txDate.setHours(0, 0, 0, 0);
+            const activationDate = new Date(subject.tdsUpdatedAt);
+            activationDate.setHours(0, 0, 0, 0);
+            return txDate >= activationDate;
+        };
+
         // Process Vouchers
         vouchers.forEach(v => {
             let debit = 0;
@@ -835,8 +857,8 @@ export const getDailySummary = async (req, res, next) => {
                     if (p.supplier && p.supplier.toString() === id.toString()) {
                         credit += p.amount || 0;
                         let tdsAmount = 0;
-                        if (subject.tdsApplicable && (subject.tdsUpdatedAt && new Date(t.date || t.createdAt) > new Date(subject.tdsUpdatedAt))) {
-                            tdsAmount = p.amount * 0.001;
+                        if (isTdsApplicableForDate(t.date || t.createdAt)) {
+                            tdsAmount = (p.amount || 0) * 0.001;
                         }
                         debit += tdsAmount;
                         isMatch = true;

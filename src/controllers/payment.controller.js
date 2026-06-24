@@ -183,6 +183,8 @@ export const verifyPayment = async (req, res, next) => {
                 voucherNumber: nextVoucherNumber,
                 voucherType: 'Receipt',
                 date: new Date(),
+                party: payment.customer,
+                partyName: customer.shopName || customer.ownerName || 'Customer',
                 parties: [{
                     partyId: payment.customer,
                     partyType: 'customer',

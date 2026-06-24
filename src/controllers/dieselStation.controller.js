@@ -170,6 +170,7 @@ export const getDieselStationDetails = async (req, res, next) => {
             ledgerEntries.push({
               _id: entry._id || trip._id,
               date: trip.date,
+              createdAt: entry.timestamp || trip.createdAt || trip.date,
               type: 'trip',
               particulars: "Diesel Purchase",
               indentNumber: entry.indentNumber || '-',
@@ -198,14 +199,14 @@ export const getDieselStationDetails = async (req, res, next) => {
         const partyData = voucher.parties?.find(p => p.partyId && p.partyId.toString() === id);
         if (partyData) {
           debit += partyData.amount || 0;
-          particulars = `Payment Voucher #${voucher.voucherNo}`;
+          particulars = `Payment Voucher #${voucher.voucherNumber}`;
         }
       } else if (voucher.voucherType === 'Journal') {
         const entry = voucher.entries?.find(e => e.account === station.name);
         if (entry) {
           if (entry.creditAmount > 0) credit += entry.creditAmount;
           if (entry.debitAmount > 0) debit += entry.debitAmount;
-          particulars = `Journal Voucher #${voucher.voucherNo}`;
+          particulars = `Journal Voucher #${voucher.voucherNumber}`;
         }
       }
 
@@ -213,6 +214,7 @@ export const getDieselStationDetails = async (req, res, next) => {
         ledgerEntries.push({
           _id: voucher._id,
           date: voucher.date,
+          createdAt: voucher.createdAt || voucher.date,
           type: 'voucher',
           particulars: particulars,
           vehicleNumber: '-',
@@ -226,8 +228,30 @@ export const getDieselStationDetails = async (req, res, next) => {
       }
     });
 
-    // Sort by date ascending to calculate running balance
-    ledgerEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+    // Sort:
+    // 1. Calendar date ascending (ignoring time)
+    // 2. If same calendar day, sort trips (purchases) before vouchers (payments)
+    // 3. Fallback to entry creation time (createdAt)
+    ledgerEntries.sort((a, b) => {
+      const dateA = new Date(a.date);
+      const dateB = new Date(b.date);
+
+      const dateOnlyA = new Date(dateA.getFullYear(), dateA.getMonth(), dateA.getDate()).getTime();
+      const dateOnlyB = new Date(dateB.getFullYear(), dateB.getMonth(), dateB.getDate()).getTime();
+
+      if (dateOnlyA !== dateOnlyB) {
+        return dateOnlyA - dateOnlyB;
+      }
+
+      // If same calendar date, sort trip (purchase) before voucher (payment)
+      if (a.type === 'trip' && b.type === 'voucher') return -1;
+      if (a.type === 'voucher' && b.type === 'trip') return 1;
+
+      // Fallback to entry creation time (createdAt)
+      const timeA = new Date(a.createdAt || a.date).getTime();
+      const timeB = new Date(b.createdAt || b.date).getTime();
+      return timeA - timeB;
+    });
 
     // Determine Opening Balance Date
     // It should be createdAt, but if there are backdated transactions, it should be before them visually.
