@@ -1447,3 +1447,330 @@ export const getLedgerTransactions = async (req, res, next) => {
     }
 };
 
+export const getPurchaseSalesReport = async (req, res, next) => {
+    const { id } = req.params;
+    const { startDate, endDate, vehicleNo, driver, gstNo, panNo } = req.query;
+
+    try {
+        const ledger = await Ledger.findById(id).populate('group');
+        if (!ledger) {
+            throw new AppError('Ledger not found', 404);
+        }
+
+        const groupName = ledger.group ? ledger.group.name.toLowerCase() : '';
+        const isPurchase = groupName.includes('purchase');
+        const isSales = groupName.includes('sales');
+
+        if (!isPurchase && !isSales) {
+            throw new AppError('This ledger is not a Purchase or Sales Account', 400);
+        }
+
+        const reportData = [];
+
+        // Helper to extract PAN from GST
+        const extractPanFromGst = (gst) => {
+            if (!gst) return '-';
+            const cleanGst = gst.trim().toUpperCase();
+            if (cleanGst.length === 15) {
+                return cleanGst.substring(2, 12);
+            }
+            return '-';
+        };
+
+        if (isPurchase) {
+            // 1. Fetch Trips (Purchases)
+            const tripQuery = {
+                status: { $in: ['completed', 'ongoing'] }
+            };
+            if (startDate || endDate) {
+                tripQuery.date = {};
+                if (startDate) tripQuery.date.$gte = new Date(startDate);
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    tripQuery.date.$lte = end;
+                }
+            }
+            const trips = await Trip.find(tripQuery)
+                .populate('vehicle', 'vehicleNumber')
+                .populate('purchases.supplier', 'vendorName gstNumber panNumber')
+                .lean();
+
+            trips.forEach(trip => {
+                if (trip.purchases) {
+                    trip.purchases.forEach((p, idx) => {
+                        const supplier = p.supplier;
+                        if (!supplier) return;
+
+                        const supGst = supplier.gstNumber || '-';
+                        const supPan = supplier.panNumber || extractPanFromGst(supplier.gstNumber);
+
+                        reportData.push({
+                            id: `trip_pur_${trip._id}_${idx}`,
+                            date: trip.date,
+                            particulars: supplier.vendorName || '-',
+                            birds: p.birds || 0,
+                            avg: p.birds > 0 ? Number((p.weight / p.birds).toFixed(2)) : 0,
+                            weight: p.weight || 0,
+                            rate: p.rate || 0,
+                            amount: p.amount || 0,
+                            details: trip.tripId || '-',
+                            vehicleNo: trip.vehicle?.vehicleNumber || '-',
+                            driver: trip.driver || '-',
+                            gstNo: supGst,
+                            panNo: supPan
+                        });
+                    });
+                }
+            });
+
+            // 2. Fetch Inventory Stocks (Purchases)
+            const stockQuery = { type: 'purchase' };
+            if (startDate || endDate) {
+                stockQuery.date = {};
+                if (startDate) stockQuery.date.$gte = new Date(startDate);
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    stockQuery.date.$lte = end;
+                }
+            }
+            const stocks = await InventoryStock.find(stockQuery)
+                .populate('vehicleId', 'vehicleNumber')
+                .populate('vendorId', 'vendorName gstNumber panNumber')
+                .lean();
+
+            stocks.forEach(stock => {
+                const vendor = stock.vendorId;
+                const vName = vendor ? vendor.vendorName : '-';
+                const vGst = vendor ? vendor.gstNumber || '-' : '-';
+                const vPan = vendor ? vendor.panNumber || extractPanFromGst(vendor.gstNumber) : '-';
+
+                reportData.push({
+                    id: `stock_pur_${stock._id}`,
+                    date: stock.date,
+                    particulars: vName,
+                    birds: stock.birds || 0,
+                    avg: stock.birds > 0 ? Number((stock.weight / stock.birds).toFixed(2)) : 0,
+                    weight: stock.weight || 0,
+                    rate: stock.rate || 0,
+                    amount: stock.amount || 0,
+                    details: 'STOCK PUR',
+                    vehicleNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
+                    driver: '-',
+                    gstNo: vGst,
+                    panNo: vPan
+                });
+            });
+
+            // 3. Fetch Indirect Sales (Purchase side)
+            const indirectQuery = { isActive: true };
+            if (startDate || endDate) {
+                indirectQuery.date = {};
+                if (startDate) indirectQuery.date.$gte = new Date(startDate);
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    indirectQuery.date.$lte = end;
+                }
+            }
+            const indirectSales = await IndirectSale.find(indirectQuery)
+                .populate('vendor', 'vendorName gstNumber panNumber')
+                .lean();
+
+            indirectSales.forEach(sale => {
+                const vendor = sale.vendor;
+                if (!vendor) return;
+
+                const vGst = vendor.gstNumber || '-';
+                const vPan = vendor.panNumber || extractPanFromGst(vendor.gstNumber);
+
+                const amt = sale.summary?.totalPurchaseAmount || 0;
+                const birds = sale.summary?.totalPurchaseBirds || 0;
+                const wt = sale.summary?.totalPurchaseWeight || 0;
+
+                reportData.push({
+                    id: `indirect_pur_${sale._id}`,
+                    date: sale.date,
+                    particulars: vendor.vendorName || '-',
+                    birds: birds,
+                    avg: birds > 0 ? Number((wt / birds).toFixed(2)) : 0,
+                    weight: wt,
+                    rate: wt > 0 ? Number((amt / wt).toFixed(2)) : 0,
+                    amount: amt,
+                    details: 'INDIRECT PUR',
+                    vehicleNo: sale.vehicleNumber || '-',
+                    driver: sale.driver || '-',
+                    gstNo: vGst,
+                    panNo: vPan
+                });
+            });
+        } else if (isSales) {
+            // 1. Fetch Trips (Sales)
+            const tripQuery = {
+                status: { $in: ['completed', 'ongoing'] }
+            };
+            if (startDate || endDate) {
+                tripQuery.date = {};
+                if (startDate) tripQuery.date.$gte = new Date(startDate);
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    tripQuery.date.$lte = end;
+                }
+            }
+            const trips = await Trip.find(tripQuery)
+                .populate('vehicle', 'vehicleNumber')
+                .populate('sales.client', 'shopName ownerName gstOrPanNumber')
+                .lean();
+
+            trips.forEach(trip => {
+                if (trip.sales) {
+                    trip.sales.forEach((s, idx) => {
+                        const client = s.client;
+                        if (!client) return;
+
+                        const clientName = client.shopName || client.ownerName || '-';
+                        const clientGst = client.gstOrPanNumber || '-';
+                        const clientPan = extractPanFromGst(client.gstOrPanNumber);
+
+                        reportData.push({
+                            id: `trip_sale_${trip._id}_${idx}`,
+                            date: trip.date,
+                            particulars: clientName,
+                            birds: s.birds || 0,
+                            avg: s.birds > 0 ? Number((s.weight / s.birds).toFixed(2)) : 0,
+                            weight: s.weight || 0,
+                            rate: s.rate || 0,
+                            amount: s.amount || 0,
+                            details: trip.tripId || '-',
+                            vehicleNo: trip.vehicle?.vehicleNumber || '-',
+                            driver: trip.driver || '-',
+                            gstNo: clientGst,
+                            panNo: clientPan
+                        });
+                    });
+                }
+            });
+
+            // 2. Fetch Inventory Stocks (Sales)
+            const stockQuery = { type: 'sale' };
+            if (startDate || endDate) {
+                stockQuery.date = {};
+                if (startDate) stockQuery.date.$gte = new Date(startDate);
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    stockQuery.date.$lte = end;
+                }
+            }
+            const stocks = await InventoryStock.find(stockQuery)
+                .populate('vehicleId', 'vehicleNumber')
+                .populate('customerId', 'shopName ownerName gstOrPanNumber')
+                .lean();
+
+            stocks.forEach(stock => {
+                const customer = stock.customerId;
+                const cName = customer ? customer.shopName || customer.ownerName : '-';
+                const cGst = customer ? customer.gstOrPanNumber || '-' : '-';
+                const cPan = customer ? extractPanFromGst(customer.gstOrPanNumber) : '-';
+
+                reportData.push({
+                    id: `stock_sale_${stock._id}`,
+                    date: stock.date,
+                    particulars: cName,
+                    birds: stock.birds || 0,
+                    avg: stock.birds > 0 ? Number((stock.weight / stock.birds).toFixed(2)) : 0,
+                    weight: stock.weight || 0,
+                    rate: stock.rate || 0,
+                    amount: stock.amount || 0,
+                    details: 'STOCK SALES',
+                    vehicleNo: stock.vehicleNumber || stock.vehicleId?.vehicleNumber || '-',
+                    driver: '-',
+                    gstNo: cGst,
+                    panNo: cPan
+                });
+            });
+
+            // 3. Fetch Indirect Sales
+            const indirectQuery = { isActive: true };
+            if (startDate || endDate) {
+                indirectQuery.date = {};
+                if (startDate) indirectQuery.date.$gte = new Date(startDate);
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    indirectQuery.date.$lte = end;
+                }
+            }
+            const indirectSales = await IndirectSale.find(indirectQuery)
+                .populate('customer', 'shopName ownerName gstOrPanNumber')
+                .lean();
+
+            indirectSales.forEach(sale => {
+                const customer = sale.customer;
+                if (!customer) return;
+
+                const cGst = customer.gstOrPanNumber || '-';
+                const cPan = extractPanFromGst(customer.gstOrPanNumber);
+
+                const amt = sale.sales?.amount || 0;
+                const birds = sale.sales?.birds || 0;
+                const wt = sale.sales?.weight || 0;
+
+                reportData.push({
+                    id: `indirect_sale_${sale._id}`,
+                    date: sale.date,
+                    particulars: customer.shopName || customer.ownerName || '-',
+                    birds: birds,
+                    avg: birds > 0 ? Number((wt / birds).toFixed(2)) : 0,
+                    weight: wt,
+                    rate: wt > 0 ? Number((amt / wt).toFixed(2)) : 0,
+                    amount: amt,
+                    details: 'INDIRECT SALES',
+                    vehicleNo: sale.vehicleNumber || '-',
+                    driver: sale.driver || '-',
+                    gstNo: cGst,
+                    panNo: cPan
+                });
+            });
+        }
+
+        // Apply filters
+        let filteredData = reportData;
+
+        if (vehicleNo) {
+            const vFilter = vehicleNo.trim().toLowerCase();
+            filteredData = filteredData.filter(item => item.vehicleNo.toLowerCase().includes(vFilter));
+        }
+
+        if (driver) {
+            const dFilter = driver.trim().toLowerCase();
+            filteredData = filteredData.filter(item => item.driver.toLowerCase().includes(dFilter));
+        }
+
+        if (gstNo) {
+            const gFilter = gstNo.trim().toLowerCase();
+            filteredData = filteredData.filter(item => item.gstNo.toLowerCase().includes(gFilter));
+        }
+
+        if (panNo) {
+            const pFilter = panNo.trim().toLowerCase();
+            filteredData = filteredData.filter(item => item.panNo.toLowerCase().includes(pFilter));
+        }
+
+        // Sort chronologically by date
+        filteredData.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        successResponse(res, "Purchase/Sales report fetched successfully", 200, {
+            ledgerName: ledger.name,
+            groupName: ledger.group?.name || '',
+            isPurchase,
+            transactions: filteredData
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+
