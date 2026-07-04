@@ -54,6 +54,14 @@ const buildListFilter = (query) => {
         });
     }
 
+    if (query.vehicleNumber) {
+        conditions.push({ vehicleNumber: new RegExp(query.vehicleNumber, 'i') });
+    }
+
+    if (query.driver) {
+        conditions.push({ driver: new RegExp(query.driver, 'i') });
+    }
+
     if (query.startDate || query.endDate) {
         const dateQuery = {};
         if (query.startDate) {
@@ -129,18 +137,48 @@ export const getIndirectSales = async (req, res, next) => {
 
         const filter = buildListFilter(req.query);
 
-        const [data, total] = await Promise.all([
+        const [data, total, aggregateTotals] = await Promise.all([
             IndirectSale.find(filter)
                 .populate('customer', 'shopName ownerName place')
                 .populate('vendor', 'vendorName companyName')
                 .sort({ date: -1, createdAt: -1 })
                 .skip((numericPage - 1) * numericLimit)
                 .limit(numericLimit),
-            IndirectSale.countDocuments(filter)
+            IndirectSale.countDocuments(filter),
+            IndirectSale.aggregate([
+                { $match: filter },
+                {
+                    $group: {
+                        _id: null,
+                        totalPurchaseBirds: { $sum: '$summary.totalPurchaseBirds' },
+                        totalPurchaseWeight: { $sum: '$summary.totalPurchaseWeight' },
+                        totalPurchaseAmount: { $sum: '$summary.totalPurchaseAmount' },
+                        totalSalesBirds: { $sum: '$sales.birds' },
+                        totalSalesWeight: { $sum: '$sales.weight' },
+                        totalSalesAmount: { $sum: '$sales.amount' },
+                        mortalityBirds: { $sum: '$mortality.birds' },
+                        mortalityWeight: { $sum: '$mortality.weight' },
+                        mortalityAmount: { $sum: '$mortality.amount' }
+                    }
+                }
+            ])
         ]);
+
+        const totals = aggregateTotals[0] || {
+            totalPurchaseBirds: 0,
+            totalPurchaseWeight: 0,
+            totalPurchaseAmount: 0,
+            totalSalesBirds: 0,
+            totalSalesWeight: 0,
+            totalSalesAmount: 0,
+            mortalityBirds: 0,
+            mortalityWeight: 0,
+            mortalityAmount: 0
+        };
 
         successResponse(res, 'Indirect purchase and sales list', 200, {
             records: data,
+            totals,
             pagination: {
                 totalItems: total,
                 itemsPerPage: numericLimit,
@@ -432,7 +470,9 @@ export const getMonthlyStats = async (req, res, next) => {
                 count: 0,
                 netProfit: 0,
                 salesAmount: 0,
-                purchaseAmount: 0
+                purchaseAmount: 0,
+                salesWeight: 0,
+                margin: 0
             });
         }
 
@@ -448,6 +488,11 @@ export const getMonthlyStats = async (req, res, next) => {
                     months[monthIndex].salesAmount += record.sales.amount;
                 }
 
+                // Sum sales weight
+                if (record.sales && record.sales.weight) {
+                    months[monthIndex].salesWeight += record.sales.weight;
+                }
+
                 // Sum purchase amount
                 if (record.summary && record.summary.totalPurchaseAmount) {
                     months[monthIndex].purchaseAmount += record.summary.totalPurchaseAmount;
@@ -458,12 +503,21 @@ export const getMonthlyStats = async (req, res, next) => {
             }
         });
 
+        months.forEach(m => {
+            m.margin = m.salesWeight > 0 ? m.netProfit / m.salesWeight : 0;
+            m.margin = Number(m.margin.toFixed(2));
+        });
+
+        const totalSalesWeight = months.reduce((acc, m) => acc + (m.salesWeight || 0), 0);
         const totals = {
             count: months.reduce((acc, m) => acc + m.count, 0),
             netProfit: months.reduce((acc, m) => acc + m.netProfit, 0),
             salesAmount: months.reduce((acc, m) => acc + m.salesAmount, 0),
-            purchaseAmount: months.reduce((acc, m) => acc + m.purchaseAmount, 0)
+            purchaseAmount: months.reduce((acc, m) => acc + m.purchaseAmount, 0),
+            salesWeight: totalSalesWeight,
+            margin: totalSalesWeight > 0 ? months.reduce((acc, m) => acc + m.netProfit, 0) / totalSalesWeight : 0
         };
+        totals.margin = Number(totals.margin.toFixed(2));
 
         successResponse(res, "Monthly stats retrieved", 200, { months, totals, year: targetYear });
     } catch (error) {
@@ -497,7 +551,9 @@ export const getDailyStats = async (req, res, next) => {
                 count: 0,
                 netProfit: 0,
                 salesAmount: 0,
-                purchaseAmount: 0
+                purchaseAmount: 0,
+                salesWeight: 0,
+                margin: 0
             });
         }
 
@@ -513,6 +569,10 @@ export const getDailyStats = async (req, res, next) => {
                     days[dayIndex].salesAmount += record.sales.amount;
                 }
 
+                if (record.sales && record.sales.weight) {
+                    days[dayIndex].salesWeight += record.sales.weight;
+                }
+
                 if (record.summary && record.summary.totalPurchaseAmount) {
                     days[dayIndex].purchaseAmount += record.summary.totalPurchaseAmount;
                 } else if (record.purchases) {
@@ -522,12 +582,21 @@ export const getDailyStats = async (req, res, next) => {
             }
         });
 
+        days.forEach(d => {
+            d.margin = d.salesWeight > 0 ? d.netProfit / d.salesWeight : 0;
+            d.margin = Number(d.margin.toFixed(2));
+        });
+
+        const totalSalesWeight = days.reduce((acc, d) => acc + (d.salesWeight || 0), 0);
         const totals = {
             count: days.reduce((acc, d) => acc + d.count, 0),
             netProfit: days.reduce((acc, d) => acc + d.netProfit, 0),
             salesAmount: days.reduce((acc, d) => acc + d.salesAmount, 0),
-            purchaseAmount: days.reduce((acc, d) => acc + d.purchaseAmount, 0)
+            purchaseAmount: days.reduce((acc, d) => acc + d.purchaseAmount, 0),
+            salesWeight: totalSalesWeight,
+            margin: totalSalesWeight > 0 ? days.reduce((acc, d) => acc + d.netProfit, 0) / totalSalesWeight : 0
         };
+        totals.margin = Number(totals.margin.toFixed(2));
 
         successResponse(res, "Daily stats retrieved", 200, { days, totals, year: targetYear, month: targetMonth + 1 });
     } catch (error) {

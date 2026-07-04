@@ -1089,25 +1089,25 @@ export const getDailyStockStats = async (req, res, next) => {
                     _id: { $dayOfMonth: "$date" },
                     date: { $first: "$date" },
                     // Purchase
+                    totalPurchaseWeight: {
+                        $sum: {
+                            $cond: [{ $in: ["$type", ["purchase", "opening"]] }, "$weight", 0]
+                        }
+                    },
                     totalPurchaseAmount: {
                         $sum: {
                             $cond: [{ $in: ["$type", ["purchase", "opening"]] }, "$amount", 0]
                         }
                     },
-                    totalPurchaseBirds: {
+                    // Sale
+                    totalSaleWeight: {
                         $sum: {
-                            $cond: [{ $and: [{ $in: ["$type", ["purchase", "opening"]] }, { $eq: ["$inventoryType", "bird"] }] }, "$birds", 0]
+                            $cond: [{ $eq: ["$type", "sale"] }, "$weight", 0]
                         }
                     },
-                    // Sale
                     totalSaleAmount: {
                         $sum: {
                             $cond: [{ $eq: ["$type", "sale"] }, "$amount", 0]
-                        }
-                    },
-                    totalSaleBirds: {
-                        $sum: {
-                            $cond: [{ $eq: ["$type", "sale"] }, "$birds", 0]
                         }
                     },
                     // Mortality
@@ -1116,7 +1116,44 @@ export const getDailyStockStats = async (req, res, next) => {
                             $cond: [{ $eq: ["$type", "mortality"] }, "$birds", 0]
                         }
                     },
+                    totalMortalityWeight: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "mortality"] }, "$weight", 0]
+                        }
+                    },
+                    totalMortalityAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "mortality"] }, "$amount", 0]
+                        }
+                    },
+                    // Actual Weight Loss
+                    totalWeightLossWeight: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "weight_loss"] }, "$weight", 0]
+                        }
+                    },
+                    totalWeightLossAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "weight_loss"] }, "$amount", 0]
+                        }
+                    },
+                    // Natural Weight Loss
+                    totalNaturalWeightLossWeight: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "natural_weight_loss"] }, "$weight", 0]
+                        }
+                    },
+                    totalNaturalWeightLossAmount: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "natural_weight_loss"] }, "$amount", 0]
+                        }
+                    },
                     // Feed Consume
+                    totalFeedConsumeQty: {
+                        $sum: {
+                            $cond: [{ $eq: ["$type", "consume"] }, "$feedQty", 0]
+                        }
+                    },
                     totalFeedConsumeAmount: {
                         $sum: {
                             $cond: [{ $eq: ["$type", "consume"] }, "$amount", 0]
@@ -1137,11 +1174,34 @@ export const getDailyStockStats = async (req, res, next) => {
         }));
 
         const totals = formattedResults.reduce((acc, curr) => ({
+            totalPurchaseWeight: acc.totalPurchaseWeight + curr.totalPurchaseWeight,
             totalPurchaseAmount: acc.totalPurchaseAmount + curr.totalPurchaseAmount,
+            totalSaleWeight: acc.totalSaleWeight + curr.totalSaleWeight,
             totalSaleAmount: acc.totalSaleAmount + curr.totalSaleAmount,
             totalMortalityBirds: acc.totalMortalityBirds + curr.totalMortalityBirds,
+            totalMortalityWeight: acc.totalMortalityWeight + curr.totalMortalityWeight,
+            totalMortalityAmount: acc.totalMortalityAmount + curr.totalMortalityAmount,
+            totalWeightLossWeight: acc.totalWeightLossWeight + curr.totalWeightLossWeight,
+            totalWeightLossAmount: acc.totalWeightLossAmount + curr.totalWeightLossAmount,
+            totalNaturalWeightLossWeight: acc.totalNaturalWeightLossWeight + curr.totalNaturalWeightLossWeight,
+            totalNaturalWeightLossAmount: acc.totalNaturalWeightLossAmount + curr.totalNaturalWeightLossAmount,
+            totalFeedConsumeQty: acc.totalFeedConsumeQty + curr.totalFeedConsumeQty,
             totalFeedConsumeAmount: acc.totalFeedConsumeAmount + curr.totalFeedConsumeAmount
-        }), { totalPurchaseAmount: 0, totalSaleAmount: 0, totalMortalityBirds: 0, totalFeedConsumeAmount: 0 });
+        }), {
+            totalPurchaseWeight: 0,
+            totalPurchaseAmount: 0,
+            totalSaleWeight: 0,
+            totalSaleAmount: 0,
+            totalMortalityBirds: 0,
+            totalMortalityWeight: 0,
+            totalMortalityAmount: 0,
+            totalWeightLossWeight: 0,
+            totalWeightLossAmount: 0,
+            totalNaturalWeightLossWeight: 0,
+            totalNaturalWeightLossAmount: 0,
+            totalFeedConsumeQty: 0,
+            totalFeedConsumeAmount: 0
+        });
 
         successResponse(res, "Daily stock stats fetched", 200, { days: formattedResults, totals });
 
