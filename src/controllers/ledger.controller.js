@@ -739,6 +739,33 @@ export const getDailySummary = async (req, res, next) => {
             trips = await Trip.find(tripQuery).lean();
         }
 
+        let stocks = [];
+        if (subjectType !== 'dieselStation') {
+            const stockQuery = { date: { $gte: startDate, $lt: endDate } };
+            if (subjectType === 'vendor') stockQuery.vendorId = id;
+            else if (subjectType === 'customer') stockQuery.customerId = id;
+            else if (subjectType === 'ledger') {
+                stockQuery.$or = [
+                    { cashLedgerId: id },
+                    { onlineLedgerId: id },
+                    { expenseLedgerId: id }
+                ];
+            }
+            stocks = await InventoryStock.find(stockQuery).lean();
+        }
+
+        let indirectSales = [];
+        if (subjectType !== 'dieselStation') {
+            let indirectQuery = { date: { $gte: startDate, $lt: endDate }, isActive: true };
+            if (subjectType === 'customer') indirectQuery.customer = id;
+            else if (subjectType === 'vendor') indirectQuery.vendor = id;
+            else indirectQuery = null;
+
+            if (indirectQuery) {
+                indirectSales = await IndirectSale.find(indirectQuery).lean();
+            }
+        }
+
         const subjectIdStr = id.toString();
         const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
             subjectType === 'vendor' ? subject.vendorName : subject.name;
@@ -895,6 +922,85 @@ export const getDailySummary = async (req, res, next) => {
                 days[dayIndex].debit += debit;
                 days[dayIndex].credit += credit;
                 days[dayIndex].voucherCount += 1; // Count trip as one transaction entry source
+            }
+        });
+
+        // Process Stocks
+        stocks.forEach(s => {
+            let debit = 0;
+            let credit = 0;
+            let isMatch = false;
+
+            const sDate = new Date(s.date);
+            const dayOfMonth = sDate.getDate();
+            const dayIndex = dayOfMonth - 1;
+
+            if (dayIndex < 0 || dayIndex >= days.length) return;
+
+            if (subjectType === 'customer') {
+                if (s.customerId && s.customerId.toString() === id.toString()) {
+                    if (s.type === 'sale' || s.type === 'receipt') {
+                        if (s.type === 'sale') debit += s.amount || 0;
+                        credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        isMatch = true;
+                    }
+                }
+            } else if (subjectType === 'vendor') {
+                const sVendorId = s.vendorId?._id || s.vendorId;
+                if (sVendorId && sVendorId.toString() === id.toString()) {
+                    if (s.type === 'purchase' || s.type === 'opening') {
+                        credit += s.amount || 0;
+                        let tdsAmount = 0;
+                        if (isTdsApplicableForDate(s.date)) {
+                            tdsAmount = (s.amount || 0) * 0.001;
+                        }
+                        debit += tdsAmount;
+                        isMatch = true;
+                    }
+                }
+            } else if (subjectType === 'ledger') {
+                if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) { debit += s.cashPaid || 0; isMatch = true; }
+                if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) { debit += s.onlinePaid || 0; isMatch = true; }
+                if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) { debit += s.amount || 0; isMatch = true; }
+            }
+
+            if (isMatch) {
+                days[dayIndex].debit += debit;
+                days[dayIndex].credit += credit;
+                days[dayIndex].voucherCount += 1;
+            }
+        });
+
+        // Process Indirect Sales
+        indirectSales.forEach(s => {
+            let debit = 0;
+            let credit = 0;
+            let isMatch = false;
+
+            const sDate = new Date(s.date);
+            const dayOfMonth = sDate.getDate();
+            const dayIndex = dayOfMonth - 1;
+
+            if (dayIndex < 0 || dayIndex >= days.length) return;
+
+            if (subjectType === 'customer') {
+                debit += s.sales?.amount || 0;
+                isMatch = true;
+            } else if (subjectType === 'vendor') {
+                const amt = s.summary?.totalPurchaseAmount || 0;
+                credit += amt;
+                let tdsAmount = 0;
+                if (isTdsApplicableForDate(s.date)) {
+                    tdsAmount = amt * 0.001;
+                }
+                debit += tdsAmount;
+                isMatch = true;
+            }
+
+            if (isMatch) {
+                days[dayIndex].debit += debit;
+                days[dayIndex].credit += credit;
+                days[dayIndex].voucherCount += 1;
             }
         });
 
