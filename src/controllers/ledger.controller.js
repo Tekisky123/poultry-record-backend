@@ -873,7 +873,7 @@ export const getDailySummary = async (req, res, next) => {
 
             if (subjectType === 'customer') {
                 t.sales.forEach(s => {
-                    if (s.client && s.client.toString() === id.toString() && !s.isReceipt) {
+                    if (s.client && s.client.toString() === id.toString()) {
                         debit += s.amount || 0;
                         credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
                         isMatch = true;
