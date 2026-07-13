@@ -553,7 +553,17 @@ export const getDailyStats = async (req, res, next) => {
                 salesAmount: 0,
                 purchaseAmount: 0,
                 salesWeight: 0,
-                margin: 0
+                margin: 0,
+                totalPurchaseBirds: 0,
+                totalPurchaseWeight: 0,
+                totalSalesBirds: 0,
+                totalSalesWeight: 0,
+                totalMortalityBirds: 0,
+                totalMortalityWeight: 0,
+                totalMortalityAmount: 0,
+                customers: new Set(),
+                vehicles: new Set(),
+                drivers: new Set()
             });
         }
 
@@ -573,11 +583,45 @@ export const getDailyStats = async (req, res, next) => {
                     days[dayIndex].salesWeight += record.sales.weight;
                 }
 
+                if (record.sales && record.sales.birds) {
+                    days[dayIndex].totalSalesBirds += record.sales.birds;
+                }
+
                 if (record.summary && record.summary.totalPurchaseAmount) {
                     days[dayIndex].purchaseAmount += record.summary.totalPurchaseAmount;
                 } else if (record.purchases) {
                     const pTotal = record.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
                     days[dayIndex].purchaseAmount += pTotal;
+                }
+
+                if (record.summary && record.summary.totalPurchaseBirds) {
+                    days[dayIndex].totalPurchaseBirds += record.summary.totalPurchaseBirds;
+                } else if (record.purchases) {
+                    const pBirds = record.purchases.reduce((sum, p) => sum + (p.birds || 0), 0);
+                    days[dayIndex].totalPurchaseBirds += pBirds;
+                }
+
+                if (record.summary && record.summary.totalPurchaseWeight) {
+                    days[dayIndex].totalPurchaseWeight += record.summary.totalPurchaseWeight;
+                } else if (record.purchases) {
+                    const pWeight = record.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
+                    days[dayIndex].totalPurchaseWeight += pWeight;
+                }
+
+                if (record.mortality) {
+                    days[dayIndex].totalMortalityBirds += (record.mortality.birds || 0);
+                    days[dayIndex].totalMortalityWeight += (record.mortality.weight || 0);
+                    days[dayIndex].totalMortalityAmount += (record.mortality.amount || 0);
+                }
+
+                if (record.customer) {
+                    days[dayIndex].customers.add(record.customer);
+                }
+                if (record.vehicleNumber) {
+                    days[dayIndex].vehicles.add(record.vehicleNumber);
+                }
+                if (record.driver) {
+                    days[dayIndex].drivers.add(record.driver);
                 }
             }
         });
@@ -585,6 +629,9 @@ export const getDailyStats = async (req, res, next) => {
         days.forEach(d => {
             d.margin = d.salesWeight > 0 ? d.netProfit / d.salesWeight : 0;
             d.margin = Number(d.margin.toFixed(2));
+            d.customers = Array.from(d.customers).join(', ') || '-';
+            d.vehicles = Array.from(d.vehicles).join(', ') || '-';
+            d.drivers = Array.from(d.drivers).join(', ') || '-';
         });
 
         const totalSalesWeight = days.reduce((acc, d) => acc + (d.salesWeight || 0), 0);
@@ -594,7 +641,13 @@ export const getDailyStats = async (req, res, next) => {
             salesAmount: days.reduce((acc, d) => acc + d.salesAmount, 0),
             purchaseAmount: days.reduce((acc, d) => acc + d.purchaseAmount, 0),
             salesWeight: totalSalesWeight,
-            margin: totalSalesWeight > 0 ? days.reduce((acc, d) => acc + d.netProfit, 0) / totalSalesWeight : 0
+            margin: totalSalesWeight > 0 ? days.reduce((acc, d) => acc + d.netProfit, 0) / totalSalesWeight : 0,
+            totalPurchaseBirds: days.reduce((acc, d) => acc + d.totalPurchaseBirds, 0),
+            totalPurchaseWeight: days.reduce((acc, d) => acc + d.totalPurchaseWeight, 0),
+            totalSalesBirds: days.reduce((acc, d) => acc + d.totalSalesBirds, 0),
+            totalMortalityBirds: days.reduce((acc, d) => acc + d.totalMortalityBirds, 0),
+            totalMortalityWeight: days.reduce((acc, d) => acc + d.totalMortalityWeight, 0),
+            totalMortalityAmount: days.reduce((acc, d) => acc + d.totalMortalityAmount, 0)
         };
         totals.margin = Number(totals.margin.toFixed(2));
 
