@@ -238,7 +238,7 @@ export const addConsume = async (req, res, next) => {
                 ledger = await Ledger.create({
                     name: 'FEED CONSUME',
                     group: group._id,
-                    ledgerType: 'general',
+                    ledgerType: 'other',
                     openingBalance: 0,
                     openingBalanceType: 'debit',
                     outstandingBalance: 0,
