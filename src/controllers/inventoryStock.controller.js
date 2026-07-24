@@ -14,13 +14,16 @@ import sendSMS from "../services/sendSMS.js";
 export const addPurchase = async (req, res, next) => {
     try {
         const type = req.body.inventoryType || "bird";
+        const feedLedgerId = type === 'feed' ? (req.body.ledgerId || req.body.vendorId) : req.body.ledgerId;
         const purchaseData = {
             ...req.body,
             type: req.body.type || "purchase", // Allow override for 'opening' stock
             inventoryType: type, // Default to bird for now, can be dynamic later
             supervisorId: req.user._id,
             date: req.body.date || new Date(),
-            birds: type === 'feed' ? 0 : (req.body.birds || 0)
+            birds: type === 'feed' ? 0 : (req.body.birds || 0),
+            ledgerId: feedLedgerId,
+            vendorId: type === 'feed' && feedLedgerId ? undefined : req.body.vendorId
         };
 
         // Check for duplicate purchase in last 5 seconds
@@ -33,6 +36,7 @@ export const addPurchase = async (req, res, next) => {
             rate: purchaseData.rate || 0,
             amount: purchaseData.amount || 0,
             vendorId: purchaseData.vendorId || null,
+            ledgerId: purchaseData.ledgerId || null,
             createdAt: { $gte: new Date(Date.now() - 5000) }
         });
         if (existingPurchase) {
@@ -51,8 +55,23 @@ export const addPurchase = async (req, res, next) => {
             }
         }
 
-        // --- Vendor Balance Update Logic ---
-        if (purchaseData.vendorId) {
+        // --- Vendor/Ledger Balance Update Logic ---
+        if (purchaseData.inventoryType === 'feed' && purchaseData.ledgerId) {
+            const ledger = await Ledger.findById(purchaseData.ledgerId);
+            if (ledger) {
+                const newBalance = addToBalance(
+                    ledger.outstandingBalance || 0,
+                    ledger.outstandingBalanceType || 'credit',
+                    Number(purchaseData.amount),
+                    'credit'
+                );
+
+                ledger.outstandingBalance = newBalance.amount;
+                ledger.outstandingBalanceType = newBalance.type;
+                ledger.updatedBy = req.user._id;
+                await ledger.save();
+            }
+        } else if (purchaseData.vendorId) {
             const vendor = await Vendor.findById(purchaseData.vendorId);
             if (vendor) {
                 // A purchase increases the amount we owe to the vendor (Credit)
@@ -77,6 +96,7 @@ export const addPurchase = async (req, res, next) => {
 
         const populatedStock = await InventoryStock.findById(stock._id)
             .populate("vendorId", "vendorName")
+            .populate("ledgerId", "name")
             .populate("vehicleId", "vehicleNumber")
             .populate("supervisorId", "name");
 
@@ -590,12 +610,37 @@ export const getStocks = async (req, res, next) => {
         }
 
         // 1. Fetch InventoryStock
-        const inventoryStocks = await InventoryStock.find(query)
-            .populate("vendorId", "vendorName companyName name")
-            .populate("customerId", "shopName ownerName")
-            .populate("vehicleId", "vehicleNumber")
-            .populate("supervisorId", "name")
-            .lean();
+        const inventoryStocksRaw = await InventoryStock.find(query).lean();
+        const legacyFeedLedgerIds = inventoryStocksRaw
+            .filter(stock => stock.inventoryType === 'feed' && stock.type === 'purchase' && !stock.ledgerId && stock.vendorId)
+            .map(stock => stock.vendorId);
+        const legacyFeedLedgers = legacyFeedLedgerIds.length
+            ? await Ledger.find({ _id: { $in: legacyFeedLedgerIds } }).select("name").lean()
+            : [];
+        const legacyFeedLedgerMap = new Map(legacyFeedLedgers.map(ledger => [ledger._id.toString(), ledger]));
+        const legacyFeedLedgerByStockId = new Map(
+            inventoryStocksRaw
+                .filter(stock => stock.inventoryType === 'feed' && stock.type === 'purchase' && !stock.ledgerId && stock.vendorId)
+                .map(stock => [stock._id.toString(), legacyFeedLedgerMap.get(stock.vendorId.toString())])
+                .filter(([, ledger]) => Boolean(ledger))
+        );
+
+        const inventoryStocks = await InventoryStock.populate(inventoryStocksRaw, [
+            { path: "vendorId", select: "vendorName companyName name" },
+            { path: "ledgerId", select: "name" },
+            { path: "customerId", select: "shopName ownerName" },
+            { path: "vehicleId", select: "vehicleNumber" },
+            { path: "supervisorId", select: "name" }
+        ]);
+
+        inventoryStocks.forEach(stock => {
+            if (stock.inventoryType === 'feed' && stock.type === 'purchase' && !stock.ledgerId) {
+                const legacyLedger = legacyFeedLedgerByStockId.get(stock._id.toString());
+                if (legacyLedger) {
+                    stock.ledgerId = legacyLedger;
+                }
+            }
+        });
 
         // 2. Fetch Trip Stocks if type is 'purchase' or undefined (showing all)
         let tripStocks = [];
@@ -714,43 +759,87 @@ export const updateStock = async (req, res, next) => {
         if (type === 'purchase' || type === 'opening') {
             const newAmount = Number(updates.amount);
             const oldAmount = Number(oldStock.amount);
+            const usesFeedLedger = oldStock.inventoryType === 'feed' && (oldStock.ledgerId || updates.ledgerId || updates.vendorId);
 
-            const oldVendorId = oldStock.vendorId?.toString();
-            const newVendorId = updates.vendorId?.toString();
+            if (usesFeedLedger) {
+                const oldLedgerId = oldStock.ledgerId?.toString();
+                const newLedgerId = (updates.ledgerId || updates.vendorId || oldLedgerId)?.toString();
 
-            const isVendorChanged = newVendorId && newVendorId !== oldVendorId;
-            const isAmountChanged = newAmount !== oldAmount;
+                const isLedgerChanged = newLedgerId && newLedgerId !== oldLedgerId;
+                const isAmountChanged = newAmount !== oldAmount;
 
-            if (isVendorChanged || isAmountChanged) {
-                // A. Revert Old Vendor Balance
-                if (oldVendorId) {
-                    const oldVendor = await Vendor.findById(oldVendorId);
-                    if (oldVendor) {
-                        const revertedBalance = addToBalance(
-                            oldVendor.outstandingBalance || 0,
-                            oldVendor.outstandingBalanceType || 'credit',
-                            oldAmount,
-                            'debit'
-                        );
-                        oldVendor.outstandingBalance = revertedBalance.amount;
-                        oldVendor.outstandingBalanceType = revertedBalance.type;
-                        await oldVendor.save();
+                if (isLedgerChanged || isAmountChanged) {
+                    if (oldLedgerId) {
+                        const oldLedger = await Ledger.findById(oldLedgerId);
+                        if (oldLedger) {
+                            const revertedBalance = addToBalance(
+                                oldLedger.outstandingBalance || 0,
+                                oldLedger.outstandingBalanceType || 'credit',
+                                oldAmount,
+                                'debit'
+                            );
+                            oldLedger.outstandingBalance = revertedBalance.amount;
+                            oldLedger.outstandingBalanceType = revertedBalance.type;
+                            await oldLedger.save();
+                        }
+                    }
+
+                    if (newLedgerId) {
+                        const newLedger = await Ledger.findById(newLedgerId);
+                        if (newLedger) {
+                            const updatedBalance = addToBalance(
+                                newLedger.outstandingBalance || 0,
+                                newLedger.outstandingBalanceType || 'credit',
+                                newAmount,
+                                'credit'
+                            );
+                            newLedger.outstandingBalance = updatedBalance.amount;
+                            newLedger.outstandingBalanceType = updatedBalance.type;
+                            await newLedger.save();
+                        }
                     }
                 }
 
-                // B. Apply New Vendor Balance
-                if (newVendorId) {
-                    const newVendor = await Vendor.findById(newVendorId);
-                    if (newVendor) {
-                        const updatedBalance = addToBalance(
-                            newVendor.outstandingBalance || 0,
-                            newVendor.outstandingBalanceType || 'credit',
-                            newAmount,
-                            'credit'
-                        );
-                        newVendor.outstandingBalance = updatedBalance.amount;
-                        newVendor.outstandingBalanceType = updatedBalance.type;
-                        await newVendor.save();
+                updates.ledgerId = newLedgerId;
+                updates.vendorId = undefined;
+            } else {
+                const oldVendorId = oldStock.vendorId?.toString();
+                const newVendorId = updates.vendorId?.toString();
+
+                const isVendorChanged = newVendorId && newVendorId !== oldVendorId;
+                const isAmountChanged = newAmount !== oldAmount;
+
+                if (isVendorChanged || isAmountChanged) {
+                    // A. Revert Old Vendor Balance
+                    if (oldVendorId) {
+                        const oldVendor = await Vendor.findById(oldVendorId);
+                        if (oldVendor) {
+                            const revertedBalance = addToBalance(
+                                oldVendor.outstandingBalance || 0,
+                                oldVendor.outstandingBalanceType || 'credit',
+                                oldAmount,
+                                'debit'
+                            );
+                            oldVendor.outstandingBalance = revertedBalance.amount;
+                            oldVendor.outstandingBalanceType = revertedBalance.type;
+                            await oldVendor.save();
+                        }
+                    }
+
+                    // B. Apply New Vendor Balance
+                    if (newVendorId) {
+                        const newVendor = await Vendor.findById(newVendorId);
+                        if (newVendor) {
+                            const updatedBalance = addToBalance(
+                                newVendor.outstandingBalance || 0,
+                                newVendor.outstandingBalanceType || 'credit',
+                                newAmount,
+                                'credit'
+                            );
+                            newVendor.outstandingBalance = updatedBalance.amount;
+                            newVendor.outstandingBalanceType = updatedBalance.type;
+                            await newVendor.save();
+                        }
                     }
                 }
             }
@@ -913,6 +1002,7 @@ export const updateStock = async (req, res, next) => {
             updatedBy: req.user._id
         }, { new: true })
             .populate("vendorId", "vendorName")
+            .populate("ledgerId", "name")
             .populate("customerId", "shopName ownerName contact")
             .populate("vehicleId", "vehicleNumber")
             .populate("supervisorId", "name");
@@ -1238,8 +1328,22 @@ export const deleteStock = async (req, res, next) => {
         // ---------------------------------------------------------
         if (type === 'purchase' || type === 'opening') {
             const oldAmount = Number(oldStock.amount) || 0;
+            const oldLedgerId = oldStock.inventoryType === 'feed' ? oldStock.ledgerId?.toString() : null;
             const oldVendorId = oldStock.vendorId?.toString();
-            if (oldVendorId && oldAmount > 0) {
+            if (oldLedgerId && oldAmount > 0) {
+                const oldLedger = await Ledger.findById(oldLedgerId);
+                if (oldLedger) {
+                    const revertedBalance = addToBalance(
+                        oldLedger.outstandingBalance || 0,
+                        oldLedger.outstandingBalanceType || 'credit',
+                        oldAmount,
+                        'debit'
+                    );
+                    oldLedger.outstandingBalance = revertedBalance.amount;
+                    oldLedger.outstandingBalanceType = revertedBalance.type;
+                    await oldLedger.save();
+                }
+            } else if (oldVendorId && oldAmount > 0) {
                 const oldVendor = await Vendor.findById(oldVendorId);
                 if (oldVendor) {
                     const revertedBalance = addToBalance(

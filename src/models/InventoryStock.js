@@ -46,6 +46,7 @@ const inventoryStockSchema = new mongoose.Schema({
 
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
   customerId: { type: mongoose.Schema.Types.ObjectId, ref: "Customer" },
+  ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledger" },
 
   // Ledger tracking for Sales/Receipts
   cashLedgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledger" },
