@@ -1467,7 +1467,7 @@ export const getPurchaseSalesReport = async (req, res, next) => {
 
         const reportData = [];
 
-        // Helper to extract PAN from GST
+        // Helpers to display GST/PAN consistently when a customer stores either value.
         const extractPanFromGst = (gst) => {
             if (!gst) return '-';
             const cleanGst = gst.trim().toUpperCase();
@@ -1475,6 +1475,18 @@ export const getPurchaseSalesReport = async (req, res, next) => {
                 return cleanGst.substring(2, 12);
             }
             return '-';
+        };
+
+        const splitGstOrPan = (value) => {
+            if (!value) return { gstNo: '-', panNo: '-' };
+            const cleanValue = value.trim().toUpperCase();
+            if (cleanValue.length === 15) {
+                return { gstNo: cleanValue, panNo: extractPanFromGst(cleanValue) };
+            }
+            if (cleanValue.length === 10) {
+                return { gstNo: '-', panNo: cleanValue };
+            }
+            return { gstNo: cleanValue, panNo: '-' };
         };
 
         if (isPurchase) {
@@ -1627,12 +1639,13 @@ export const getPurchaseSalesReport = async (req, res, next) => {
             trips.forEach(trip => {
                 if (trip.sales) {
                     trip.sales.forEach((s, idx) => {
+                        if (s.isReceipt || (!(s.birds > 0) && !(s.weight > 0) && !(s.amount > 0))) return;
+
                         const client = s.client;
                         if (!client) return;
 
                         const clientName = client.shopName || client.ownerName || '-';
-                        const clientGst = client.gstOrPanNumber || '-';
-                        const clientPan = extractPanFromGst(client.gstOrPanNumber);
+                        const { gstNo: clientGst, panNo: clientPan } = splitGstOrPan(client.gstOrPanNumber);
 
                         reportData.push({
                             id: `trip_sale_${trip._id}_${idx}`,
@@ -1672,8 +1685,7 @@ export const getPurchaseSalesReport = async (req, res, next) => {
             stocks.forEach(stock => {
                 const customer = stock.customerId;
                 const cName = customer ? customer.shopName || customer.ownerName : '-';
-                const cGst = customer ? customer.gstOrPanNumber || '-' : '-';
-                const cPan = customer ? extractPanFromGst(customer.gstOrPanNumber) : '-';
+                const { gstNo: cGst, panNo: cPan } = splitGstOrPan(customer?.gstOrPanNumber);
 
                 reportData.push({
                     id: `stock_sale_${stock._id}`,
@@ -1711,8 +1723,7 @@ export const getPurchaseSalesReport = async (req, res, next) => {
                 const customer = sale.customer;
                 if (!customer) return;
 
-                const cGst = customer.gstOrPanNumber || '-';
-                const cPan = extractPanFromGst(customer.gstOrPanNumber);
+                const { gstNo: cGst, panNo: cPan } = splitGstOrPan(customer.gstOrPanNumber);
 
                 const amt = sale.sales?.amount || 0;
                 const birds = sale.sales?.birds || 0;
