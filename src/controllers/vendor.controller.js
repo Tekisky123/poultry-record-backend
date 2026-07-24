@@ -4,6 +4,7 @@ import Trip from "../models/Trip.js";
 import Voucher from "../models/Voucher.js";
 import IndirectSale from "../models/IndirectSale.js";
 import InventoryStock from "../models/InventoryStock.js";
+import Ledger from "../models/Ledger.js";
 import { successResponse } from "../utils/responseHandler.js";
 import AppError from "../utils/AppError.js";
 
@@ -263,7 +264,7 @@ export const getVendorLedger = async (req, res, next) => {
             voucherQuery.voucherType = 'Purchase';
         }
 
-        const vouchers = await Voucher.find(voucherQuery).lean();
+        const vouchers = await Voucher.find(voucherQuery).populate('account', 'name').lean();
 
         // 3. Fetch Indirect Sales
         const indirectSaleQuery = {
@@ -536,6 +537,27 @@ export const getVendorLedger = async (req, res, next) => {
             });
         }
 
+        const getVoucherModeName = async (voucher) => {
+            if (voucher.account?.name) return voucher.account.name;
+
+            if (voucher.account) {
+                const accountLedger = await Ledger.findById(voucher.account).select('name').lean();
+                if (accountLedger?.name) return accountLedger.name;
+            }
+
+            if (voucher.voucherType === 'Payment') {
+                const accountEntry = voucher.entries?.find(e => e.account !== vendor.vendorName && (e.creditAmount || 0) > 0);
+                if (accountEntry?.account) return accountEntry.account;
+            }
+
+            if (voucher.voucherType === 'Receipt') {
+                const accountEntry = voucher.entries?.find(e => e.account !== vendor.vendorName && (e.debitAmount || 0) > 0);
+                if (accountEntry?.account) return accountEntry.account;
+            }
+
+            return voucher.voucherType === 'Payment' ? 'PAYMENT' : (voucher.voucherType === 'Receipt' ? 'RECEIPT' : 'JOURNAL');
+        };
+
         // Process Vouchers
         for (const voucher of vouchers) {
             let amount = 0;
@@ -563,12 +585,15 @@ export const getVendorLedger = async (req, res, next) => {
             }
 
             if (amount > 0) {
+                const paymentMode = await getVoucherModeName(voucher);
+
                 ledgerEntries.push({
                     _id: voucher._id,
                     uniqueId: `VOUCHER-${voucher._id}`,
                     date: voucher.date,
                     type: voucher.voucherType.toUpperCase(),
-                    particulars: voucher.voucherType === 'Payment' ? 'PAYMENT' : (voucher.voucherType === 'Receipt' ? 'RECEIPT' : 'JOURNAL'),
+                    particulars: paymentMode,
+                    paymentMode,
                     vehicleNo: '-',
                     driverName: '-',
                     supervisor: '-',
