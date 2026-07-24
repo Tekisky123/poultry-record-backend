@@ -2561,7 +2561,7 @@ export const updateTransfer = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
-        if (trip.status === 'completed') {
+        if (req.user.role === 'supervisor' && trip.status === 'completed') {
             throw new AppError('Cannot edit a transfer on a completed trip', 403);
         }
 
@@ -2621,7 +2621,7 @@ export const updateTransfer = async (req, res, next) => {
         if (receiverTripId) {
             const receiverTrip = await Trip.findById(receiverTripId);
             if (receiverTrip) {
-                if (receiverTrip.status === 'completed') {
+                if (receiverTrip.status === 'completed' && req.user.role === 'supervisor') {
                     // The receiver is already completed — surface a warning but don't fail.
                     // Original trip is already updated; just skip receiver sync.
                     console.warn(`updateTransfer: receiver trip ${receiverTripId} is completed — skipping purchase sync.`);
