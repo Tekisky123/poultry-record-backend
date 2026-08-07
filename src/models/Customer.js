@@ -86,6 +86,13 @@ const customerSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group',
     // required: [true, 'Group is required']
+  },
+  tdsApplicable: {
+    type: Boolean,
+    default: false
+  },
+  tdsUpdatedAt: {
+    type: Date
   }
 }, {
   timestamps: true,

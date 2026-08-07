@@ -96,6 +96,7 @@ export const addCustomer = async (req, res, next) => {
 
         const customer = new Customer({
             ...customerData,
+            tdsUpdatedAt: customerData.tdsApplicable ? new Date() : undefined,
             group: groupId, // Use automatically assigned or provided group
             user: savedUser._id,
             createdBy: req.user._id,
@@ -245,6 +246,13 @@ export const updateCustomer = async (req, res, next) => {
             group: groupId, // Use automatically assigned or provided group
             updatedBy: req.user._id
         };
+
+        if (customerData.tdsApplicable !== undefined && customerData.tdsApplicable !== customer.tdsApplicable) {
+            updateData.tdsApplicable = customerData.tdsApplicable;
+            if (customerData.tdsApplicable) {
+                updateData.tdsUpdatedAt = new Date();
+            }
+        }
 
         // Handle opening balance update with sync logic
         const isOpeningBalanceChanged = customerData.openingBalance !== undefined || customerData.openingBalanceType !== undefined;
@@ -624,6 +632,16 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         // Process Stock Sales (Manage Stocks)
         const stockSaleParticularsTitle = req.user.role === 'customer' ? 'STOCK_PURCHASE' : 'STOCK_SALE';
 
+        const isTdsApplicableForDate = (date) => {
+            if (!customer.tdsApplicable) return false;
+            if (!customer.tdsUpdatedAt) return true;
+            const transactionDate = new Date(date);
+            transactionDate.setHours(0, 0, 0, 0);
+            const activationDate = new Date(customer.tdsUpdatedAt);
+            activationDate.setHours(0, 0, 0, 0);
+            return transactionDate >= activationDate;
+        };
+
         stockSales.forEach(stock => {
             let particulars = '';
             if (stock.type === 'sale') {
@@ -631,6 +649,8 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             } else if (stock.type === 'receipt') {
                 particulars = req.user.role === 'customer' ? 'PAYMENT' : 'RECEIPT';
             }
+
+            const tds = (stock.type === 'sale' && isTdsApplicableForDate(stock.date)) ? Number(((stock.amount || 0) * 0.001).toFixed(2)) : 0;
 
             // Create main entry
             ledgerEntries.push({
@@ -648,6 +668,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 avgWeight: stock.birds > 0 ? (stock.weight / stock.birds) : 0,
                 rate: stock.rate || 0,
                 amount: stock.amount || 0,
+                tds: tds,
                 outstandingBalance: 0, // Calculated later
                 trip: null,
                 isStockSale: true
@@ -721,6 +742,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         const saleParticularsTitle = req.user.role === 'customer' ? 'INDIRECT_PURCHASE' : 'INDIRECT_SALES';
         // Process Indirect Sales
         indirectSales.forEach(sale => {
+            const tds = isTdsApplicableForDate(sale.date) ? Number(((sale.sales?.amount || 0) * 0.001).toFixed(2)) : 0;
             // Check if it's a purchase from the customer's perspective (i.e. Company Sold to Customer)
             // Construct the entry
             ledgerEntries.push({
@@ -738,6 +760,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                 avgWeight: sale.sales?.avgWeight || 0,
                 rate: sale.sales?.rate || 0,
                 amount: sale.sales?.amount || 0,
+                tds: tds,
                 outstandingBalance: 0, // Calculated later
                 trip: null, // No trip object for indirect
                 isIndirect: true
@@ -782,6 +805,8 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         ? (sale.balanceForSale || sale.outstandingBalance || 0) // Receipt: starting balance
                         : (sale.balanceForSale || sale.outstandingBalance || 0); // Sale: balance after adding amount
 
+                    const tds = (particulars === 'SALES' && isTdsApplicableForDate(sale.timestamp)) ? Number(((sale.amount || 0) * 0.001).toFixed(2)) : 0;
+
                     // Use unique IDs for each entry type to prevent duplicates
                     ledgerEntries.push({
                         _id: `sale_${sale._id}_${particulars}`,
@@ -798,6 +823,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
                         avgWeight: sale.avgWeight || 0,
                         rate: sale.rate || 0,
                         amount: sale.amount || 0,
+                        tds: tds,
                         outstandingBalance: mainEntryBalance,
                         trip: {
                             _id: trip._id,
@@ -1158,6 +1184,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
             totalBirds: ledgerEntries.reduce((sum, entry) => sum + (entry.isIndirect || entry.isStockSale || entry.particulars === 'SALES' || entry.particulars === 'PURCHASE' ? entry.birds : 0), 0),
             totalWeight: ledgerEntries.reduce((sum, entry) => sum + entry.weight, 0),
             totalAmount: ledgerEntries.reduce((sum, entry) => sum + (['SALES', 'PURCHASE', 'STOCK_SALE', 'STOCK_PURCHASE', 'INDIRECT_SALES', 'INDIRECT_PURCHASE'].includes(entry.particulars) ? entry.amount : 0), 0),
+            totalTds: ledgerEntries.reduce((sum, entry) => sum + (entry.tds || 0), 0),
             totalReceipt: ledgerEntries.reduce((sum, entry) => {
                 if (receiptParticulars.includes(entry.particulars)) {
                     return sum + (entry.amount || 0);
