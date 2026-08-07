@@ -1207,12 +1207,11 @@ export const getLedgerTransactions = async (req, res, next) => {
                         }
                     }
                 });
-            }
-
-            if (debit > 0 || credit > 0) {
+            }            if (debit > 0 || credit > 0) {
                 transactions.push({
                     _id: v._id,
                     date: v.date,
+                    createdAt: v.createdAt,
                     type: v.voucherType,
                     refNo: `VCH-${refNo}`,
                     description,
@@ -1244,7 +1243,8 @@ export const getLedgerTransactions = async (req, res, next) => {
                     if (isRelevant && (debit > 0)) {
                         transactions.push({
                             _id: t._id,
-                            date: t.date,
+                            date: t.date || t.createdAt,
+                            createdAt: t.createdAt,
                             type: 'Receipt',
                             refNo: t.tripId,
                             description: `Trip Bill: ${s.billNumber} (${s.birds} birds) - ${s.client?.shopName || s.client?.ownerName || s.product || 'Bird Sale'}`,
@@ -1285,7 +1285,8 @@ export const getLedgerTransactions = async (req, res, next) => {
             if (isRelevant && (debit > 0)) {
                 transactions.push({
                     _id: s._id,
-                    date: s.date,
+                    date: s.date || s.createdAt,
+                    createdAt: s.createdAt,
                     type: s.type === 'receipt' ? 'Receipt' : s.type === 'sale' ? 'Receipt' : 'Stock Sale',
                     refNo: s.billNumber || s.refNo || '-',
                     description: s.type === 'receipt'
@@ -1318,6 +1319,7 @@ export const getLedgerTransactions = async (req, res, next) => {
                     { 'parties.partyId': id }
                 ]
             };
+
             const preTripQuery = {
                 date: { $lt: queryStartDate },
                 $or: [
@@ -1398,8 +1400,15 @@ export const getLedgerTransactions = async (req, res, next) => {
             });
         }
 
-        // Sort transactions
-        transactions.sort((a, b) => new Date(a.date) - new Date(b.date));
+        // Sort transactions chronologically by Date and entry creation time
+        transactions.sort((a, b) => {
+            const timeA = new Date(a.date || a.createdAt || 0).getTime();
+            const timeB = new Date(b.date || b.createdAt || 0).getTime();
+            if (timeA !== timeB) return timeA - timeB;
+            const createA = new Date(a.createdAt || 0).getTime();
+            const createB = new Date(b.createdAt || 0).getTime();
+            return createA - createB;
+        });
 
         // Calculate Running Balance
         let currentBalance = signedOpening;

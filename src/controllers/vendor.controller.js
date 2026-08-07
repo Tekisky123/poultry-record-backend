@@ -355,14 +355,7 @@ export const getVendorLedger = async (req, res, next) => {
                 const purchases = trip.purchases.filter(p => p.supplier && p.supplier.toString() === id);
                 for (const purchase of purchases) {
                     let tripAmount = purchase.amount || 0;
-
-                    // Logic to deduct TDS from previous trips calculation if applicable
-                    if (isTdsApplicableForDate(trip.date)) {
-                        const tdsAmount = tripAmount * 0.001; // 0.1% TDS
-                        tripAmount -= tdsAmount;
-                    }
-
-                    periodOpeningBalance += tripAmount; // Purchase increases payable (Credit), net of TDS
+                    periodOpeningBalance += tripAmount; // Purchase increases payable (Credit)
                 }
             }
 
@@ -402,13 +395,6 @@ export const getVendorLedger = async (req, res, next) => {
 
             for (const sale of prevIndirectSales) {
                 let saleAmount = sale.summary?.totalPurchaseAmount || 0;
-
-                // Deduct TDS from previous indirect sales if applicable
-                if (isTdsApplicableForDate(sale.date)) {
-                    const tdsAmount = saleAmount * 0.001; // 0.1% TDS
-                    saleAmount -= tdsAmount;
-                }
-
                 periodOpeningBalance += saleAmount;
             }
 
@@ -421,11 +407,6 @@ export const getVendorLedger = async (req, res, next) => {
 
             for (const stock of prevStocks) {
                 let stockAmount = stock.amount || 0;
-                // Add TDS logic if needed here too, assuming consistent 
-                if (isTdsApplicableForDate(stock.date)) {
-                    const tdsAmount = stockAmount * 0.001;
-                    stockAmount -= tdsAmount;
-                }
                 periodOpeningBalance += stockAmount;
             }
         }
@@ -673,9 +654,6 @@ export const getVendorLedger = async (req, res, next) => {
         const transactionEntries = ledgerEntries.map(entry => {
             if (entry.type === 'PURCHASE') {
                 runningBalance += entry.amount; // Credit (Payable increases)
-                if (entry.lessTDS) {
-                    runningBalance -= entry.lessTDS; // Reduce payable by TDS amount
-                }
             } else if (entry.uniqueId === 'OP_BAL_INJECTED') {
                  if (entry.amountType === 'credit') runningBalance += entry.amount;
                  else runningBalance -= entry.amount;

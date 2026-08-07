@@ -53,6 +53,9 @@ export const addPurchase = async (req, res, next) => {
             if (!purchaseData.weight || !purchaseData.rate) {
                 throw new AppError("Weight/Quantity and Rate are required", 400);
             }
+            if (type === 'feed' || purchaseData.inventoryType === 'feed') {
+                purchaseData.amount = Number((Number(purchaseData.weight || 0) * Number(purchaseData.rate || 0)).toFixed(2));
+            }
         }
 
         // --- Vendor/Ledger Balance Update Logic ---
