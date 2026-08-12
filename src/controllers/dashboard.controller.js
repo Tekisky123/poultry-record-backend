@@ -74,38 +74,23 @@ const mergeToBalanceMap = (map, ledgerName, debit = 0, credit = 0) => {
 const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
     try {
         const query = { isActive: true };
-        const tripQuery = { isActive: true }; // Assuming trip has isActive or similar, check Trip model but for now assume basics.
-        // Actually Trip usually doesn't have isActive, just status. 
+        let sDate = null;
+        let eDate = null;
 
-        if (startDate || endDate) {
-            query.date = {};
-            if (startDate) query.date.$gte = new Date(startDate);
-            if (endDate) query.date.$lte = new Date(endDate);
+        if (startDate) {
+            sDate = new Date(startDate);
+            sDate.setHours(0, 0, 0, 0);
+        }
+        if (endDate) {
+            eDate = new Date(endDate);
+            eDate.setHours(23, 59, 59, 999);
         }
 
-        // 1. Voucher Aggregation (Fastest for massive data)
-        const voucherBalances = await Voucher.aggregate([
-            { $match: query },
-            { $unwind: '$entries' },
-            {
-                $group: {
-                    _id: '$entries.account',
-                    debitTotal: { $sum: { $ifNull: ['$entries.debitAmount', 0] } },
-                    creditTotal: { $sum: { $ifNull: ['$entries.creditAmount', 0] } }
-                }
-            }
-        ]);
-
-        const map = new Map();
-        voucherBalances.forEach(item => {
-            if (item._id) {
-                const normalizedName = item._id.toString().trim().toLowerCase();
-                map.set(normalizedName, {
-                    debitTotal: item.debitTotal || 0,
-                    creditTotal: item.creditTotal || 0
-                });
-            }
-        });
+        if (sDate || eDate) {
+            query.date = {};
+            if (sDate) query.date.$gte = sDate;
+            if (eDate) query.date.$lte = eDate;
+        }
 
         // Map ID -> Name for lookups
         const ledgerNameMap = new Map();
@@ -113,13 +98,59 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
             if (l._id && l.name) ledgerNameMap.set(l._id.toString(), l.name);
         });
 
-        // 2. Process Trips (Date filtering on createdAt)
+        const resolveLedgerName = (nameOrId) => {
+            if (!nameOrId) return null;
+            const str = nameOrId.toString();
+            if (ledgerNameMap.has(str)) return ledgerNameMap.get(str);
+            return str;
+        };
+
+        // 1. Process Vouchers (Payment, Receipt, Journal, Contra)
+        const vouchers = await Voucher.find(query).lean();
+        const map = new Map();
+
+        vouchers.forEach(v => {
+            if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+                const isPayment = v.voucherType === 'Payment';
+                if (v.account) {
+                    const accName = resolveLedgerName(v.account);
+                    const totalAmount = (v.parties || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+                    if (isPayment) mergeToBalanceMap(map, accName, 0, totalAmount);
+                    else mergeToBalanceMap(map, accName, totalAmount, 0);
+                }
+                if (v.parties) {
+                    v.parties.forEach(p => {
+                        if (p.partyId) {
+                            const partyName = resolveLedgerName(p.partyId);
+                            if (isPayment) mergeToBalanceMap(map, partyName, Number(p.amount) || 0, 0);
+                            else mergeToBalanceMap(map, partyName, 0, Number(p.amount) || 0);
+                        }
+                    });
+                }
+            } else {
+                if (v.entries && v.entries.length > 0) {
+                    v.entries.forEach(e => {
+                        if (e.account) {
+                            const accName = resolveLedgerName(e.account);
+                            mergeToBalanceMap(map, accName, Number(e.debitAmount) || 0, Number(e.creditAmount) || 0);
+                        }
+                    });
+                }
+            }
+        });
+
+        // 2. Process Trips (Date filtering on date / createdAt)
         const tripDateQuery = {};
-        if (startDate) tripDateQuery.$gte = new Date(startDate);
-        if (endDate) tripDateQuery.$lte = new Date(endDate);
+        if (sDate) tripDateQuery.$gte = sDate;
+        if (eDate) tripDateQuery.$lte = eDate;
 
         let tQuery = {};
-        if (startDate || endDate) tQuery.createdAt = tripDateQuery;
+        if (sDate || eDate) {
+            tQuery.$or = [
+                { date: tripDateQuery },
+                { createdAt: tripDateQuery }
+            ];
+        }
 
         const trips = await Trip.find(tQuery).lean();
 
@@ -142,11 +173,11 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
 
         // 3. Process Stocks (Date filtering on date)
         const stockDateQuery = {};
-        if (startDate) stockDateQuery.$gte = new Date(startDate);
-        if (endDate) stockDateQuery.$lte = new Date(endDate);
+        if (sDate) stockDateQuery.$gte = sDate;
+        if (eDate) stockDateQuery.$lte = eDate;
 
         let sQuery = {};
-        if (startDate || endDate) sQuery.date = stockDateQuery;
+        if (sDate || eDate) sQuery.date = stockDateQuery;
 
         const stocks = await InventoryStock.find(sQuery).lean();
 
@@ -189,14 +220,30 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
     }
 };
 
-const calculateLedgerBalance = (ledgerName, balanceMap) => {
+const calculateLedgerBalance = (ledger, balanceMap) => {
     try {
+        const ledgerName = typeof ledger === 'string' ? ledger : (ledger?.name || '');
         const normalizedName = ledgerName.toString().trim().toLowerCase();
         const balance = balanceMap.get(normalizedName) || { debitTotal: 0, creditTotal: 0 };
+
+        let opDebit = 0;
+        let opCredit = 0;
+        if (typeof ledger === 'object' && ledger && ledger.openingBalance) {
+            const amt = Number(ledger.openingBalance) || 0;
+            if (ledger.openingBalanceType === 'credit') {
+                opCredit = amt;
+            } else {
+                opDebit = amt;
+            }
+        }
+
+        const debitTotal = balance.debitTotal + opDebit;
+        const creditTotal = balance.creditTotal + opCredit;
+
         return {
-            debitTotal: balance.debitTotal,
-            creditTotal: balance.creditTotal,
-            balance: balance.debitTotal - balance.creditTotal
+            debitTotal,
+            creditTotal,
+            balance: debitTotal - creditTotal
         };
     } catch (error) {
         return { debitTotal: 0, creditTotal: 0, balance: 0 };
@@ -212,7 +259,7 @@ const calculateGroupBalance = async (group, balanceMap, ledgerGroupMap) => {
     const ledgers = ledgerGroupMap.get(groupId.toString()) || [];
 
     for (const ledger of ledgers) {
-        const ledgerBalance = calculateLedgerBalance(ledger.name, balanceMap);
+        const ledgerBalance = calculateLedgerBalance(ledger, balanceMap);
         totalDebit += ledgerBalance.debitTotal;
         totalCredit += ledgerBalance.creditTotal;
 
@@ -302,7 +349,7 @@ const getOpeningStockValue = (combinedStocks, inventoryType, startDate, endDate)
     if (typeStocks.length > 0) {
         const allTypeStocks = combinedStocks.filter(s => s.inventoryType === inventoryType);
         const firstOpStock = allTypeStocks.find(s => s.type === 'opening');
-        
+
         typeStocks.forEach(s => {
             const date = new Date(s.date);
             if (date >= sDate && date <= eDate) {
@@ -550,13 +597,13 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name.includes('LIVE POULTRY BIRDS') && inClosing) targetValue = metricClosingStock;
                     else if (name === 'PURCHASE ACCOUNTS') {
                         targetValue = metricPurchase + metricFeedPurchase;
-                        
+
                         const vendorNodes = [];
                         let vendorSum = 0;
-                        
+
                         allVendors.forEach(v => {
                             let amount = 0;
-                            
+
                             // Trips
                             trips.forEach(t => {
                                 const tDate = new Date(t.date);
@@ -589,7 +636,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                                     }
                                 }
                             });
-                            
+
                             if (amount > 0) {
                                 vendorSum += amount;
                                 vendorNodes.push({
@@ -606,7 +653,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                                 });
                             }
                         });
-                        
+
                         const diff = targetValue - vendorSum;
                         if (Math.abs(diff) >= 0.01) {
                             vendorNodes.push({
@@ -622,18 +669,18 @@ export const getProfitAndLoss = async (req, res, next) => {
                                 ledgers: []
                             });
                         }
-                        
+
                         g.children = vendorNodes;
                     }
                     else if (name === 'SALES ACCOUNTS') {
                         targetValue = metricSales;
-                        
+
                         const customerNodes = [];
                         let customerSum = 0;
-                        
+
                         allCustomers.forEach(c => {
                             let amount = 0;
-                            
+
                             // Trips
                             trips.forEach(t => {
                                 const tDate = new Date(t.date);
@@ -666,7 +713,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                                     }
                                 }
                             });
-                            
+
                             if (amount > 0) {
                                 customerSum += amount;
                                 customerNodes.push({
@@ -683,7 +730,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                                 });
                             }
                         });
-                        
+
                         const diff = targetValue - customerSum;
                         if (Math.abs(diff) >= 0.01) {
                             customerNodes.push({
@@ -699,7 +746,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                                 ledgers: []
                             });
                         }
-                        
+
                         g.children = customerNodes;
                     }
                     else if (name === 'OPENING STOCK') targetValue = metricOpeningStock;
