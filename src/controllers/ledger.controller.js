@@ -1112,28 +1112,48 @@ export const getLedgerTransactions = async (req, res, next) => {
             let refNo = v.voucherNumber;
 
             // Determine Debit/Credit for this ledger
-            if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+            if (v.voucherType === 'Payment' || v.voucherType === 'Receipt' || v.voucherType === 'Journal') {
                 // If ledger is the ACCOUNT (Header)
-                // e.g. Payment made FROM Cash (this ledger) TO Vendor
+                // e.g. Payment made FROM Cash/Bank (this ledger) TO Vendor/Parties
                 if (v.account && getObjectIdStr(v.account) === id.toString()) {
-                    const totalAmount = v.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
-                    if (v.voucherType === 'Payment') {
-                        credit += totalAmount;
-                    } else {
-                        debit += totalAmount;
-                    }
-
-                    // For Cash/Bank Ledger (Account), the "Particulars" should be the Party Name (Vendor/Expense)
                     if (v.parties && v.parties.length > 0) {
-                        const firstParty = v.parties[0].partyId; // This is populated object
-                        if (v.parties.length === 1 && firstParty) {
-                            // Use shopName for customer, vendorName for vendor, name for ledger
-                            description = firstParty.shopName || firstParty.vendorName || firstParty.name || 'Unknown Party';
+                        const isNewVoucher = Boolean(v.isMultiPartyDisplay) || (v.parties && v.parties.length > 1) || (v.createdAt && new Date(v.createdAt) >= new Date('2026-08-15T00:00:00.000Z'));
+                        if (isNewVoucher) {
+                            v.parties.forEach(p => {
+                                const partyObj = p.partyId;
+                                const partyName = p.partyName || (partyObj ? (partyObj.shopName || partyObj.vendorName || partyObj.name || partyObj.ownerName) : '') || 'Party';
+                                const pAmount = p.amount || 0;
+                                const isPayment = v.voucherType === 'Payment' || v.voucherType === 'Journal';
+                                
+                                transactions.push({
+                                    _id: v._id,
+                                    date: v.date,
+                                    createdAt: v.createdAt,
+                                    type: v.voucherType,
+                                    refNo: `VCH-${refNo}`,
+                                    description: partyName,
+                                    debit: isPayment ? 0 : pAmount,
+                                    credit: isPayment ? pAmount : 0,
+                                    source: 'voucher',
+                                    narration: v.narration || ''
+                                });
+                            });
+                            return; // Successfully handled header account for multi-parties
                         } else {
-                            description = `Multiple Accounts (${v.parties.length})`;
+                            // Legacy display for old vouchers
+                            const totalAmount = v.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
+                            if (v.voucherType === 'Payment') {
+                                credit += totalAmount;
+                            } else {
+                                debit += totalAmount;
+                            }
+                            const firstParty = v.parties[0].partyId;
+                            if (v.parties.length === 1 && firstParty) {
+                                description = firstParty.shopName || firstParty.vendorName || firstParty.name || 'Unknown Party';
+                            } else {
+                                description = `Multiple Accounts (${v.parties.length})`;
+                            }
                         }
-                    } else {
-                        description = v.voucherType; // Fallback
                     }
                 }
 

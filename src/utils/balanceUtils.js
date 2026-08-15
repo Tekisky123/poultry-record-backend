@@ -119,38 +119,63 @@ export const populateVoucherParties = async (vouchers) => {
     for (const v of voucherList) {
         if (v && v.parties && v.parties.length > 0) {
             for (const p of v.parties) {
-                if (p.partyId && p.partyType) {
-                    // Check if already populated (object with name/shopName/vendorName)
-                    if (typeof p.partyId === 'object' && (p.partyId.shopName || p.partyId.vendorName || p.partyId.name)) {
-                        continue;
-                    }
-                    const partyIdStr = p.partyId._id ? p.partyId._id.toString() : p.partyId.toString();
+                if (p.partyId) {
+                    const partyIdStr = (typeof p.partyId === 'object' && p.partyId?._id) 
+                        ? p.partyId._id.toString() 
+                        : (typeof p.partyId === 'object' && p.partyId?.id)
+                            ? p.partyId.id.toString()
+                            : p.partyId.toString();
+
                     let partyDoc = null;
-                    if (p.partyType === 'customer') {
+                    let foundType = p.partyType;
+
+                    if (foundType === 'customer') {
                         partyDoc = await Customer.findById(partyIdStr).select('shopName ownerName').lean();
-                    } else if (p.partyType === 'vendor') {
+                    } else if (foundType === 'vendor') {
                         partyDoc = await Vendor.findById(partyIdStr).select('vendorName').lean();
-                    } else if (p.partyType === 'ledger') {
+                    } else if (foundType === 'ledger') {
                         partyDoc = await Ledger.findById(partyIdStr).select('name').lean();
-                    } else if (p.partyType === 'dieselStation') {
+                    } else if (foundType === 'dieselStation') {
                         const DieselStation = mongoose.model('DieselStation');
                         partyDoc = await DieselStation.findById(partyIdStr).select('name').lean();
                     }
+
+                    // Fallback search across all models if partyType was missing or invalid
+                    if (!partyDoc) {
+                        partyDoc = await Customer.findById(partyIdStr).select('shopName ownerName').lean();
+                        if (partyDoc) foundType = 'customer';
+                    }
+                    if (!partyDoc) {
+                        partyDoc = await Vendor.findById(partyIdStr).select('vendorName').lean();
+                        if (partyDoc) foundType = 'vendor';
+                    }
+                    if (!partyDoc) {
+                        partyDoc = await Ledger.findById(partyIdStr).select('name').lean();
+                        if (partyDoc) foundType = 'ledger';
+                    }
+                    if (!partyDoc) {
+                        const DieselStation = mongoose.model('DieselStation');
+                        partyDoc = await DieselStation.findById(partyIdStr).select('name').lean();
+                        if (partyDoc) foundType = 'dieselStation';
+                    }
+
                     if (partyDoc) {
+                        const resolvedName = partyDoc.shopName || partyDoc.vendorName || partyDoc.name || partyDoc.ownerName || 'Party';
+                        p.partyName = p.partyName || resolvedName;
+                        p.partyType = foundType;
                         p.partyId = {
                             _id: partyIdStr,
                             id: partyIdStr,
                             shopName: partyDoc.shopName,
                             ownerName: partyDoc.ownerName,
                             vendorName: partyDoc.vendorName,
-                            name: partyDoc.name
+                            name: resolvedName
                         };
-                    } else {
-                        p.partyId = {
-                            _id: partyIdStr,
-                            id: partyIdStr,
-                            name: 'Unknown Party'
-                        };
+                    } else if (typeof p.partyId === 'object') {
+                        const resolvedName = p.partyName || p.partyId.shopName || p.partyId.vendorName || p.partyId.name || p.partyId.ownerName;
+                        if (resolvedName) {
+                            p.partyName = resolvedName;
+                        }
                     }
                 }
             }

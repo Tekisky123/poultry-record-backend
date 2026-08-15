@@ -38,6 +38,11 @@ const voucherSchema = new mongoose.Schema({
       enum: ['customer', 'ledger', 'vendor', 'dieselStation'],
       required: false
     },
+    partyName: {
+      type: String,
+      required: false,
+      trim: true
+    },
     amount: {
       type: Number,
       default: 0,
@@ -87,6 +92,10 @@ const voucherSchema = new mongoose.Schema({
     trim: true,
     maxlength: [500, "Narration cannot exceed 500 characters"]
   },
+  isMultiPartyDisplay: {
+    type: Boolean,
+    default: false
+  },
   isActive: {
     type: Boolean,
     default: true
@@ -122,8 +131,8 @@ const voucherSchema = new mongoose.Schema({
 
 // Pre-save middleware to generate entries for Payment/Receipt vouchers and calculate totals
 voucherSchema.pre('save', async function(next) {
-  // For Payment/Receipt vouchers, generate entries from parties and account
-  if ((this.voucherType === 'Payment' || this.voucherType === 'Receipt') && this.parties && this.parties.length > 0 && this.account) {
+  // For Payment/Receipt/Journal vouchers, generate entries from parties and account
+  if ((this.voucherType === 'Payment' || this.voucherType === 'Receipt' || this.voucherType === 'Journal') && this.parties && this.parties.length > 0 && this.account) {
     this.entries = [];
     
     // Get account ledger name
@@ -154,8 +163,8 @@ voucherSchema.pre('save', async function(next) {
           partyName = station ? station.name : 'Diesel Station';
         }
         
-        if (this.voucherType === 'Payment') {
-          // Payment: Debit party, Credit account
+        if (this.voucherType === 'Payment' || this.voucherType === 'Journal') {
+          // Payment/Journal: Debit party, Credit account
           this.entries.push({
             account: partyName,
             debitAmount: party.amount,
@@ -174,8 +183,8 @@ voucherSchema.pre('save', async function(next) {
     
     // Add account entry
     const totalAmount = this.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
-    if (this.voucherType === 'Payment') {
-      // Payment: Credit account (money going out)
+    if (this.voucherType === 'Payment' || this.voucherType === 'Journal') {
+      // Payment/Journal: Credit account (money going out)
       this.entries.push({
         account: accountName,
         debitAmount: 0,

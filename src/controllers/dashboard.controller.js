@@ -182,10 +182,19 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
         const stocks = await InventoryStock.find(sQuery).lean();
 
         stocks.forEach(s => {
+            const amt = Number(s.amount) || ((Number(s.weight) || Number(s.feedQty) || 0) * (Number(s.rate) || 0)) || 0;
+
             // Expense
             if (s.expenseLedgerId) {
                 const name = ledgerNameMap.get(s.expenseLedgerId.toString());
-                if (name) mergeToBalanceMap(map, name, s.amount || 0, 0); // Debit Expense
+                if (name) mergeToBalanceMap(map, name, amt, 0); // Debit Expense
+            }
+
+            const stType = (s.type || '').toString().toLowerCase();
+            if (stType === 'consume' || stType === 'feed_consume' || stType === 'consumption') {
+                mergeToBalanceMap(map, 'FEED CONSUME', amt, 0);
+                mergeToBalanceMap(map, 'FEED CONSUMPTION', amt, 0);
+                mergeToBalanceMap(map, 'FEED CUNSUMTION', amt, 0);
             }
 
             // Cash/Online Payments/Receipts handling
@@ -456,6 +465,7 @@ export const getProfitAndLoss = async (req, res, next) => {
             let metricMortality = 0;
             let metricWeightLoss = 0;
             let metricTripExpenses = 0;
+            let metricFeedConsume = 0;
 
             let c_pWt = 0; let c_pAmt = 0; let c_outWt = 0;
             let prevDate = new Date(sDate.getTime() - 1);
@@ -489,7 +499,8 @@ export const getProfitAndLoss = async (req, res, next) => {
             });
 
             stocks.forEach(s => {
-                const sDateVal = new Date(s.date);
+                let sDateVal = s.date ? new Date(s.date) : (s.createdAt ? new Date(s.createdAt) : new Date(0));
+                if (isNaN(sDateVal.getTime())) sDateVal = new Date(0);
                 const isPeriod = sDateVal >= sDate && sDateVal <= eDate;
 
                 if (s.inventoryType === 'bird') {
@@ -512,8 +523,16 @@ export const getProfitAndLoss = async (req, res, next) => {
                     }
                 }
 
+                let amt = Number(s.amount) || ((Number(s.weight) || Number(s.feedQty) || Number(s.bags) || 0) * (Number(s.rate) || 0)) || 0;
+                const stType = (s.type || '').toString().toLowerCase();
+
+                if (stType === 'consume' || stType === 'feed_consume' || stType === 'consumption' || stType.includes('consume') || stType.includes('cunsum')) {
+                    if (isPeriod || !startDate) {
+                        metricFeedConsume += amt;
+                    }
+                }
+
                 if (isPeriod) {
-                    let amt = s.amount || (s.weight * s.rate) || 0;
                     if (s.type === 'purchase') {
                         if (s.inventoryType === 'feed') {
                             metricFeedPurchase += amt;
@@ -589,6 +608,9 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name.includes('BIRDS MORTALITY')) targetValue = metricMortality;
                     else if (name.includes('BIRDS WEIGHT LOSS')) targetValue = metricWeightLoss;
                     else if (name.includes('TRIP EXPENSES')) targetValue = metricTripExpenses;
+                    else if (name.includes('FEED CONSUMPTION') || name.includes('FEED CUNSUMTION') || name.includes('FEED CONSUME') || name.includes('FEED CONSUMED') || (name.includes('FEED') && (name.includes('CONSUM') || name.includes('CUNSUM')))) {
+                        targetValue = metricFeedConsume > 0 ? metricFeedConsume : oldBalance;
+                    }
                     else if (name === 'BIRDS STOCK' && inClosing) targetValue = metricBirdsClosingStock;
                     else if (name === 'FEED STOCK' && inClosing) targetValue = metricFeedClosingStock;
                     else if (name === 'BIRDS OPENING STOCK') targetValue = metricBirdsOpeningStock;

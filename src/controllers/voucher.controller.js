@@ -13,7 +13,7 @@ export const createVoucher = async (req, res, next) => {
     try {
         const { voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
 
-        const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt';
+        const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt' || voucherType === 'Journal';
 
         // Validate required fields based on voucher type
         if (isPaymentOrReceipt) {
@@ -76,22 +76,26 @@ export const createVoucher = async (req, res, next) => {
                     if (partyItem.partyType === 'customer') {
                         const customer = await Customer.findById(partyItem.partyId);
                         if (customer) {
-                            partyNames.push(customer.shopName || customer.ownerName || 'Customer');
+                            partyItem.partyName = partyItem.partyName || customer.shopName || customer.ownerName || 'Customer';
+                            partyNames.push(partyItem.partyName);
                         }
                     } else if (partyItem.partyType === 'ledger') {
                         const ledger = await Ledger.findById(partyItem.partyId);
                         if (ledger) {
-                            partyNames.push(ledger.name || 'Ledger');
+                            partyItem.partyName = partyItem.partyName || ledger.name || 'Ledger';
+                            partyNames.push(partyItem.partyName);
                         }
                     } else if (partyItem.partyType === 'vendor') {
                         const vendor = await Vendor.findById(partyItem.partyId);
                         if (vendor) {
-                            partyNames.push(vendor.vendorName || 'Vendor');
+                            partyItem.partyName = partyItem.partyName || vendor.vendorName || 'Vendor';
+                            partyNames.push(partyItem.partyName);
                         }
                     } else if (partyItem.partyType === 'dieselStation') {
                         const station = await DieselStation.findById(partyItem.partyId);
                         if (station) {
-                            partyNames.push(station.name || 'Diesel Station');
+                            partyItem.partyName = partyItem.partyName || station.name || 'Diesel Station';
+                            partyNames.push(partyItem.partyName);
                         }
                     }
                 } catch (error) {
@@ -111,6 +115,7 @@ export const createVoucher = async (req, res, next) => {
             account: isPaymentOrReceipt ? account : undefined,
             entries: entries || [],
             narration,
+            isMultiPartyDisplay: true,
             createdBy: req.user._id,
             updatedBy: req.user._id
         };
@@ -420,7 +425,7 @@ export const updateVoucher = async (req, res, next) => {
             throw new AppError('Voucher not found', 404);
         }
 
-        const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt';
+        const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt' || voucherType === 'Journal';
 
         // Validate entries if provided
         if (entries && entries.length > 0) {
@@ -452,22 +457,26 @@ export const updateVoucher = async (req, res, next) => {
                     if (partyItem.partyType === 'customer') {
                         const customer = await Customer.findById(partyItem.partyId);
                         if (customer) {
-                            partyNames.push(customer.shopName || customer.ownerName || 'Customer');
+                            partyItem.partyName = partyItem.partyName || customer.shopName || customer.ownerName || 'Customer';
+                            partyNames.push(partyItem.partyName);
                         }
                     } else if (partyItem.partyType === 'ledger') {
                         const ledger = await Ledger.findById(partyItem.partyId);
                         if (ledger) {
-                            partyNames.push(ledger.name || 'Ledger');
+                            partyItem.partyName = partyItem.partyName || ledger.name || 'Ledger';
+                            partyNames.push(partyItem.partyName);
                         }
                     } else if (partyItem.partyType === 'vendor') {
                         const vendor = await Vendor.findById(partyItem.partyId);
                         if (vendor) {
-                            partyNames.push(vendor.vendorName || 'Vendor');
+                            partyItem.partyName = partyItem.partyName || vendor.vendorName || 'Vendor';
+                            partyNames.push(partyItem.partyName);
                         }
                     } else if (partyItem.partyType === 'dieselStation') {
                         const station = await DieselStation.findById(partyItem.partyId);
                         if (station) {
-                            partyNames.push(station.name || 'Diesel Station');
+                            partyItem.partyName = partyItem.partyName || station.name || 'Diesel Station';
+                            partyNames.push(partyItem.partyName);
                         }
                     }
                 } catch (error) {
