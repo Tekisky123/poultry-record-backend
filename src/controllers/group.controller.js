@@ -622,7 +622,7 @@ const calculateVendorBalance = (vendorDoc, startDate = null, endDate = null, pre
                 let isMatch = false;
 
                 if (v.voucherType === 'Journal') {
-                    const entry = v.entries?.find(e => e.account === vendorName);
+                    const entry = v.entries?.find(e => e.account && e.account.trim().toLowerCase() === vendorName.trim().toLowerCase());
                     if (entry) {
                         if (entry.creditAmount > 0) {
                             amount = entry.creditAmount;
@@ -636,7 +636,7 @@ const calculateVendorBalance = (vendorDoc, startDate = null, endDate = null, pre
                 } else {
                     // Payment/Receipt
                     if (v.parties && v.parties.length > 0) {
-                        const partyEntry = v.parties.find(p => p.partyId && p.partyId.toString() === vendorId.toString() && p.partyType === 'vendor');
+                        const partyEntry = v.parties.find(p => p.partyId && p.partyId.toString() === vendorId.toString());
                         if (partyEntry) {
                             amount = partyEntry.amount || 0;
                             isMatch = true;
@@ -731,8 +731,9 @@ const calculateVendorBalance = (vendorDoc, startDate = null, endDate = null, pre
                 const isInPeriod = (!start || sDate >= start);
 
                 const stockVendorId = stock.vendorId?._id || stock.vendorId;
-                if (stockVendorId && stockVendorId.toString() === vendorId.toString()) {
-                    if (stock.type === 'purchase' || stock.type === 'opening') {
+                const stockLedgerId = stock.ledgerId?._id || stock.ledgerId;
+                if ((stockVendorId && stockVendorId.toString() === vendorId.toString()) || (stockLedgerId && stockLedgerId.toString() === vendorId.toString())) {
+                    if (stock.type === 'purchase' || stock.type === 'opening' || stock.inventoryType === 'feed') {
                         let stockAmount = stock.amount || 0;
                         let tdsAmount = 0;
                         if (vendorDoc.tdsApplicable && (vendorDoc.tdsUpdatedAt && new Date(stock.date) > new Date(vendorDoc.tdsUpdatedAt))) {
@@ -745,8 +746,8 @@ const calculateVendorBalance = (vendorDoc, startDate = null, endDate = null, pre
                         if (isInPeriod) {
                             if (tdsAmount > 0) periodDebit += tdsAmount;
                             periodCredit += stockAmount;
-                            birdsTotal += stock.birds || 0;
-                            weightTotal += stock.weight || 0;
+                            birdsTotal += stock.bags || stock.birds || 0;
+                            weightTotal += stock.feedQty || stock.weight || 0;
                         }
                     }
                 }

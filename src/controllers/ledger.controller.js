@@ -239,25 +239,42 @@ export const getMonthlySummary = async (req, res, next) => {
         let subjectType = type;
 
         if (!subjectType) {
-            subject = await Customer.findById(id);
+            subject = await Customer.findById(id).populate('group', 'name type slug');
             if (subject) subjectType = 'customer';
             else {
-                subject = await Vendor.findById(id);
+                subject = await Vendor.findById(id).populate('group', 'name type slug');
                 if (subject) subjectType = 'vendor';
                 else {
-                    subject = await Ledger.findById(id);
+                    subject = await Ledger.findById(id).populate('group', 'name type slug');
                     if (subject) subjectType = 'ledger';
                     else {
-                        subject = await DieselStation.findById(id);
+                        subject = await DieselStation.findById(id).populate('group', 'name type slug');
                         if (subject) subjectType = 'dieselStation';
                     }
                 }
             }
         } else {
-            if (subjectType === 'customer') subject = await Customer.findById(id);
-            else if (subjectType === 'vendor') subject = await Vendor.findById(id);
-            else if (subjectType === 'ledger') subject = await Ledger.findById(id);
-            else if (subjectType === 'dieselStation') subject = await DieselStation.findById(id);
+            if (subjectType === 'customer') subject = await Customer.findById(id).populate('group', 'name type slug');
+            else if (subjectType === 'vendor') subject = await Vendor.findById(id).populate('group', 'name type slug');
+            else if (subjectType === 'ledger') subject = await Ledger.findById(id).populate('group', 'name type slug');
+            else if (subjectType === 'dieselStation') subject = await DieselStation.findById(id).populate('group', 'name type slug');
+
+            if (!subject) {
+                subject = await Ledger.findById(id).populate('group', 'name type slug');
+                if (subject) subjectType = 'ledger';
+                else {
+                    subject = await Vendor.findById(id).populate('group', 'name type slug');
+                    if (subject) subjectType = 'vendor';
+                    else {
+                        subject = await Customer.findById(id).populate('group', 'name type slug');
+                        if (subject) subjectType = 'customer';
+                        else {
+                            subject = await DieselStation.findById(id).populate('group', 'name type slug');
+                            if (subject) subjectType = 'dieselStation';
+                        }
+                    }
+                }
+            }
         }
 
         if (!subject) {
@@ -303,49 +320,41 @@ export const getMonthlySummary = async (req, res, next) => {
 
         let vouchers = await Voucher.find(voucherQuery).lean();
 
-        let trips = [];
-        let tripQuery = { ...tripQueryObj };
-        if (subjectType === 'customer') tripQuery['sales.client'] = id;
-        else if (subjectType === 'vendor') tripQuery['purchases.supplier'] = id;
-        else if (subjectType === 'ledger') {
-            tripQuery.$or = [
+        let tripQuery = {
+            $or: [
+                { 'purchases.supplier': id },
+                { 'sales.client': id },
                 { 'sales.cashLedger': id },
-                { 'sales.onlineLedger': id }
-            ];
-        } else if (subjectType === 'dieselStation') {
-            tripQuery['diesel.stations.dieselStation'] = id;
-        }
-
-        // Only fetch if subjectType is known (it should be)
-        if (subjectType) trips = await Trip.find(tripQuery).lean();
+                { 'sales.onlineLedger': id },
+                { 'diesel.stations.dieselStation': id }
+            ]
+        };
+        let trips = await Trip.find(tripQuery).lean();
 
         let stocks = [];
-        // Stocks not relevant for Diesel Station currently
         if (subjectType !== 'dieselStation') {
-            let stockQuery = {};
-
-            if (subjectType === 'vendor') stockQuery.vendorId = id;
-            else if (subjectType === 'customer') stockQuery.customerId = id;
-            else if (subjectType === 'ledger') {
-                stockQuery.$or = [
+            let stockQuery = {
+                $or: [
+                    { vendorId: id },
+                    { ledgerId: id },
+                    { customerId: id },
                     { cashLedgerId: id },
                     { onlineLedgerId: id },
                     { expenseLedgerId: id }
-                ];
-            }
+                ]
+            };
             stocks = await InventoryStock.find(stockQuery).lean();
         }
 
         let indirectSales = [];
-        // Indirect Sales not relevant for Diesel Station currently
         if (subjectType !== 'dieselStation') {
-            let indirectQuery = {};
-
-            if (subjectType === 'customer') indirectQuery.customer = id;
-            else if (subjectType === 'vendor') indirectQuery.vendor = id;
-            else indirectQuery = null;
-
-            if (indirectQuery) indirectSales = await IndirectSale.find(indirectQuery).lean();
+            let indirectQuery = {
+                $or: [
+                    { customer: id },
+                    { vendor: id }
+                ]
+            };
+            indirectSales = await IndirectSale.find(indirectQuery).lean();
         }
 
         const subjectIdStr = id.toString();
@@ -554,20 +563,40 @@ export const getMonthlySummary = async (req, res, next) => {
                 }
             } else if (subjectType === 'vendor') {
                 const sVendorId = s.vendorId?._id || s.vendorId;
-                if (sVendorId && sVendorId.toString() === id.toString()) {
-                    if (s.type === 'purchase' || s.type === 'opening') {
+                const sLedgerId = s.ledgerId?._id || s.ledgerId;
+                if ((sVendorId && sVendorId.toString() === id.toString()) || (sLedgerId && sLedgerId.toString() === id.toString())) {
+                    if (s.type === 'purchase' || s.type === 'opening' || s.inventoryType === 'feed') {
                         credit += s.amount || 0;
                         let tdsAmount = 0;
                         if (isTdsApplicableForDate(s.date)) {
                             tdsAmount = (s.amount || 0) * 0.001;
                         }
                         debit += tdsAmount;
-                        birds += s.birds || 0;
-                        weight += s.weight || 0;
+                        birds += s.bags || s.birds || 0;
+                        weight += s.feedQty || s.weight || 0;
                         isMatch = true;
                     }
                 }
             } else if (subjectType === 'ledger') {
+                const sLedgerId = s.ledgerId?._id || s.ledgerId;
+                const sVendorId = s.vendorId?._id || s.vendorId;
+                if ((sLedgerId && sLedgerId.toString() === id.toString()) || (sVendorId && sVendorId.toString() === id.toString())) {
+                    if (s.type === 'purchase' || s.inventoryType === 'feed') {
+                        credit += s.amount || 0;
+                        debit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        birds += s.bags || s.birds || 0;
+                        weight += s.feedQty || s.weight || 0;
+                        discount += s.discount || 0;
+                        isMatch = true;
+                    } else if (s.type === 'sale') {
+                        debit += s.amount || 0;
+                        credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        birds += s.birds || 0;
+                        weight += s.weight || 0;
+                        discount += s.discount || 0;
+                        isMatch = true;
+                    }
+                }
                 if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) { debit += s.cashPaid || 0; isMatch = true; }
                 if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) { debit += s.onlinePaid || 0; isMatch = true; }
                 if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) { debit += s.amount || 0; isMatch = true; }
@@ -685,6 +714,23 @@ export const getDailySummary = async (req, res, next) => {
             else if (subjectType === 'vendor') subject = await Vendor.findById(id);
             else if (subjectType === 'ledger') subject = await Ledger.findById(id);
             else if (subjectType === 'dieselStation') subject = await DieselStation.findById(id);
+
+            if (!subject) {
+                subject = await Ledger.findById(id);
+                if (subject) subjectType = 'ledger';
+                else {
+                    subject = await Vendor.findById(id);
+                    if (subject) subjectType = 'vendor';
+                    else {
+                        subject = await Customer.findById(id);
+                        if (subject) subjectType = 'customer';
+                        else {
+                            subject = await DieselStation.findById(id);
+                            if (subject) subjectType = 'dieselStation';
+                        }
+                    }
+                }
+            }
         }
 
         if (!subject) {
@@ -720,50 +766,45 @@ export const getDailySummary = async (req, res, next) => {
 
         let trips = [];
         // Only fetch trips for relevant period
-        const tripQuery = { createdAt: { $gte: startDate, $lt: endDate } };
-
-        if (subjectType === 'customer') {
-            tripQuery['sales.client'] = id;
-            trips = await Trip.find(tripQuery).lean();
-        } else if (subjectType === 'vendor') {
-            tripQuery['purchases.supplier'] = id;
-            trips = await Trip.find(tripQuery).lean();
-        } else if (subjectType === 'ledger') {
-            tripQuery.$or = [
+        let tripQuery = {
+            createdAt: { $gte: startDate, $lt: endDate },
+            $or: [
+                { 'purchases.supplier': id },
+                { 'sales.client': id },
                 { 'sales.cashLedger': id },
-                { 'sales.onlineLedger': id }
-            ];
-            trips = await Trip.find(tripQuery).lean();
-        } else if (subjectType === 'dieselStation') {
-            tripQuery['diesel.stations.dieselStation'] = id;
-            trips = await Trip.find(tripQuery).lean();
-        }
+                { 'sales.onlineLedger': id },
+                { 'diesel.stations.dieselStation': id }
+            ]
+        };
+        trips = await Trip.find(tripQuery).lean();
 
         let stocks = [];
         if (subjectType !== 'dieselStation') {
-            const stockQuery = { date: { $gte: startDate, $lt: endDate } };
-            if (subjectType === 'vendor') stockQuery.vendorId = id;
-            else if (subjectType === 'customer') stockQuery.customerId = id;
-            else if (subjectType === 'ledger') {
-                stockQuery.$or = [
+            const stockQuery = {
+                date: { $gte: startDate, $lt: endDate },
+                $or: [
+                    { vendorId: id },
+                    { ledgerId: id },
+                    { customerId: id },
                     { cashLedgerId: id },
                     { onlineLedgerId: id },
                     { expenseLedgerId: id }
-                ];
-            }
+                ]
+            };
             stocks = await InventoryStock.find(stockQuery).lean();
         }
 
         let indirectSales = [];
         if (subjectType !== 'dieselStation') {
-            let indirectQuery = { date: { $gte: startDate, $lt: endDate }, isActive: true };
-            if (subjectType === 'customer') indirectQuery.customer = id;
-            else if (subjectType === 'vendor') indirectQuery.vendor = id;
-            else indirectQuery = null;
-
-            if (indirectQuery) {
-                indirectSales = await IndirectSale.find(indirectQuery).lean();
-            }
+            let indirectQuery = {
+                date: { $gte: startDate, $lt: endDate },
+                isActive: true,
+                $or: [
+                    { customer: id },
+                    { vendor: id }
+                ]
+            };
+            indirectSales = await IndirectSale.find(indirectQuery).lean();
         }
 
         const subjectIdStr = id.toString();
@@ -959,6 +1000,18 @@ export const getDailySummary = async (req, res, next) => {
                     }
                 }
             } else if (subjectType === 'ledger') {
+                const sLedgerId = s.ledgerId?._id || s.ledgerId;
+                if (sLedgerId && sLedgerId.toString() === id.toString()) {
+                    if (s.type === 'purchase' || s.inventoryType === 'feed') {
+                        credit += s.amount || 0;
+                        debit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        isMatch = true;
+                    } else if (s.type === 'sale') {
+                        debit += s.amount || 0;
+                        credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        isMatch = true;
+                    }
+                }
                 if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) { debit += s.cashPaid || 0; isMatch = true; }
                 if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) { debit += s.onlinePaid || 0; isMatch = true; }
                 if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) { debit += s.amount || 0; isMatch = true; }
@@ -1078,6 +1131,8 @@ export const getLedgerTransactions = async (req, res, next) => {
         // Inventory Stock Query
         const stockQuery = {
             $or: [
+                { 'ledgerId': id },
+                { 'vendorId': id },
                 { 'cashLedgerId': id },
                 { 'onlineLedgerId': id },
                 { 'expenseLedgerId': id }
@@ -1124,7 +1179,7 @@ export const getLedgerTransactions = async (req, res, next) => {
                                 const partyName = p.partyName || (partyObj ? (partyObj.shopName || partyObj.vendorName || partyObj.name || partyObj.ownerName) : '') || 'Party';
                                 const pAmount = p.amount || 0;
                                 const isPayment = v.voucherType === 'Payment' || v.voucherType === 'Journal';
-                                
+
                                 transactions.push({
                                     _id: v._id,
                                     date: v.date,
@@ -1227,7 +1282,7 @@ export const getLedgerTransactions = async (req, res, next) => {
                         }
                     }
                 });
-            }            if (debit > 0 || credit > 0) {
+            } if (debit > 0 || credit > 0) {
                 transactions.push({
                     _id: v._id,
                     date: v.date,
@@ -1283,6 +1338,19 @@ export const getLedgerTransactions = async (req, res, next) => {
             let debit = 0;
             let credit = 0;
             let isRelevant = false;
+
+            const sLedgerId = s.ledgerId?._id || s.ledgerId;
+            if (sLedgerId && sLedgerId.toString() === id.toString()) {
+                if (s.type === 'purchase' || s.inventoryType === 'feed') {
+                    credit += s.amount || 0;
+                    debit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                    isRelevant = true;
+                } else if (s.type === 'sale') {
+                    debit += s.amount || 0;
+                    credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                    isRelevant = true;
+                }
+            }
 
             // Cash Payment
             if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) {
@@ -1351,6 +1419,7 @@ export const getLedgerTransactions = async (req, res, next) => {
             const stackQuery = {
                 date: { $lt: queryStartDate },
                 $or: [
+                    { 'ledgerId': id },
                     { 'cashLedgerId': id },
                     { 'onlineLedgerId': id },
                     { 'expenseLedgerId': id }
@@ -1413,6 +1482,18 @@ export const getLedgerTransactions = async (req, res, next) => {
 
             preStocks.forEach(s => {
                 let debit = 0;
+                const sLedgerId = s.ledgerId?._id || s.ledgerId;
+                if (sLedgerId && sLedgerId.toString() === id.toString()) {
+                    if (s.type === 'purchase' || s.inventoryType === 'feed') {
+                        let c = s.amount || 0;
+                        let d = (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        signedOpening += (d - c);
+                    } else if (s.type === 'sale') {
+                        let d = s.amount || 0;
+                        let c = (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        signedOpening += (d - c);
+                    }
+                }
                 if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) debit += s.cashPaid || 0;
                 if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) debit += s.onlinePaid || 0;
                 if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) debit += s.amount || 0; // Expense is Debit

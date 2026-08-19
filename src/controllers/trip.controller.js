@@ -232,6 +232,20 @@ export const updateTrip = async (req, res, next) => {
             updatedBy: req.user._id
         };
 
+        if (updateData.supervisor) {
+            if (typeof updateData.supervisor === 'object' && (updateData.supervisor._id || updateData.supervisor.id)) {
+                updateData.supervisor = updateData.supervisor._id || updateData.supervisor.id;
+            } else if (typeof updateData.supervisor === 'string' && !mongoose.Types.ObjectId.isValid(updateData.supervisor)) {
+                const User = mongoose.model('User');
+                const supUser = await User.findOne({ name: { $regex: new RegExp(`^${updateData.supervisor.trim()}$`, 'i') } });
+                if (supUser) {
+                    updateData.supervisor = supUser._id;
+                } else {
+                    delete updateData.supervisor;
+                }
+            }
+        }
+
         const trip = await Trip.findByIdAndUpdate(
             id,
             updateData,
