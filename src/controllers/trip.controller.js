@@ -2657,7 +2657,7 @@ export const updateTransfer = async (req, res, next) => {
             }
         }
 
-        // ── 3. Return the fully-populated original trip ──────────────────────
+        // ── 3. Return the fully-populated original trip 
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
@@ -2674,4 +2674,3 @@ export const updateTransfer = async (req, res, next) => {
         next(error);
     }
 };
-
