@@ -617,82 +617,93 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name === 'FEED OPENING STOCK') targetValue = metricFeedOpeningStock;
                     else if (name.includes('LIVE POULTRY BIRDS') && inOpening) targetValue = metricOpeningStock;
                     else if (name.includes('LIVE POULTRY BIRDS') && inClosing) targetValue = metricClosingStock;
-                    else if (name === 'PURCHASE ACCOUNTS') {
-                        targetValue = metricPurchase + metricFeedPurchase;
-
-                        const vendorNodes = [];
-                        let vendorSum = 0;
-
-                        allVendors.forEach(v => {
-                            let amount = 0;
-
-                            // Trips
-                            trips.forEach(t => {
-                                const tDate = new Date(t.date);
-                                if (tDate >= sDate && tDate <= eDate && t.purchases) {
-                                    t.purchases.forEach(p => {
-                                        if (p.supplier && p.supplier.toString() === v._id.toString()) {
-                                            amount += (p.amount || 0);
-                                        }
-                                    });
-                                }
-                            });
-
-                            // Inventory Stocks
-                            stocks.forEach(s => {
-                                const sDateVal = new Date(s.date);
-                                if (sDateVal >= sDate && sDateVal <= eDate && s.type === 'purchase') {
-                                    const vId = s.vendorId?._id || s.vendorId;
-                                    if (vId && vId.toString() === v._id.toString()) {
-                                        amount += (s.amount || (s.weight * s.rate) || 0);
-                                    }
-                                }
-                            });
-
-                            // Indirect Sales
-                            isales.forEach(s => {
-                                const sDateVal = new Date(s.date);
-                                if (sDateVal >= sDate && sDateVal <= eDate) {
-                                    if (s.vendor && s.vendor.toString() === v._id.toString()) {
-                                        amount += (s.summary?.totalPurchaseAmount || 0);
-                                    }
-                                }
-                            });
-
-                            if (amount > 0) {
-                                vendorSum += amount;
-                                vendorNodes.push({
-                                    _id: v._id.toString(),
-                                    id: v._id.toString(),
-                                    name: v.vendorName,
-                                    slug: `vendor-${v._id}`,
-                                    type: 'Expenses',
-                                    balance: amount,
-                                    debitTotal: amount,
-                                    creditTotal: 0,
-                                    children: [],
-                                    ledgers: []
-                                });
-                            }
-                        });
-
-                        const diff = targetValue - vendorSum;
-                        if (Math.abs(diff) >= 0.01) {
-                            vendorNodes.push({
-                                _id: 'other-purchases',
-                                id: 'other-purchases',
-                                name: 'Other Purchases',
-                                slug: 'other-purchases',
+                    else if (name === 'OPENING STOCK') {
+                        targetValue = metricOpeningStock;
+                        g.children = [
+                            {
+                                _id: 'birds-opening-stock',
+                                id: 'birds-opening-stock',
+                                name: 'Birds Stock',
+                                slug: 'birds-opening-stock',
                                 type: 'Expenses',
-                                balance: diff,
-                                debitTotal: diff,
+                                balance: metricBirdsOpeningStock,
+                                debitTotal: metricBirdsOpeningStock,
                                 creditTotal: 0,
                                 children: [],
                                 ledgers: []
-                            });
-                        }
+                            },
+                            {
+                                _id: 'feed-opening-stock',
+                                id: 'feed-opening-stock',
+                                name: 'Feed Stock',
+                                slug: 'feed-opening-stock',
+                                type: 'Expenses',
+                                balance: metricFeedOpeningStock,
+                                debitTotal: metricFeedOpeningStock,
+                                creditTotal: 0,
+                                children: [],
+                                ledgers: []
+                            }
+                        ];
+                    }
+                    else if (name === 'CLOSING STOCK') {
+                        targetValue = metricClosingStock;
+                        g.children = [
+                            {
+                                _id: 'birds-closing-stock',
+                                id: 'birds-closing-stock',
+                                name: 'Birds Stock',
+                                slug: 'birds-closing-stock',
+                                type: 'Income',
+                                balance: metricBirdsClosingStock,
+                                debitTotal: 0,
+                                creditTotal: metricBirdsClosingStock,
+                                children: [],
+                                ledgers: []
+                            },
+                            {
+                                _id: 'feed-closing-stock',
+                                id: 'feed-closing-stock',
+                                name: 'Feed Stock',
+                                slug: 'feed-closing-stock',
+                                type: 'Income',
+                                balance: metricFeedClosingStock,
+                                debitTotal: 0,
+                                creditTotal: metricFeedClosingStock,
+                                children: [],
+                                ledgers: []
+                            }
+                        ];
+                    }
+                    else if (name === 'PURCHASE ACCOUNTS') {
+                        targetValue = metricPurchase + metricFeedPurchase;
 
-                        g.children = vendorNodes;
+                        g.children = [
+                            {
+                                _id: 'birds-purchase',
+                                id: 'birds-purchase',
+                                name: 'Birds Purchase',
+                                slug: 'birds-purchase',
+                                type: 'Expenses',
+                                balance: metricPurchase,
+                                debitTotal: metricPurchase,
+                                creditTotal: 0,
+                                children: [],
+                                ledgers: []
+                            },
+                            {
+                                _id: 'feed-purchase',
+                                id: 'feed-purchase',
+                                name: 'Feed Purchase',
+                                slug: 'feed-purchase',
+                                type: 'Expenses',
+                                balance: metricFeedPurchase,
+                                debitTotal: metricFeedPurchase,
+                                creditTotal: 0,
+                                children: [],
+                                ledgers: []
+                            }
+                        ];
                     }
                     else if (name === 'SALES ACCOUNTS') {
                         targetValue = metricSales;

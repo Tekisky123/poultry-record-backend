@@ -7,15 +7,15 @@ const smsTemplates = require('./smsTemplates.json');
 
 /**
  * Send SMS using Fast2SMS API
- * @param {string} template_name - Message Name
- * @param {string|string[]} variables_values - Single number or array of numbers
- * @param {string|string[]} numbers - Single number or array of numbers
+ * @param {string|Object} template_nameOrPayload - Template Name OR raw payload object
+ * @param {string|string[]} [variables_values] - Values for template variables
+ * @param {string|string[]} [numbers] - Single phone number or array of numbers
  * @returns {Promise<Object>} Response data from Fast2SMS
  */
-const sendSMS = async (payload) => {
+const sendSMS = async (template_nameOrPayload, variables_values, numbers) => {
     try {
         // Check DB setting first
-        const smsSetting = await Setting.findOne({ key: 'SMS_ENABLED' });
+        const smsSetting = await Setting.findOne({ key: 'SMS_ENABLED' }).catch(() => null);
 
         // If DB setting exists, use its value. If not, fallback to env var (legacy support)
         const isEnabled = smsSetting ? smsSetting.value === true : process.env.ENABLE_SMS_SERVICE === 'true';
@@ -32,8 +32,38 @@ const sendSMS = async (payload) => {
             return null;
         }
 
-        console.log("payload", payload);
-        return null
+        let payload;
+
+        if (typeof template_nameOrPayload === 'object' && template_nameOrPayload !== null) {
+            payload = template_nameOrPayload;
+        } else {
+            const templateName = template_nameOrPayload;
+            const template = smsTemplates.find(t => t.template_name === templateName);
+            
+            if (!template) {
+                console.error(`SMS Template '${templateName}' not found in smsTemplates.json`);
+                return null;
+            }
+
+            const cleanNumbers = Array.isArray(numbers) 
+                ? numbers.map(n => String(n).replace(/\D/g, '').slice(-10)).join(',') 
+                : String(numbers || '').replace(/\D/g, '').slice(-10);
+
+            const formattedVariables = Array.isArray(variables_values)
+                ? variables_values.join('|')
+                : (variables_values || '');
+
+            payload = {
+                route: template.route || "dlt",
+                sender_id: template.sender_id || "TEKSKY",
+                message: template.template_id,
+                variables_values: formattedVariables,
+                numbers: cleanNumbers,
+                flash: template.flash || 0
+            };
+        }
+
+        console.log("Sending SMS Payload:", payload);
 
         const response = await axios.post('https://www.fast2sms.com/dev/bulkV2', payload, {
             headers: {
@@ -41,19 +71,14 @@ const sendSMS = async (payload) => {
                 "Content-Type": "application/json"
             }
         });
-        console.log("SMS Response", response.data);
+        console.log("SMS Response:", response.data);
         return response.data;
     } catch (error) {
         console.error('Fast2SMS Error:', error.response?.data || error.message);
-        // You might want to throw or just return null depending on how strict the app is
-        // Returning null/false allows the app to continue even if SMS fails
         return null;
     }
 };
 
 export default sendSMS;
 
-// Example usage:
-// sendSMS('add_sales', ["Tauhid", "434344"], ["7414969691"]);
-// sendSMS('update_sales', ["Tauhid", "434344"], ["7414969691"]);
 
