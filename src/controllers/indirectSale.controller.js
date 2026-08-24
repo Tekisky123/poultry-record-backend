@@ -472,7 +472,13 @@ export const getMonthlyStats = async (req, res, next) => {
                 salesAmount: 0,
                 purchaseAmount: 0,
                 salesWeight: 0,
-                margin: 0
+                margin: 0,
+                totalPurchaseBirds: 0,
+                totalPurchaseWeight: 0,
+                totalSalesBirds: 0,
+                totalMortalityBirds: 0,
+                totalMortalityWeight: 0,
+                totalMortalityAmount: 0
             });
         }
 
@@ -493,12 +499,40 @@ export const getMonthlyStats = async (req, res, next) => {
                     months[monthIndex].salesWeight += record.sales.weight;
                 }
 
+                // Sum sales birds
+                if (record.sales && record.sales.birds) {
+                    months[monthIndex].totalSalesBirds += record.sales.birds;
+                }
+
                 // Sum purchase amount
                 if (record.summary && record.summary.totalPurchaseAmount) {
                     months[monthIndex].purchaseAmount += record.summary.totalPurchaseAmount;
                 } else if (record.purchases) {
                     const pTotal = record.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
                     months[monthIndex].purchaseAmount += pTotal;
+                }
+
+                // Sum purchase birds
+                if (record.summary && record.summary.totalPurchaseBirds) {
+                    months[monthIndex].totalPurchaseBirds += record.summary.totalPurchaseBirds;
+                } else if (record.purchases) {
+                    const pBirds = record.purchases.reduce((sum, p) => sum + (p.birds || 0), 0);
+                    months[monthIndex].totalPurchaseBirds += pBirds;
+                }
+
+                // Sum purchase weight
+                if (record.summary && record.summary.totalPurchaseWeight) {
+                    months[monthIndex].totalPurchaseWeight += record.summary.totalPurchaseWeight;
+                } else if (record.purchases) {
+                    const pWeight = record.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
+                    months[monthIndex].totalPurchaseWeight += pWeight;
+                }
+
+                // Sum mortality
+                if (record.mortality) {
+                    months[monthIndex].totalMortalityBirds += (record.mortality.birds || 0);
+                    months[monthIndex].totalMortalityWeight += (record.mortality.weight || 0);
+                    months[monthIndex].totalMortalityAmount += (record.mortality.amount || 0);
                 }
             }
         });
@@ -515,7 +549,13 @@ export const getMonthlyStats = async (req, res, next) => {
             salesAmount: months.reduce((acc, m) => acc + m.salesAmount, 0),
             purchaseAmount: months.reduce((acc, m) => acc + m.purchaseAmount, 0),
             salesWeight: totalSalesWeight,
-            margin: totalSalesWeight > 0 ? months.reduce((acc, m) => acc + m.netProfit, 0) / totalSalesWeight : 0
+            margin: totalSalesWeight > 0 ? months.reduce((acc, m) => acc + m.netProfit, 0) / totalSalesWeight : 0,
+            totalPurchaseBirds: months.reduce((acc, m) => acc + m.totalPurchaseBirds, 0),
+            totalPurchaseWeight: months.reduce((acc, m) => acc + m.totalPurchaseWeight, 0),
+            totalSalesBirds: months.reduce((acc, m) => acc + m.totalSalesBirds, 0),
+            totalMortalityBirds: months.reduce((acc, m) => acc + m.totalMortalityBirds, 0),
+            totalMortalityWeight: months.reduce((acc, m) => acc + m.totalMortalityWeight, 0),
+            totalMortalityAmount: months.reduce((acc, m) => acc + m.totalMortalityAmount, 0)
         };
         totals.margin = Number(totals.margin.toFixed(2));
 
