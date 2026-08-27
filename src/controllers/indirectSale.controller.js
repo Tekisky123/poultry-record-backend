@@ -456,7 +456,7 @@ export const getMonthlyStats = async (req, res, next) => {
         const records = await IndirectSale.find({
             date: { $gte: startDate, $lt: endDate },
             isActive: true
-        }).lean();
+        }).populate('customer', 'shopName ownerName').lean();
 
         const months = [];
         for (let i = 0; i < 12; i++) {
@@ -473,6 +473,9 @@ export const getMonthlyStats = async (req, res, next) => {
                 purchaseAmount: 0,
                 salesWeight: 0,
                 margin: 0,
+                customers: new Set(),
+                vehicles: new Set(),
+                drivers: new Set(),
                 totalPurchaseBirds: 0,
                 totalPurchaseWeight: 0,
                 totalSalesBirds: 0,
@@ -534,12 +537,23 @@ export const getMonthlyStats = async (req, res, next) => {
                     months[monthIndex].totalMortalityWeight += (record.mortality.weight || 0);
                     months[monthIndex].totalMortalityAmount += (record.mortality.amount || 0);
                 }
+
+                const custName = record.customer ? (typeof record.customer === 'object' ? (record.customer.shopName || record.customer.ownerName || record.customer.customerName || record.customer.name) : String(record.customer)) : null;
+                if (custName && custName.trim()) months[monthIndex].customers.add(custName.trim());
+                if (record.vehicleNumber && record.vehicleNumber.trim()) months[monthIndex].vehicles.add(record.vehicleNumber.trim());
+                if (record.driver && record.driver.trim()) months[monthIndex].drivers.add(record.driver.trim());
             }
         });
 
         months.forEach(m => {
             m.margin = m.salesWeight > 0 ? m.netProfit / m.salesWeight : 0;
             m.margin = Number(m.margin.toFixed(2));
+            m.customerName = Array.from(m.customers).join(', ') || '-';
+            m.vehicleNumber = Array.from(m.vehicles).join(', ') || '-';
+            m.driverName = Array.from(m.drivers).join(', ') || '-';
+            delete m.customers;
+            delete m.vehicles;
+            delete m.drivers;
         });
 
         const totalSalesWeight = months.reduce((acc, m) => acc + (m.salesWeight || 0), 0);
@@ -578,7 +592,7 @@ export const getDailyStats = async (req, res, next) => {
         const records = await IndirectSale.find({
             date: { $gte: startDate, $lt: endDate },
             isActive: true
-        }).lean();
+        }).populate('customer', 'shopName ownerName customerName name').lean();
 
         const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
         const days = [];
@@ -654,24 +668,22 @@ export const getDailyStats = async (req, res, next) => {
                     days[dayIndex].totalMortalityAmount += (record.mortality.amount || 0);
                 }
 
-                if (record.customer) {
-                    days[dayIndex].customers.add(record.customer);
-                }
-                if (record.vehicleNumber) {
-                    days[dayIndex].vehicles.add(record.vehicleNumber);
-                }
-                if (record.driver) {
-                    days[dayIndex].drivers.add(record.driver);
-                }
+                const custName = record.customer ? (typeof record.customer === 'object' ? (record.customer.shopName || record.customer.ownerName || record.customer.customerName || record.customer.name) : String(record.customer)) : null;
+                if (custName && custName.trim()) days[dayIndex].customers.add(custName.trim());
+                if (record.vehicleNumber && record.vehicleNumber.trim()) days[dayIndex].vehicles.add(record.vehicleNumber.trim());
+                if (record.driver && record.driver.trim()) days[dayIndex].drivers.add(record.driver.trim());
             }
         });
 
         days.forEach(d => {
             d.margin = d.salesWeight > 0 ? d.netProfit / d.salesWeight : 0;
             d.margin = Number(d.margin.toFixed(2));
-            d.customers = Array.from(d.customers).join(', ') || '-';
-            d.vehicles = Array.from(d.vehicles).join(', ') || '-';
-            d.drivers = Array.from(d.drivers).join(', ') || '-';
+            d.customerName = Array.from(d.customers).join(', ') || '-';
+            d.vehicleNumber = Array.from(d.vehicles).join(', ') || '-';
+            d.driverName = Array.from(d.drivers).join(', ') || '-';
+            delete d.customers;
+            delete d.vehicles;
+            delete d.drivers;
         });
 
         const totalSalesWeight = days.reduce((acc, d) => acc + (d.salesWeight || 0), 0);

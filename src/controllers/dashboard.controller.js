@@ -652,7 +652,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                             {
                                 _id: 'birds-closing-stock',
                                 id: 'birds-closing-stock',
-                                name: 'Birds Stock',
+                                name: 'Birds Opening Stock',
                                 slug: 'birds-closing-stock',
                                 type: 'Income',
                                 balance: metricBirdsClosingStock,
@@ -664,7 +664,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                             {
                                 _id: 'feed-closing-stock',
                                 id: 'feed-closing-stock',
-                                name: 'Feed Stock',
+                                name: 'Feed Opening Stock',
                                 slug: 'feed-closing-stock',
                                 type: 'Income',
                                 balance: metricFeedClosingStock,
