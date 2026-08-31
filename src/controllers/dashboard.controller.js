@@ -636,7 +636,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                             {
                                 _id: 'birds-opening-stock',
                                 id: 'birds-opening-stock',
-                                name: 'Birds Stock',
+                                name: 'Birds Opening Stock',
                                 slug: 'birds-opening-stock',
                                 type: 'Expenses',
                                 balance: metricBirdsOpeningStock,
@@ -648,7 +648,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                             {
                                 _id: 'feed-opening-stock',
                                 id: 'feed-opening-stock',
-                                name: 'Feed Stock',
+                                name: 'Feed Opening Stock',
                                 slug: 'feed-opening-stock',
                                 type: 'Expenses',
                                 balance: metricFeedOpeningStock,
@@ -665,7 +665,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                             {
                                 _id: 'birds-closing-stock',
                                 id: 'birds-closing-stock',
-                                name: 'Birds Opening Stock',
+                                name: 'Birds Closing Stock',
                                 slug: 'birds-closing-stock',
                                 type: 'Income',
                                 balance: metricBirdsClosingStock,
@@ -677,7 +677,7 @@ export const getProfitAndLoss = async (req, res, next) => {
                             {
                                 _id: 'feed-closing-stock',
                                 id: 'feed-closing-stock',
-                                name: 'Feed Opening Stock',
+                                name: 'Feed Closing Stock',
                                 slug: 'feed-closing-stock',
                                 type: 'Income',
                                 balance: metricFeedClosingStock,
