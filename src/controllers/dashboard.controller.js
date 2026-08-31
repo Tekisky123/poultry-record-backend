@@ -462,6 +462,8 @@ export const getProfitAndLoss = async (req, res, next) => {
             let metricPurchase = 0;
             let metricFeedPurchase = 0;
             let metricSales = 0;
+            let metricBirdSales = 0;
+            let metricFeedSales = 0;
             let metricMortality = 0;
             let metricWeightLoss = 0;
             let metricTripExpenses = 0;
@@ -481,7 +483,9 @@ export const getProfitAndLoss = async (req, res, next) => {
 
                 if (tDateIsPeriod) {
                     metricPurchase += (t.summary?.totalPurchaseAmount || 0);
-                    metricSales += (t.summary?.totalSalesAmount || 0);
+                    const tripSalesAmt = (t.summary?.totalSalesAmount || 0);
+                    metricSales += tripSalesAmt;
+                    metricBirdSales += tripSalesAmt;
                     if (t.expenses) t.expenses.forEach(e => metricTripExpenses += (e.amount || 0));
                     if (t.losses) t.losses.forEach(l => {
                         const lDate = new Date(l.date);
@@ -540,7 +544,14 @@ export const getProfitAndLoss = async (req, res, next) => {
                             metricPurchase += amt;
                         }
                     }
-                    if (s.type === 'sale') metricSales += amt;
+                    if (s.type === 'sale') {
+                        metricSales += amt;
+                        if (s.inventoryType === 'feed') {
+                            metricFeedSales += amt;
+                        } else {
+                            metricBirdSales += amt;
+                        }
+                    }
                     if (s.type === 'mortality') metricMortality += amt;
                     if (s.type === 'weight_loss' || s.type === 'natural_weight_loss') metricWeightLoss += amt;
                 }
@@ -548,7 +559,9 @@ export const getProfitAndLoss = async (req, res, next) => {
 
             isales.forEach(s => {
                 metricPurchase += (s.summary?.totalPurchaseAmount || 0);
-                metricSales += (s.summary?.salesAmount || 0);
+                const indSaleAmt = (s.summary?.salesAmount || 0);
+                metricSales += indSaleAmt;
+                metricBirdSales += indSaleAmt;
                 metricMortality += (s.mortality?.amount || 0);
             });
 
@@ -708,79 +721,32 @@ export const getProfitAndLoss = async (req, res, next) => {
                     else if (name === 'SALES ACCOUNTS') {
                         targetValue = metricSales;
 
-                        const customerNodes = [];
-                        let customerSum = 0;
-
-                        allCustomers.forEach(c => {
-                            let amount = 0;
-
-                            // Trips
-                            trips.forEach(t => {
-                                const tDate = new Date(t.date);
-                                if (tDate >= sDate && tDate <= eDate && t.sales) {
-                                    t.sales.forEach(s => {
-                                        if (s.client && s.client.toString() === c._id.toString()) {
-                                            amount += (s.amount || 0);
-                                        }
-                                    });
-                                }
-                            });
-
-                            // Inventory Stocks
-                            stocks.forEach(s => {
-                                const sDateVal = new Date(s.date);
-                                if (sDateVal >= sDate && sDateVal <= eDate && s.type === 'sale') {
-                                    const cId = s.customerId?._id || s.customerId;
-                                    if (cId && cId.toString() === c._id.toString()) {
-                                        amount += (s.amount || (s.weight * s.rate) || 0);
-                                    }
-                                }
-                            });
-
-                            // Indirect Sales
-                            isales.forEach(s => {
-                                const sDateVal = new Date(s.date);
-                                if (sDateVal >= sDate && sDateVal <= eDate) {
-                                    if (s.customer && s.customer.toString() === c._id.toString()) {
-                                        amount += (s.summary?.salesAmount || 0);
-                                    }
-                                }
-                            });
-
-                            if (amount > 0) {
-                                customerSum += amount;
-                                customerNodes.push({
-                                    _id: c._id.toString(),
-                                    id: c._id.toString(),
-                                    name: c.shopName || c.ownerName,
-                                    slug: `customer-${c._id}`,
-                                    type: 'Income',
-                                    balance: amount,
-                                    debitTotal: 0,
-                                    creditTotal: amount,
-                                    children: [],
-                                    ledgers: []
-                                });
-                            }
-                        });
-
-                        const diff = targetValue - customerSum;
-                        if (Math.abs(diff) >= 0.01) {
-                            customerNodes.push({
-                                _id: 'other-sales',
-                                id: 'other-sales',
-                                name: 'Other Sales',
-                                slug: 'other-sales',
+                        g.children = [
+                            {
+                                _id: 'birds-sales',
+                                id: 'birds-sales',
+                                name: 'Birds Sales',
+                                slug: 'birds-sales',
                                 type: 'Income',
-                                balance: diff,
+                                balance: metricBirdSales,
                                 debitTotal: 0,
-                                creditTotal: diff,
+                                creditTotal: metricBirdSales,
                                 children: [],
                                 ledgers: []
-                            });
-                        }
-
-                        g.children = customerNodes;
+                            },
+                            {
+                                _id: 'feed-sales',
+                                id: 'feed-sales',
+                                name: 'Feed Sales',
+                                slug: 'feed-sales',
+                                type: 'Income',
+                                balance: metricFeedSales,
+                                debitTotal: 0,
+                                creditTotal: metricFeedSales,
+                                children: [],
+                                ledgers: []
+                            }
+                        ];
                     }
                     else if (name === 'OPENING STOCK') targetValue = metricOpeningStock;
                     else if (name === 'CLOSING STOCK') targetValue = metricClosingStock;
