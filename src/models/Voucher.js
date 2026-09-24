@@ -135,10 +135,32 @@ voucherSchema.pre('save', async function(next) {
   if ((this.voucherType === 'Payment' || this.voucherType === 'Receipt' || this.voucherType === 'Journal') && this.parties && this.parties.length > 0 && this.account) {
     this.entries = [];
     
-    // Get account ledger name
+    // Get account ledger name (or party name if Journal)
     const Ledger = mongoose.model('Ledger');
+    const Customer = mongoose.model('Customer');
+    const Vendor = mongoose.model('Vendor');
+    const DieselStation = mongoose.model('DieselStation');
+
+    let accountName = 'Account';
     const accountLedger = await Ledger.findById(this.account);
-    const accountName = accountLedger ? accountLedger.name : 'Account';
+    if (accountLedger) {
+      accountName = accountLedger.name;
+    } else {
+      const customer = await Customer.findById(this.account);
+      if (customer) {
+        accountName = customer.shopName || customer.ownerName || 'Customer';
+      } else {
+        const vendor = await Vendor.findById(this.account);
+        if (vendor) {
+          accountName = vendor.vendorName || 'Vendor';
+        } else {
+          const station = await DieselStation.findById(this.account);
+          if (station) {
+            accountName = station.name || 'Diesel Station';
+          }
+        }
+      }
+    }
     
     // For each party, create an entry
     for (let party of this.parties) {

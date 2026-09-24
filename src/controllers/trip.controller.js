@@ -34,7 +34,7 @@ const buildTransferPopulate = (depth = 3) => {
 const populateTripDetails = async (queryBuilder) => {
     const transferPopulate = buildTransferPopulate(5);
     let builder = queryBuilder
-        .populate('vehicle', 'vehicleNumber type capacity')
+        .populate('vehicle', 'vehicleNumber type capacity rentPerKm')
         .populate('supervisor', 'name mobileNumber')
         .populate('purchases.supplier', 'vendorName contactNumber')
         .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')

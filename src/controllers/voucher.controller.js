@@ -9,52 +9,87 @@ import AppError from "../utils/AppError.js";
 import mongoose from "mongoose";
 import { addToBalance, subtractFromBalance, populateVoucherParties } from "../utils/balanceUtils.js";
 
+const isCashOrBankLedgerDoc = async (ledgerId) => {
+    if (!ledgerId) return false;
+    const ledger = await Ledger.findById(ledgerId).populate('group');
+    if (!ledger) return false;
+    const groupSlug = ledger.group?.slug || '';
+    const groupName = ledger.group?.name || '';
+    const isCash = groupSlug === 'cash-in-hand' || groupName === 'Cash-in-Hand' || groupName === 'CASH A/C' || groupSlug === 'cash-a-c';
+    const isBank = groupSlug === 'bank-accounts' || groupName === 'Bank Accounts' || groupSlug === 'bank-od-a-c' || groupSlug === 'bank-od-accounts' || groupName === 'Bank OD A/c';
+    return isCash || isBank;
+};
+
+const validateVoucherAccountRules = async ({ voucherType, parties, account, entries }) => {
+    const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt' || voucherType === 'Journal';
+
+    if (isPaymentOrReceipt) {
+        if (!parties || parties.length === 0) {
+            throw new AppError('At least one party is required', 400);
+        }
+        if (!account) {
+            throw new AppError('Account is required', 400);
+        }
+
+        for (let partyItem of parties) {
+            if (!partyItem.partyId) {
+                throw new AppError('All parties must have a valid ID', 400);
+            }
+            if (!partyItem.amount || partyItem.amount <= 0) {
+                throw new AppError('All parties must have an amount greater than 0', 400);
+            }
+            if (partyItem.partyType === 'ledger') {
+                const isCashBank = await isCashOrBankLedgerDoc(partyItem.partyId);
+                if (isCashBank) {
+                    throw new AppError('Cash or Bank ledgers are not allowed in the party selection', 400);
+                }
+            }
+        }
+
+        if (voucherType === 'Payment' || voucherType === 'Receipt') {
+            const isCashBank = await isCashOrBankLedgerDoc(account);
+            if (!isCashBank) {
+                throw new AppError('Account must be a Cash or Bank ledger for Payment and Receipt vouchers', 400);
+            }
+        } else if (voucherType === 'Journal') {
+            const isCashBank = await isCashOrBankLedgerDoc(account);
+            if (isCashBank) {
+                throw new AppError('Cash or Bank ledgers are not allowed in Journal vouchers', 400);
+            }
+        }
+    } else if (voucherType === 'Contra') {
+        if (!entries || entries.length === 0) {
+            throw new AppError('Entries are required for Contra voucher', 400);
+        }
+        for (let entry of entries) {
+            if (!entry.account) {
+                throw new AppError('Account name is required for each entry', 400);
+            }
+            const ledger = await Ledger.findOne({
+                $or: [{ name: entry.account }, { slug: entry.account }]
+            }).populate('group');
+            if (!ledger) {
+                throw new AppError(`Account ${entry.account} not found`, 404);
+            }
+            const gSlug = ledger.group?.slug || '';
+            const gName = ledger.group?.name || '';
+            const isCash = gSlug === 'cash-in-hand' || gName === 'Cash-in-Hand' || gName === 'CASH A/C' || gSlug === 'cash-a-c';
+            const isBank = gSlug === 'bank-accounts' || gName === 'Bank Accounts' || gSlug === 'bank-od-a-c' || gSlug === 'bank-od-accounts' || gName === 'Bank OD A/c';
+            if (!isCash && !isBank) {
+                throw new AppError('Contra vouchers can only contain Cash and Bank accounts', 400);
+            }
+        }
+    }
+};
+
 export const createVoucher = async (req, res, next) => {
     try {
         const { voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
 
         const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt' || voucherType === 'Journal';
 
-        // Validate required fields based on voucher type
-        if (isPaymentOrReceipt) {
-            if (!parties || parties.length === 0) {
-                throw new AppError('At least one party is required for Payment/Receipt vouchers', 400);
-            }
-            if (!account) {
-                throw new AppError('Account (Cash or Bank) is required for Payment/Receipt vouchers', 400);
-            }
-
-            // Validate parties
-            for (let partyItem of parties) {
-                if (!partyItem.partyId) {
-                    throw new AppError('All parties must have a valid customer ID', 400);
-                }
-                if (!partyItem.amount || partyItem.amount <= 0) {
-                    throw new AppError('All parties must have an amount greater than 0', 400);
-                }
-            }
-
-            // Validate account ledger exists
-            const accountLedger = await Ledger.findById(account);
-            if (!accountLedger) {
-                throw new AppError('Account ledger not found', 404);
-            }
-        } else {
-            // For other voucher types, validate entries
-            if (!entries || entries.length === 0) {
-                throw new AppError('Voucher entries are required', 400);
-            }
-
-            // Validate entries structure
-            for (let entry of entries) {
-                if (!entry.account) {
-                    throw new AppError('Account name is required for each entry', 400);
-                }
-                if (entry.debitAmount < 0 || entry.creditAmount < 0) {
-                    throw new AppError('Debit and credit amounts cannot be negative', 400);
-                }
-            }
-        }
+        // Validate voucher account filtering rules
+        await validateVoucherAccountRules({ voucherType, parties, account, entries });
 
         // If party is provided (for non-Payment/Receipt vouchers), validate it exists
         let partyData = null;
@@ -427,17 +462,8 @@ export const updateVoucher = async (req, res, next) => {
 
         const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt' || voucherType === 'Journal';
 
-        // Validate entries if provided
-        if (entries && entries.length > 0) {
-            for (let entry of entries) {
-                if (!entry.account) {
-                    throw new AppError('Account name is required for each entry', 400);
-                }
-                if (entry.debitAmount < 0 || entry.creditAmount < 0) {
-                    throw new AppError('Debit and credit amounts cannot be negative', 400);
-                }
-            }
-        }
+        // Validate voucher account filtering rules
+        await validateVoucherAccountRules({ voucherType, parties, account, entries });
 
         // If party is provided (for non-Payment/Receipt vouchers), validate it exists
         let partyData = null;

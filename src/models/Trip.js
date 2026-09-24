@@ -577,8 +577,23 @@ tripSchema.pre('save', async function (next) {
         (this.summary.totalBirdsSold || 0) -
         (this.summary.totalBirdsLost || 0);
 
+    // Sync closing odometer from completionDetails if vehicleReadings.closing is not set
+    const closingKm = this.vehicleReadings?.closing ?? this.completionDetails?.closingOdometer;
+    if (this.vehicleReadings && closingKm !== undefined && closingKm !== null && closingKm !== '') {
+        this.vehicleReadings.closing = Number(closingKm);
+    }
+
+    // Validate vehicle readings and calculate totalDistance
+    if (this.vehicleReadings?.opening && this.vehicleReadings?.closing) {
+        if (this.vehicleReadings.closing < this.vehicleReadings.opening) {
+            return next(new Error('Closing odometer reading must be greater than opening reading'));
+        }
+        this.vehicleReadings.totalDistance = this.vehicleReadings.closing - this.vehicleReadings.opening;
+        this.totalKm = this.vehicleReadings.totalDistance;
+    }
+
     // Calculate gross rent: rentPerKm * totalDistance
-    const totalDistance = this.vehicleReadings?.totalDistance || 0;
+    const totalDistance = this.vehicleReadings?.totalDistance || this.totalKm || 0;
     this.summary.grossRent = (this.rentPerKm || 0) * totalDistance;
 
     // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
@@ -604,14 +619,6 @@ tripSchema.pre('save', async function (next) {
         this.summary.profitPerKg = Number((this.summary.tripProfit / this.summary.totalWeightPurchased).toFixed(2));
     } else {
         this.summary.profitPerKg = 0;
-    }
-
-    // Validate vehicle readings if closing reading is provided
-    if (this.vehicleReadings.opening && this.vehicleReadings.closing) {
-        if (this.vehicleReadings.closing < this.vehicleReadings.opening) {
-            return next(new Error('Closing odometer reading must be greater than opening reading'));
-        }
-        this.vehicleReadings.totalDistance = this.vehicleReadings.closing - this.vehicleReadings.opening;
     }
 
     next();
