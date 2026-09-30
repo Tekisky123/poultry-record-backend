@@ -246,16 +246,52 @@ export const updateTrip = async (req, res, next) => {
             }
         }
 
-        const trip = await Trip.findByIdAndUpdate(
-            id,
-            updateData,
-            { new: true, runValidators: true }
-        ).populate('vehicle', 'vehicleNumber type')
-            .populate('supervisor', 'name mobileNumber');
-
+        const trip = await Trip.findById(id);
         if (!trip) throw new AppError('Trip not found', 404);
 
-        successResponse(res, "Trip updated successfully", 200, trip);
+        // Apply update fields
+        Object.keys(updateData).forEach(key => {
+            if (key === 'vehicleReadings' && updateData.vehicleReadings) {
+                const existingOpening = trip.vehicleReadings?.opening;
+                const existingClosing = trip.vehicleReadings?.closing;
+                const newOpening = updateData.vehicleReadings.opening !== undefined ? updateData.vehicleReadings.opening : existingOpening;
+                const newClosing = updateData.vehicleReadings.closing !== undefined ? updateData.vehicleReadings.closing : existingClosing;
+
+                trip.vehicleReadings = {
+                    ...trip.vehicleReadings?.toObject?.() || trip.vehicleReadings || {},
+                    ...updateData.vehicleReadings,
+                    opening: newOpening,
+                    closing: newClosing
+                };
+
+                const openNum = Number(newOpening);
+                const closeNum = Number(newClosing);
+                if (!isNaN(openNum) && !isNaN(closeNum) && closeNum >= openNum) {
+                    const dist = Math.max(0, closeNum - openNum);
+                    trip.vehicleReadings.totalDistance = dist;
+                    trip.totalKm = dist;
+                }
+            } else {
+                trip[key] = updateData[key];
+            }
+        });
+
+        // Ensure totalDistance is re-evaluated if vehicleReadings exists
+        const openingKm = Number(trip.vehicleReadings?.opening);
+        const closingKm = Number(trip.vehicleReadings?.closing ?? trip.completionDetails?.closingOdometer);
+        if (!isNaN(openingKm) && openingKm >= 0 && !isNaN(closingKm) && closingKm >= openingKm) {
+            const dist = Math.max(0, closingKm - openingKm);
+            if (!trip.vehicleReadings) trip.vehicleReadings = { opening: openingKm };
+            trip.vehicleReadings.closing = closingKm;
+            trip.vehicleReadings.totalDistance = dist;
+            trip.totalKm = dist;
+        }
+
+        await trip.save();
+
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
+
+        successResponse(res, "Trip updated successfully", 200, populatedTrip);
     } catch (error) {
         next(error);
     }

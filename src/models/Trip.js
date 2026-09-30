@@ -584,16 +584,19 @@ tripSchema.pre('save', async function (next) {
     }
 
     // Validate vehicle readings and calculate totalDistance
-    if (this.vehicleReadings?.opening && this.vehicleReadings?.closing) {
-        if (this.vehicleReadings.closing < this.vehicleReadings.opening) {
-            return next(new Error('Closing odometer reading must be greater than opening reading'));
-        }
-        this.vehicleReadings.totalDistance = this.vehicleReadings.closing - this.vehicleReadings.opening;
-        this.totalKm = this.vehicleReadings.totalDistance;
+    const openingKm = Number(this.vehicleReadings?.opening);
+    const validClosing = Number(this.vehicleReadings?.closing);
+
+    if (!isNaN(openingKm) && openingKm >= 0 && !isNaN(validClosing) && validClosing >= openingKm) {
+        const calcDistance = Math.max(0, validClosing - openingKm);
+        this.vehicleReadings.totalDistance = calcDistance;
+        this.totalKm = calcDistance;
     }
 
     // Calculate gross rent: rentPerKm * totalDistance
-    const totalDistance = this.vehicleReadings?.totalDistance || this.totalKm || 0;
+    const totalDistance = (this.vehicleReadings?.opening !== undefined && this.vehicleReadings?.closing !== undefined && this.vehicleReadings?.closing >= this.vehicleReadings?.opening)
+        ? Math.max(0, Number(this.vehicleReadings.closing) - Number(this.vehicleReadings.opening))
+        : (this.vehicleReadings?.totalDistance || this.totalKm || 0);
     this.summary.grossRent = (this.rentPerKm || 0) * totalDistance;
 
     // Calculate birds profit: Total Sales - Total Purchases - Total Expenses - Gross Rent
