@@ -1260,11 +1260,17 @@ export const getDailyStockStats = async (req, res, next) => {
         const results = await InventoryStock.aggregate(pipeline);
 
         // Add formatted date string
-        const formattedResults = results.map(r => ({
-            ...r,
-            day: r._id,
-            formattedDate: new Date(r.date).toISOString().split('T')[0]
-        }));
+        const formattedResults = results.map(r => {
+            const d = new Date(r.date);
+            const y = d.getUTCFullYear();
+            const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+            const dayStr = String(d.getUTCDate()).padStart(2, '0');
+            return {
+                ...r,
+                day: r._id,
+                formattedDate: `${y}-${m}-${dayStr}`
+            };
+        });
 
         const totals = formattedResults.reduce((acc, curr) => ({
             totalPurchaseWeight: acc.totalPurchaseWeight + curr.totalPurchaseWeight,

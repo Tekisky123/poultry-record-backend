@@ -13,40 +13,17 @@ import { syncOutstandingBalance, toSignedValue, fromSignedValue } from "../utils
 
 export const addCustomer = async (req, res, next) => {
     try {
-        const { email, password, ...customerData } = req.body;
+        const customerData = req.body;
 
-        // Validate required fields for user creation
-        if (!password || !email) {
-            throw new AppError('Email and password are required for customer login', 400);
+        // ----- Duplicate check: use Customer model (contact is unique per customer) -----
+        if (customerData.contact) {
+            const existingByContact = await Customer.findOne({ contact: customerData.contact, isActive: true });
+            if (existingByContact) {
+                throw new AppError('A customer with this contact number already exists', 400);
+            }
         }
 
-        // Validate email format
-        if (!validator.isEmail(email)) {
-            throw new AppError('Invalid email format', 400);
-        }
 
-        // Validate password strength
-        if (!validator.isStrongPassword(password, {
-            minLength: 6,
-            minLowercase: 1,
-            minUppercase: 1,
-            minNumbers: 1,
-            minSymbols: 0
-        })) {
-            throw new AppError('Password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
-        }
-
-        // Check if user already exists (email or mobile)
-        const existingUser = await User.findOne({
-            $or: [
-                { email: email },
-                { mobileNumber: customerData.contact }
-            ]
-        });
-
-        if (existingUser) {
-            throw new AppError('User with this email or mobile number already exists', 400);
-        }
 
         // Automatically find and assign "Sundry Debtors" group for customers
         let groupId = customerData.group;
@@ -56,7 +33,6 @@ export const addCustomer = async (req, res, next) => {
                 isActive: true
             });
             if (!sundryDebtorsGroup) {
-                // If slug not found, try fallback to name just in case migration was partial or manual change
                 const fallbackGroup = await Group.findOne({ name: 'Sundry Debtors', isActive: true });
                 if (!fallbackGroup) {
                     throw new AppError('Sundry Debtors group not found (slug: sundry-debtors). Please contact administrator.', 404);
@@ -66,42 +42,22 @@ export const addCustomer = async (req, res, next) => {
                 groupId = sundryDebtorsGroup._id;
             }
         } else {
-            // Validate provided group exists
             const groupDoc = await Group.findById(groupId);
             if (!groupDoc || !groupDoc.isActive) {
                 throw new AppError('Group not found or inactive', 404);
             }
         }
 
-        // Hash password
-        const hashPassword = await bcrypt.hash(password, 10);
-
-        // Create User account first with mobileNumber synced from customer contact
-        const user = new User({
-            name: customerData.ownerName || customerData.shopName,
-            email: email,
-            mobileNumber: customerData.contact, // Sync mobile number from customer contact
-            password: hashPassword,
-            plainTextPassword: password,
-            role: 'customer',
-            approvalStatus: 'approved', // Auto-approve customers created by admin
-            isActive: true
-        });
-
-        const savedUser = await user.save();
-
-        // Create Customer record with user reference
         const openingBalance = customerData.openingBalance || 0;
         const openingBalanceType = customerData.openingBalanceType || 'debit';
 
+        // Create Customer record — Customer model is the ONLY model used here. No User is created.
         const customer = new Customer({
             ...customerData,
             tdsUpdatedAt: customerData.tdsApplicable ? new Date() : undefined,
-            group: groupId, // Use automatically assigned or provided group
-            user: savedUser._id,
+            group: groupId,
             createdBy: req.user._id,
             updatedBy: req.user._id,
-            // Set both openingBalance and outstandingBalance to the same initial value
             openingBalance: openingBalance,
             openingBalanceType: openingBalanceType,
             outstandingBalance: openingBalance,
@@ -110,23 +66,12 @@ export const addCustomer = async (req, res, next) => {
 
         const savedCustomer = await customer.save();
 
-        // Update User with customer reference
-        savedUser.customer = savedCustomer._id;
-        await savedUser.save();
-
-        // Populate customer data for response
-        let userFields = 'name email mobileNumber role approvalStatus';
-        if (req.user?.role === 'superadmin') {
-            userFields += ' +plainTextPassword';
-        }
-
         const populatedCustomer = await Customer.findById(savedCustomer._id)
-            .populate('user', userFields)
             .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
-        successResponse(res, "New customer added with login credentials!", 201, populatedCustomer);
+        successResponse(res, 'New customer added successfully!', 201, populatedCustomer);
     } catch (error) {
         next(error);
     }
@@ -181,7 +126,7 @@ export const updateCustomer = async (req, res, next) => {
             return res.status(404).json({ message: "Customer not found" });
         }
 
-        // If user credentials are being updated
+        // Sync linked User account (login credentials) if customer has one and credentials are being updated
         if (customer.user && (password || email)) {
             const userUpdateData = {};
 
@@ -189,7 +134,7 @@ export const updateCustomer = async (req, res, next) => {
                 if (!validator.isEmail(email)) {
                     throw new AppError('Invalid email format', 400);
                 }
-                userUpdateData.email = email;
+                userUpdateData.email = email.toLowerCase();
             }
 
             if (password) {
@@ -206,10 +151,11 @@ export const updateCustomer = async (req, res, next) => {
                 userUpdateData.plainTextPassword = password;
             }
 
-            // Always sync mobile number from customer contact to user
-            userUpdateData.mobileNumber = customerData.contact;
+            // Sync mobile number from customer contact to linked user account
+            if (customerData.contact) {
+                userUpdateData.mobileNumber = customerData.contact;
+            }
 
-            // Update user if there are changes
             if (Object.keys(userUpdateData).length > 0) {
                 await User.findByIdAndUpdate(customer.user, userUpdateData);
             }
@@ -314,13 +260,15 @@ export const deleteCustomer = async (req, res, next) => {
             throw new AppError("Cannot delete customer: It has a balance of 1 RS or more.", 400);
         }
 
-        const customer = await Customer.findByIdAndUpdate(
-            id,
-            { isActive: false, updatedBy: req.user._id },
-            { new: true }
-        );
+        // Hard delete the Customer document from the database
+        await Customer.findByIdAndDelete(id);
 
-        successResponse(res, "Customer deleted successfully", 200, customer);
+        // Also delete the linked User account if one exists
+        if (existingCustomer.user) {
+            await User.findByIdAndDelete(existingCustomer.user);
+        }
+
+        successResponse(res, "Customer deleted successfully", 200, { _id: id });
     } catch (error) {
         next(error);
     }
@@ -420,14 +368,14 @@ export const updateCustomerProfile = async (req, res, next) => {
             { new: true, runValidators: true }
         ).populate('user', 'name email mobileNumber role approvalStatus');
 
-        // Update user data if provided
-        if (updateData.ownerName || updateData.email || updateData.mobileNumber) {
+        // Sync to linked User account if the customer has one
+        if (customer.user && (updateData.ownerName || updateData.email || updateData.mobileNumber)) {
             const userUpdateData = {};
             if (updateData.ownerName) userUpdateData.name = updateData.ownerName;
-            if (updateData.email) userUpdateData.email = updateData.email;
+            if (updateData.email) userUpdateData.email = updateData.email.toLowerCase();
             if (updateData.mobileNumber) userUpdateData.mobileNumber = updateData.mobileNumber;
 
-            await User.findByIdAndUpdate(id, userUpdateData);
+            await User.findByIdAndUpdate(customer.user, userUpdateData);
         }
 
         successResponse(res, "Customer profile updated successfully", 200, updatedCustomer);
@@ -1204,7 +1152,7 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         // Self-Healing: Sync calculated ledger balance to customer profile if mismatched
         // This fixes issues where intermediate updates (like editing middle sales) might have missed propagating the final balance
         const balanceObj = fromSignedValue(totals.currentBalance);
-        if (customer.outstandingBalance === undefined || 
+        if (customer.outstandingBalance === undefined ||
             Math.abs(toSignedValue(customer.outstandingBalance, customer.outstandingBalanceType || 'debit') - totals.currentBalance) > 0.01) {
             await Customer.findByIdAndUpdate(customerId, {
                 outstandingBalance: balanceObj.amount,
@@ -1271,7 +1219,7 @@ export const getCustomerPayments = async (req, res, next) => {
 
 export const updateCustomerPassword = async (req, res, next) => {
     try {
-        const { id } = req.params; // User ID
+        const { id } = req.params; // User ID (from customer panel - the linked User account ID)
         const { currentPassword, newPassword } = req.body;
 
         // Validate new password strength
@@ -1285,10 +1233,10 @@ export const updateCustomerPassword = async (req, res, next) => {
             throw new AppError('New password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
         }
 
-        // Find user
+        // Find the User account by ID (the panel uses the linked User ID)
         const user = await User.findById(id);
         if (!user) {
-            throw new AppError('User not found', 404);
+            throw new AppError('Login account not found. This customer may not have a login account set up.', 404);
         }
 
         // Verify current password
@@ -1297,10 +1245,8 @@ export const updateCustomerPassword = async (req, res, next) => {
             throw new AppError('Current password is incorrect', 400);
         }
 
-        // Hash new password
+        // Hash and update new password
         const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-
-        // Update password
         await User.findByIdAndUpdate(id, { password: hashedNewPassword, plainTextPassword: newPassword });
 
         successResponse(res, "Password updated successfully", 200, null);

@@ -355,7 +355,8 @@ export const getVendorLedger = async (req, res, next) => {
                 const purchases = trip.purchases.filter(p => p.supplier && p.supplier.toString() === id);
                 for (const purchase of purchases) {
                     let tripAmount = purchase.amount || 0;
-                    periodOpeningBalance += tripAmount; // Purchase increases payable (Credit)
+                    let lessTDS = isTdsApplicableForDate(trip.date) ? tripAmount * 0.001 : 0;
+                    periodOpeningBalance += (tripAmount - lessTDS); // Purchase increases payable (Credit), net of TDS deducted
                 }
             }
 
@@ -394,8 +395,12 @@ export const getVendorLedger = async (req, res, next) => {
             }
 
             for (const sale of prevIndirectSales) {
-                let saleAmount = sale.summary?.totalPurchaseAmount || 0;
-                periodOpeningBalance += saleAmount;
+                const purchases = sale.purchases || [];
+                for (const purchase of purchases) {
+                    let saleAmount = purchase.amount || 0;
+                    let lessTDS = isTdsApplicableForDate(sale.date) ? saleAmount * 0.001 : 0;
+                    periodOpeningBalance += (saleAmount - lessTDS);
+                }
             }
 
             // Fetch previous Inventory Stocks
@@ -407,7 +412,8 @@ export const getVendorLedger = async (req, res, next) => {
 
             for (const stock of prevStocks) {
                 let stockAmount = stock.amount || 0;
-                periodOpeningBalance += stockAmount;
+                let lessTDS = isTdsApplicableForDate(stock.date) ? stockAmount * 0.001 : 0;
+                periodOpeningBalance += (stockAmount - lessTDS);
             }
         }
 
@@ -512,7 +518,7 @@ export const getVendorLedger = async (req, res, next) => {
                 amount: stock.amount,
                 lessTDS: lessTDS,
                 tripId: '-',
-                voucherNo: '-', // Could use RefNo if needed
+                voucherNo: '-', // Could use RefNo if needed,
                 timestamp: new Date(stock.date).getTime(),
                 narration: stock.notes || ''
             });
@@ -653,7 +659,8 @@ export const getVendorLedger = async (req, res, next) => {
 
         const transactionEntries = ledgerEntries.map(entry => {
             if (entry.type === 'PURCHASE') {
-                runningBalance += entry.amount; // Credit (Payable increases)
+                const netPurchaseAmount = entry.amount - (entry.lessTDS || 0);
+                runningBalance += netPurchaseAmount; // Net Credit (Payable increases by amount minus TDS)
             } else if (entry.uniqueId === 'OP_BAL_INJECTED') {
                  if (entry.amountType === 'credit') runningBalance += entry.amount;
                  else runningBalance -= entry.amount;
