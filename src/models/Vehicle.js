@@ -121,7 +121,6 @@ vehicleSchema.pre('save', function (next) {
     next();
 });
 
-vehicleSchema.index({ vehicleNumber: 1 }, { unique: true });
 vehicleSchema.index({ location: "2dsphere" });
 
 const Vehicle = mongoose.model("Vehicle", vehicleSchema);

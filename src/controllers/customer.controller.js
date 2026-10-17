@@ -1,5 +1,6 @@
 import Customer from "../models/Customer.js";
 import User from "../models/User.js";
+import Vendor from "../models/Vendor.js";
 import Trip from "../models/Trip.js";
 import IndirectSale from "../models/IndirectSale.js";
 import InventoryStock from "../models/InventoryStock.js";
@@ -14,14 +15,6 @@ import { syncOutstandingBalance, toSignedValue, fromSignedValue } from "../utils
 export const addCustomer = async (req, res, next) => {
     try {
         const customerData = req.body;
-
-        // ----- Duplicate check: use Customer model (contact is unique per customer) -----
-        if (customerData.contact) {
-            const existingByContact = await Customer.findOne({ contact: customerData.contact, isActive: true });
-            if (existingByContact) {
-                throw new AppError('A customer with this contact number already exists', 400);
-            }
-        }
 
 
 
@@ -278,7 +271,13 @@ export const getCustomerSales = async (req, res, next) => {
     try {
         const { id } = req.params; // user ID
 
-        const customer = await Customer.findOne({ user: id, isActive: true });
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            });
+        }
         if (!customer) {
             throw new AppError('Customer profile not found', 404);
         }
@@ -332,13 +331,16 @@ export const getCustomerProfile = async (req, res, next) => {
     try {
         const { id } = req.params; // User ID for customer panel
 
-        const customer = await Customer.findOne({
-            user: id,
-            isActive: true
-        })
-            .populate('user', 'name email mobileNumber role approvalStatus createdAt lastLogin')
-            .populate('createdBy', 'name')
-            .populate('updatedBy', 'name');
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            })
+                .populate('user', 'name email mobileNumber role approvalStatus createdAt lastLogin')
+                .populate('createdBy', 'name')
+                .populate('updatedBy', 'name');
+        }
 
         if (!customer) {
             throw new AppError('Customer profile not found', 404);
@@ -355,8 +357,14 @@ export const updateCustomerProfile = async (req, res, next) => {
         const { id } = req.params; // User ID for customer panel
         const updateData = req.body;
 
-        // Find customer by user ID
-        const customer = await Customer.findOne({ user: id, isActive: true });
+        // Find customer by user ID or customer ID
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            });
+        }
         if (!customer) {
             throw new AppError('Customer not found', 404);
         }
@@ -388,7 +396,13 @@ export const getCustomerDashboardStats = async (req, res, next) => {
     try {
         const { id } = req.params; // User ID
 
-        const customer = await Customer.findOne({ user: id, isActive: true });
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            });
+        }
         if (!customer) {
             throw new AppError('Customer profile not found', 404);
         }
@@ -508,7 +522,13 @@ export const getCustomerPurchaseLedger = async (req, res, next) => {
         const { id } = req.params; // User ID
         const { page = 1, limit = 10 } = req.query;
 
-        const customer = await Customer.findOne({ user: id, isActive: true });
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            });
+        }
         if (!customer) {
             throw new AppError('Customer profile not found', 404);
         }
@@ -1182,7 +1202,13 @@ export const getCustomerPayments = async (req, res, next) => {
         const { id } = req.params; // User ID
         const { page = 1, limit = 15 } = req.query;
 
-        const customer = await Customer.findOne({ user: id, isActive: true });
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            });
+        }
         if (!customer) {
             throw new AppError('Customer profile not found', 404);
         }
@@ -1259,7 +1285,13 @@ export const getCustomerOutstandingBalance = async (req, res, next) => {
     try {
         const { id } = req.params; // User ID
 
-        const customer = await Customer.findOne({ user: id, isActive: true });
+        let customer = null;
+        if (mongoose.isValidObjectId(id)) {
+            customer = await Customer.findOne({
+                $or: [{ _id: id }, { user: id }],
+                isActive: true
+            });
+        }
         if (!customer) {
             throw new AppError('Customer profile not found', 404);
         }

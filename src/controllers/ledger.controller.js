@@ -359,8 +359,10 @@ export const getMonthlySummary = async (req, res, next) => {
 
         const subjectIdStr = id.toString();
         const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
-            subjectType === 'vendor' ? subject.vendorName : subject.name;
+            subjectType === 'vendor' ? (subject.companyName || subject.vendorName) : subject.name;
         const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+        const vendorNameStr = (subjectType === 'vendor' && subject.vendorName) ? subject.vendorName.trim().toLowerCase() : '';
+        const companyNameStr = (subjectType === 'vendor' && subject.companyName) ? subject.companyName.trim().toLowerCase() : '';
 
         // Helper: mirrors vendor.controller.js isTdsApplicableForDate exactly
         const isTdsApplicableForDate = (date) => {
@@ -422,7 +424,12 @@ export const getMonthlySummary = async (req, res, next) => {
                     // Match by ID first; fall back to ledger name for legacy data
                     // where e.account may store the name string instead of the ObjectId
                     let entryMatch = entryAcc === subjectIdStr;
-                    if (!entryMatch && subjectNameStr && entryAcc.toLowerCase() === subjectNameStr) {
+                    if (!entryMatch && subjectType === 'vendor') {
+                        const accLower = entryAcc.toLowerCase();
+                        if ((vendorNameStr && accLower === vendorNameStr) || (companyNameStr && accLower === companyNameStr)) {
+                            entryMatch = true;
+                        }
+                    } else if (!entryMatch && subjectNameStr && entryAcc.toLowerCase() === subjectNameStr) {
                         entryMatch = true;
                     }
                     if (entryMatch) {
@@ -664,7 +671,11 @@ export const getMonthlySummary = async (req, res, next) => {
         successResponse(res, "Monthly summary retrieved", 200, {
             subject: {
                 id: subject._id,
-                name: subject.name || subject.shopName || subject.vendorName,
+                name: subjectType === 'vendor'
+                    ? (subject.companyName || subject.vendorName)
+                    : (subject.name || subject.shopName || subject.vendorName),
+                companyName: subject.companyName,
+                vendorName: subject.vendorName,
                 type: subjectType
             },
             openingBalance: openingYearBalance.amount,
@@ -809,8 +820,10 @@ export const getDailySummary = async (req, res, next) => {
 
         const subjectIdStr = id.toString();
         const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
-            subjectType === 'vendor' ? subject.vendorName : subject.name;
+            subjectType === 'vendor' ? (subject.companyName || subject.vendorName) : subject.name;
         const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+        const vendorNameStr = (subjectType === 'vendor' && subject.vendorName) ? subject.vendorName.trim().toLowerCase() : '';
+        const companyNameStr = (subjectType === 'vendor' && subject.companyName) ? subject.companyName.trim().toLowerCase() : '';
 
         // Helper: mirrors vendor.controller.js isTdsApplicableForDate exactly
         const isTdsApplicableForDate = (date) => {
@@ -845,7 +858,14 @@ export const getDailySummary = async (req, res, next) => {
                     const entryAcc = e.account ? e.account.toString().trim() : '';
                     let entryMatch = entryAcc === subjectIdStr;
                     // Name fallback for legacy data
-                    if (!entryMatch && e.name && e.name.trim().toLowerCase() === subjectNameStr) {
+                    if (!entryMatch && subjectType === 'vendor') {
+                        const accLower = entryAcc.toLowerCase();
+                        const eNameLower = e.name ? e.name.trim().toLowerCase() : '';
+                        if ((vendorNameStr && (accLower === vendorNameStr || eNameLower === vendorNameStr)) ||
+                            (companyNameStr && (accLower === companyNameStr || eNameLower === companyNameStr))) {
+                            entryMatch = true;
+                        }
+                    } else if (!entryMatch && ((subjectNameStr && entryAcc.toLowerCase() === subjectNameStr) || (e.name && e.name.trim().toLowerCase() === subjectNameStr))) {
                         entryMatch = true;
                     }
                     if (entryMatch) {
@@ -1066,7 +1086,11 @@ export const getDailySummary = async (req, res, next) => {
         successResponse(res, "Daily summary retrieved", 200, {
             subject: {
                 id: subject._id,
-                name: subject.name || subject.shopName || subject.vendorName,
+                name: subjectType === 'vendor'
+                    ? (subject.companyName || subject.vendorName)
+                    : (subject.name || subject.shopName || subject.vendorName),
+                companyName: subject.companyName,
+                vendorName: subject.vendorName,
                 type: subjectType
             },
             days,
@@ -1615,7 +1639,7 @@ export const getPurchaseSalesReport = async (req, res, next) => {
             }
             const trips = await Trip.find(tripQuery)
                 .populate('vehicle', 'vehicleNumber')
-                .populate('purchases.supplier', 'vendorName gstNumber panNumber')
+                .populate('purchases.supplier', 'vendorName companyName gstNumber panNumber')
                 .lean();
 
             trips.forEach(trip => {
@@ -1630,7 +1654,7 @@ export const getPurchaseSalesReport = async (req, res, next) => {
                         reportData.push({
                             id: `trip_pur_${trip._id}_${idx}`,
                             date: trip.date,
-                            particulars: supplier.vendorName || '-',
+                            particulars: supplier.companyName || supplier.vendorName || '-',
                             birds: p.birds || 0,
                             avg: p.birds > 0 ? Number((p.weight / p.birds).toFixed(2)) : 0,
                             weight: p.weight || 0,
@@ -1659,12 +1683,12 @@ export const getPurchaseSalesReport = async (req, res, next) => {
             }
             const stocks = await InventoryStock.find(stockQuery)
                 .populate('vehicleId', 'vehicleNumber')
-                .populate('vendorId', 'vendorName gstNumber panNumber')
+                .populate('vendorId', 'vendorName companyName gstNumber panNumber')
                 .lean();
 
             stocks.forEach(stock => {
                 const vendor = stock.vendorId;
-                const vName = vendor ? vendor.vendorName : '-';
+                const vName = vendor ? (vendor.companyName || vendor.vendorName) : '-';
                 const vGst = vendor ? vendor.gstNumber || '-' : '-';
                 const vPan = vendor ? vendor.panNumber || extractPanFromGst(vendor.gstNumber) : '-';
 

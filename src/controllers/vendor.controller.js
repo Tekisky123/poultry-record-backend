@@ -724,7 +724,9 @@ export const getVendorLedger = async (req, res, next) => {
                 itemsPerPage: limit
             },
             vendor: {
-                name: vendor.vendorName,
+                name: vendor.companyName || vendor.vendorName,
+                vendorName: vendor.vendorName,
+                companyName: vendor.companyName,
                 openingBalance: vendor.openingBalance,
                 currentBalance: vendor.outstandingBalance
             },

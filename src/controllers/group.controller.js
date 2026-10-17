@@ -1502,7 +1502,7 @@ export const getGroupSummary = async (req, res, next) => {
             entries.push({
                 type: 'vendor',
                 id: vendor._id.toString(),
-                name: vendor.vendorName,
+                name: vendor.companyName || vendor.vendorName,
                 debit,
                 credit,
                 birds: vendorBalance.birdsTotal || 0,

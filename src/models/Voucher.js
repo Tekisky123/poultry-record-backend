@@ -245,7 +245,6 @@ voucherSchema.pre('save', async function(next) {
 });
 
 // Index for better query performance
-voucherSchema.index({ voucherNumber: 1 });
 voucherSchema.index({ voucherType: 1 });
 voucherSchema.index({ date: -1 });
 voucherSchema.index({ party: 1 });

@@ -177,8 +177,6 @@ const vendorSchema = new mongoose.Schema({
     toObject: { virtuals: true }
 });
 
-// Ensure email is unique
-vendorSchema.index({ email: 1 }, { unique: true });
 vendorSchema.index({ contactNumber: 1 }, { unique: true });
 
 const Vendor = mongoose.model("Vendor", vendorSchema);
