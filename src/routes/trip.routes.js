@@ -12,7 +12,7 @@ router.get('/stats/monthly', authenticateToken, authorize(['admin', 'superadmin'
 router.get('/stats/daily', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getDailyTripStats);
 router.get('/stats/overview', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripStats);
 router.get('/:id', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.getTripById);
-router.put('/:id', authenticateToken, authorize(['admin', 'superadmin']), tripController.updateTrip);
+router.put('/:id', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.updateTrip);
 router.delete('/:id', authenticateToken, authorize(['superadmin']), tripController.deleteTrip);
 
 // Trip management operations (Supervisor)

@@ -219,20 +219,25 @@ export const getTripById = async (req, res, next) => {
     }
 }
 
-// Update trip (Admin only)
+// Update trip (Admin or Supervisor for their own trip)
 export const updateTrip = async (req, res, next) => {
     try {
-        if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
-            throw new AppError('Only admin can update trip details', 403);
-        }
-
         const { id } = req.params;
         const updateData = {
             ...req.body,
             updatedBy: req.user._id
         };
 
-        if (updateData.supervisor) {
+        let query = { _id: id };
+        if (req.user.role === 'supervisor') {
+            query.supervisor = req.user._id;
+            delete updateData.supervisor; // Supervisors cannot reassign trip supervisor
+        }
+
+        const trip = await Trip.findOne(query);
+        if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (updateData.supervisor && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
             if (typeof updateData.supervisor === 'object' && (updateData.supervisor._id || updateData.supervisor.id)) {
                 updateData.supervisor = updateData.supervisor._id || updateData.supervisor.id;
             } else if (typeof updateData.supervisor === 'string' && !mongoose.Types.ObjectId.isValid(updateData.supervisor)) {
@@ -246,14 +251,30 @@ export const updateTrip = async (req, res, next) => {
             }
         }
 
-        const trip = await Trip.findById(id);
-        if (!trip) throw new AppError('Trip not found', 404);
+        // Handle vehicle update
+        if (updateData.vehicle) {
+            let vehicleId = updateData.vehicle;
+            if (typeof vehicleId === 'object' && (vehicleId._id || vehicleId.id)) {
+                vehicleId = vehicleId._id || vehicleId.id;
+            }
+            updateData.vehicle = vehicleId;
+
+            // If vehicle is changing, update rentPerKm from the new vehicle
+            const currentVehicleId = trip.vehicle?._id || trip.vehicle;
+            if (String(vehicleId) !== String(currentVehicleId)) {
+                const Vehicle = mongoose.model('Vehicle');
+                const newVehicle = await Vehicle.findById(vehicleId);
+                if (newVehicle) {
+                    trip.rentPerKm = newVehicle.rentPerKm || 0;
+                }
+            }
+        }
 
         // Apply update fields
         Object.keys(updateData).forEach(key => {
             if (key === 'vehicleReadings' && updateData.vehicleReadings) {
                 const existingOpening = trip.vehicleReadings?.opening;
-                const existingClosing = trip.vehicleReadings?.closing;
+                const existingClosing = trip.vehicleReadings?.closing ?? trip.completionDetails?.closingOdometer;
                 const newOpening = updateData.vehicleReadings.opening !== undefined ? updateData.vehicleReadings.opening : existingOpening;
                 const newClosing = updateData.vehicleReadings.closing !== undefined ? updateData.vehicleReadings.closing : existingClosing;
 
@@ -285,6 +306,11 @@ export const updateTrip = async (req, res, next) => {
             trip.vehicleReadings.closing = closingKm;
             trip.vehicleReadings.totalDistance = dist;
             trip.totalKm = dist;
+        }
+
+        // Sync closing odometer to completionDetails if trip was completed
+        if (trip.completionDetails && trip.vehicleReadings?.closing !== undefined) {
+            trip.completionDetails.closingOdometer = trip.vehicleReadings.closing;
         }
 
         await trip.save();
@@ -2216,10 +2242,6 @@ export const deletePurchase = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot delete purchase from a completed trip', 403);
-        }
-
         if (trip.type === 'transferred') {
             throw new AppError('Cannot delete purchases in transferred trips.', 403);
         }
@@ -2265,10 +2287,6 @@ export const deleteSale = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
-
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot delete sale/receipt from a completed trip', 403);
-        }
 
         const saleIndex = parseInt(index);
         if (saleIndex < 0 || saleIndex >= trip.sales.length) {
@@ -2387,10 +2405,6 @@ export const deleteTripDiesel = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot delete diesel from a completed trip', 403);
-        }
-
         const dieselIndex = parseInt(index);
         if (dieselIndex < 0 || dieselIndex >= trip.diesel.stations.length) {
             throw new AppError('Invalid diesel index', 400);
@@ -2449,10 +2463,6 @@ export const deleteExpense = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot delete expense from a completed trip', 403);
-        }
-
         const expenseIndex = parseInt(index);
         if (expenseIndex < 0 || expenseIndex >= trip.expenses.length) {
             throw new AppError('Invalid expense index', 400);
@@ -2492,10 +2502,6 @@ export const deleteLoss = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
-
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot delete loss from a completed trip', 403);
-        }
 
         const lossIndex = parseInt(index);
         if (lossIndex < 0 || lossIndex >= trip.losses.length) {
@@ -2540,10 +2546,6 @@ export const deleteTransfer = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot delete transfer from a completed trip', 403);
-        }
-
         const transferIndex = parseInt(index);
         if (transferIndex < 0 || transferIndex >= trip.transferHistory.length) {
             throw new AppError('Invalid transfer index', 400);
@@ -2555,10 +2557,6 @@ export const deleteTransfer = async (req, res, next) => {
         if (receiverTripId) {
             const receiverTrip = await Trip.findById(receiverTripId);
             if (receiverTrip) {
-                if (receiverTrip.status === 'completed') {
-                    throw new AppError('Cannot delete transfer: The receiving trip is already completed.', 400);
-                }
-
                 // Reset receiving vehicle status to idle
                 if (receiverTrip.vehicle) {
                     await Vehicle.findByIdAndUpdate(receiverTrip.vehicle, { currentStatus: 'idle' });
@@ -2610,10 +2608,6 @@ export const updateTransfer = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
-
-        if (req.user.role === 'supervisor' && trip.status === 'completed') {
-            throw new AppError('Cannot edit a transfer on a completed trip', 403);
-        }
 
         const transferIndex = parseInt(index);
         if (isNaN(transferIndex) || transferIndex < 0 || transferIndex >= trip.transferHistory.length) {
@@ -2671,25 +2665,19 @@ export const updateTransfer = async (req, res, next) => {
         if (receiverTripId) {
             const receiverTrip = await Trip.findById(receiverTripId);
             if (receiverTrip) {
-                if (receiverTrip.status === 'completed' && req.user.role === 'supervisor') {
-                    // The receiver is already completed — surface a warning but don't fail.
-                    // Original trip is already updated; just skip receiver sync.
-                    console.warn(`updateTransfer: receiver trip ${receiverTripId} is completed — skipping purchase sync.`);
-                } else {
-                    // Find the transfer purchase entry (dcNumber starts with "TRANSFER-")
-                    const purchaseIndex = receiverTrip.purchases.findIndex(
-                        p => p.dcNumber && p.dcNumber.startsWith('TRANSFER-')
-                    );
-                    if (purchaseIndex >= 0) {
-                        receiverTrip.purchases[purchaseIndex].birds     = newBirds;
-                        receiverTrip.purchases[purchaseIndex].weight    = newWeight;
-                        receiverTrip.purchases[purchaseIndex].avgWeight = newAvgWeight;
-                        receiverTrip.purchases[purchaseIndex].rate      = newRate;
-                        receiverTrip.purchases[purchaseIndex].amount    = newAmount;
-                    }
-                    receiverTrip.updatedBy = req.user._id;
-                    await receiverTrip.save(); // pre-save recalculates receiver's full summary
+                // Find the transfer purchase entry (dcNumber starts with "TRANSFER-")
+                const purchaseIndex = receiverTrip.purchases.findIndex(
+                    p => p.dcNumber && p.dcNumber.startsWith('TRANSFER-')
+                );
+                if (purchaseIndex >= 0) {
+                    receiverTrip.purchases[purchaseIndex].birds     = newBirds;
+                    receiverTrip.purchases[purchaseIndex].weight    = newWeight;
+                    receiverTrip.purchases[purchaseIndex].avgWeight = newAvgWeight;
+                    receiverTrip.purchases[purchaseIndex].rate      = newRate;
+                    receiverTrip.purchases[purchaseIndex].amount    = newAmount;
                 }
+                receiverTrip.updatedBy = req.user._id;
+                await receiverTrip.save(); // pre-save recalculates receiver's full summary
             }
         }
 
