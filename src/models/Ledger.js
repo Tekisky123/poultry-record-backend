@@ -91,6 +91,7 @@ const ledgerSchema = new mongoose.Schema({
 
 // Index for efficient queries
 ledgerSchema.index({ group: 1 });
+ledgerSchema.index({ group: 1, isActive: 1 });
 ledgerSchema.index({ vendor: 1 });
 ledgerSchema.index({ customer: 1 });
 ledgerSchema.index({ ledgerType: 1 });

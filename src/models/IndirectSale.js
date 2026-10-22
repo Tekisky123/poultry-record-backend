@@ -210,6 +210,11 @@ indirectSaleSchema.methods.recalculateSummary = function () {
     };
 };
 
+indirectSaleSchema.index({ date: -1 });
+indirectSaleSchema.index({ customer: 1, date: -1 });
+indirectSaleSchema.index({ vendor: 1, date: -1 });
+indirectSaleSchema.index({ isActive: 1, date: -1 });
+
 const IndirectSale = mongoose.model('IndirectSale', indirectSaleSchema);
 
 export default IndirectSale;

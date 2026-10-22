@@ -21,7 +21,7 @@ export const addVehicle = async (req, res, next) => {
 
 export const getVehicles = async (req, res, next) => {
     try {
-        const vehicles = await Vehicle.find({ isActive: true }).sort({ createdAt: -1 });
+        const vehicles = await Vehicle.find({ isActive: true }).sort({ createdAt: -1 }).lean();
         successResponse(res, "vehicles", 200, vehicles)
     } catch (error) {
         next(error);
@@ -31,7 +31,7 @@ export const getVehicles = async (req, res, next) => {
 export const getVehicleById = async (req, res, next) => {
     const { id } = req?.params;
     try {
-        const vehicle = await Vehicle.findOne({ _id: id, isActive: true });
+        const vehicle = await Vehicle.findOne({ _id: id, isActive: true }).lean();
         successResponse(res, "vehicle", 200, vehicle)
     } catch (error) {
         next(error);

@@ -2,6 +2,8 @@ import Trip from "../models/Trip.js";
 import Vehicle from "../models/Vehicle.js";
 import User from "../models/User.js";
 import Customer from "../models/Customer.js";
+import Vendor from "../models/Vendor.js";
+import Voucher from "../models/Voucher.js";
 import Ledger from "../models/Ledger.js";
 import DieselStation from "../models/DieselStation.js";
 import AppError from "../utils/AppError.js";
@@ -20,7 +22,7 @@ const buildTransferPopulate = (depth = 3) => {
         select: 'tripId supervisor type purchases transferredFrom',
         populate: [
             { path: 'supervisor', select: 'name mobileNumber' },
-            { path: 'purchases.supplier', select: 'vendorName' }
+            { path: 'purchases.supplier', select: 'vendorName companyName openingBalance openingBalanceType outstandingBalance outstandingBalanceType' }
         ]
     };
 
@@ -31,12 +33,22 @@ const buildTransferPopulate = (depth = 3) => {
     return populateConfig;
 };
 
+// Check if a trip is currently locked against modifications
+export const isTripLocked = (trip) => {
+    if (!trip) return false;
+    if (trip.status === 'completed') {
+        return trip.isLocked === false ? false : true;
+    }
+    return false;
+};
+
 const populateTripDetails = async (queryBuilder) => {
     const transferPopulate = buildTransferPopulate(5);
     let builder = queryBuilder
         .populate('vehicle', 'vehicleNumber type capacity rentPerKm')
         .populate('supervisor', 'name mobileNumber')
-        .populate('purchases.supplier', 'vendorName contactNumber')
+        .populate('purchases.supplier', 'vendorName companyName contactNumber openingBalance openingBalanceType outstandingBalance outstandingBalanceType')
+        .populate('diesel.stations.dieselStation', 'name location openingBalance openingBalanceType outstandingBalance outstandingBalanceType')
         .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
         .populate({
             path: 'sales.client',
@@ -121,7 +133,7 @@ export const addTrip = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type capacityKg')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "New trip created!", 201, populatedTrip)
@@ -163,7 +175,7 @@ export const getTrips = async (req, res, next) => {
             }
         }
 
-        const transferPopulate = buildTransferPopulate(5);
+        const transferPopulate = buildTransferPopulate(2);
 
         const pageNum = page ? parseInt(page) : 1;
         const limitNum = limit ? parseInt(limit) : (req.user.role === 'supervisor' ? 1000 : 10);
@@ -172,19 +184,27 @@ export const getTrips = async (req, res, next) => {
         let queryBuilder = Trip.find(query)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName')
+            .populate('purchases.supplier', 'vendorName companyName')
             .populate('sales.client', 'shopName')
             .sort({ createdAt: -1 })
             .limit(limitNum)
-            .skip(skipNum);
+            .skip(skipNum)
+            .lean();
 
         if (transferPopulate) {
             queryBuilder = queryBuilder.populate(transferPopulate);
         }
 
-        const trips = await queryBuilder;
+        const [rawTrips, total] = await Promise.all([
+            queryBuilder,
+            Trip.countDocuments(query)
+        ]);
 
-        const total = await Trip.countDocuments(query);
+        const trips = rawTrips.map(trip => ({
+            ...trip,
+            id: trip.id || trip._id,
+            isLocked: isTripLocked(trip)
+        }));
 
         successResponse(res, "Trips fetch successfully", 200, undefined, {
             trips,
@@ -193,10 +213,311 @@ export const getTrips = async (req, res, next) => {
                 page: pageNum,
                 pages: Math.ceil(total / limitNum)
             }
-        })
+        });
     } catch (error) {
         next(error)
     }
+};
+
+// Calculate Trip Creditor balances (Suppliers and Diesel Stations)
+export const calculateTripCreditors = async (trip) => {
+    if (!trip) return null;
+
+    let totalOpeningCreditor = 0;
+    let totalClosingCreditor = 0;
+    let totalPurchases = 0;
+    let totalDieselCredit = 0;
+    let totalPayments = 0;
+    const creditors = [];
+
+    const tripDate = trip.date ? new Date(trip.date) : new Date();
+
+    // 1. Process Bird Purchase Suppliers (Vendors)
+    const processedVendors = new Set();
+    const uniqueVendorIds = [];
+    if (trip.purchases && trip.purchases.length > 0) {
+        for (const purchase of trip.purchases) {
+            let vendorId = null;
+            if (purchase.supplier) {
+                vendorId = purchase.supplier._id ? purchase.supplier._id.toString() : purchase.supplier.toString();
+            }
+
+            if (vendorId && !processedVendors.has(vendorId)) {
+                processedVendors.add(vendorId);
+                uniqueVendorIds.push(vendorId);
+            }
+        }
+    }
+
+    const processVendor = async (vendorId) => {
+        const vendor = await Vendor.findById(vendorId)
+            .select('companyName vendorName openingBalance openingBalanceType')
+            .lean();
+        if (!vendor) return null;
+
+        const vendorName = vendor.companyName || vendor.vendorName || 'Vendor';
+
+        // Purchases for this vendor in this trip
+        const vendorTripPurchases = trip.purchases
+            .filter(p => {
+                const sid = p.supplier?._id ? p.supplier._id.toString() : p.supplier?.toString();
+                return sid === vendorId;
+            })
+            .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+        // Compute vendor's opening balance prior to this trip:
+        let opening = Number(vendor.openingBalance) || 0;
+        if (vendor.openingBalanceType === 'debit') {
+            opening = -opening;
+        }
+
+        // Run previous trips, previous vouchers, and trip vouchers in parallel with field projections
+        const [prevTrips, prevVouchers, tripVouchers] = await Promise.all([
+            Trip.find({
+                'purchases.supplier': vendorId,
+                $or: [
+                    { date: { $lt: tripDate } },
+                    { date: tripDate, _id: { $lt: trip._id } }
+                ]
+            })
+            .select('date purchases.supplier purchases.amount')
+            .lean(),
+
+            Voucher.find({
+                isActive: true,
+                date: { $lt: tripDate },
+                $or: [
+                    { party: vendorId },
+                    { 'parties.partyId': vendorId },
+                    { 'entries.account': vendor.vendorName }
+                ]
+            })
+            .select('voucherType party parties entries totalDebit totalCredit')
+            .lean(),
+
+            Voucher.find({
+                isActive: true,
+                date: tripDate,
+                $or: [
+                    { party: vendorId },
+                    { 'parties.partyId': vendorId }
+                ]
+            })
+            .select('voucherType parties totalDebit')
+            .lean()
+        ]);
+
+        for (const pt of prevTrips) {
+            for (const p of (pt.purchases || [])) {
+                const sid = p.supplier?._id ? p.supplier._id.toString() : p.supplier?.toString();
+                if (sid === vendorId) {
+                    opening += (Number(p.amount) || 0);
+                }
+            }
+        }
+
+        for (const v of prevVouchers) {
+            if (v.voucherType === 'Journal') {
+                const entry = v.entries?.find(e => e.account === vendor.vendorName);
+                if (entry) {
+                    opening += ((Number(entry.creditAmount) || 0) - (Number(entry.debitAmount) || 0));
+                }
+            } else {
+                const partyEntry = v.parties?.find(p => p.partyId && p.partyId.toString() === vendorId);
+                const amt = partyEntry ? Number(partyEntry.amount) : (Number(v.totalDebit) || Number(v.totalCredit) || 0);
+                opening -= amt;
+            }
+        }
+
+        let tripVendorPayments = 0;
+        for (const tv of tripVouchers) {
+            if (tv.voucherType === 'Payment') {
+                const p = tv.parties?.find(pt => pt.partyId && pt.partyId.toString() === vendorId);
+                tripVendorPayments += p ? Number(p.amount) : (Number(tv.totalDebit) || 0);
+            }
+        }
+
+        const closing = opening + vendorTripPurchases - tripVendorPayments;
+
+        return {
+            vendorTripPurchases,
+            tripVendorPayments,
+            opening,
+            closing,
+            creditor: {
+                id: vendorId,
+                name: vendorName,
+                type: 'Supplier',
+                openingBalance: Math.abs(opening),
+                openingBalanceType: opening >= 0 ? 'credit' : 'debit',
+                tripAmount: vendorTripPurchases,
+                payments: tripVendorPayments,
+                closingBalance: Math.abs(closing),
+                closingBalanceType: closing >= 0 ? 'credit' : 'debit'
+            }
+        };
+    };
+
+    // 2. Process Diesel Station Creditors
+    const processedStations = new Set();
+    const uniqueStations = [];
+    if (trip.diesel?.stations && trip.diesel.stations.length > 0) {
+        for (const stationEntry of trip.diesel.stations) {
+            let stationId = null;
+            if (stationEntry.dieselStation) {
+                stationId = stationEntry.dieselStation._id ? stationEntry.dieselStation._id.toString() : stationEntry.dieselStation.toString();
+            }
+
+            const stationKey = stationId || stationEntry.stationName || stationEntry.name;
+            if (!stationKey || processedStations.has(stationKey)) continue;
+            processedStations.add(stationKey);
+            uniqueStations.push({ stationEntry, stationId, stationKey });
+        }
+    }
+
+    const processStation = async ({ stationEntry, stationId, stationKey }) => {
+        let stationDoc = null;
+        if (stationId) {
+            stationDoc = await DieselStation.findById(stationId)
+                .select('name openingBalance openingBalanceType')
+                .lean();
+        } else if (stationEntry.stationName || stationEntry.name) {
+            stationDoc = await DieselStation.findOne({
+                name: stationEntry.stationName || stationEntry.name,
+                isActive: true
+            })
+            .select('name openingBalance openingBalanceType')
+            .lean();
+        }
+
+        const stationName = stationDoc?.name || stationEntry.stationName || stationEntry.name || 'Diesel Station';
+
+        // Total diesel amount taken in this trip for this station
+        const stationTripAmount = trip.diesel.stations
+            .filter(s => {
+                const sid = s.dieselStation?._id ? s.dieselStation._id.toString() : s.dieselStation?.toString();
+                return (stationId && sid === stationId) || (s.stationName === stationName) || (s.name === stationName);
+            })
+            .reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+
+        let opening = 0;
+        if (stationDoc) {
+            opening = Number(stationDoc.openingBalance) || 0;
+            if (stationDoc.openingBalanceType === 'debit') {
+                opening = -opening;
+            }
+
+            const [prevTrips, prevVouchers] = await Promise.all([
+                Trip.find({
+                    $or: [
+                        { date: { $lt: tripDate } },
+                        { date: tripDate, _id: { $lt: trip._id } }
+                    ],
+                    'diesel.stations': {
+                        $elemMatch: {
+                            $or: [
+                                { dieselStation: stationDoc._id },
+                                { stationName: stationDoc.name },
+                                { name: stationDoc.name }
+                            ]
+                        }
+                    }
+                })
+                .select('date diesel.stations')
+                .lean(),
+
+                Voucher.find({
+                    isActive: true,
+                    date: { $lt: tripDate },
+                    $or: [
+                        { 'parties.partyId': stationDoc._id },
+                        { 'entries.account': stationDoc.name }
+                    ]
+                })
+                .select('voucherType parties entries totalDebit')
+                .lean()
+            ]);
+
+            for (const pt of prevTrips) {
+                for (const s of (pt.diesel?.stations || [])) {
+                    const sid = s.dieselStation?._id ? s.dieselStation._id.toString() : s.dieselStation?.toString();
+                    if ((sid && sid === stationDoc._id.toString()) || s.stationName === stationDoc.name || s.name === stationDoc.name) {
+                        opening += (Number(s.amount) || 0);
+                    }
+                }
+            }
+
+            for (const v of prevVouchers) {
+                if (v.voucherType === 'Payment') {
+                    const p = v.parties?.find(pt => pt.partyId && pt.partyId.toString() === stationDoc._id.toString());
+                    opening -= p ? Number(p.amount) : (Number(v.totalDebit) || 0);
+                } else if (v.voucherType === 'Journal') {
+                    const e = v.entries?.find(entry => entry.account === stationDoc.name);
+                    if (e) {
+                        opening += ((Number(e.creditAmount) || 0) - (Number(e.debitAmount) || 0));
+                    }
+                }
+            }
+        }
+
+        let tripStationPayments = 0;
+        const closing = opening + stationTripAmount - tripStationPayments;
+
+        return {
+            stationTripAmount,
+            tripStationPayments,
+            opening,
+            closing,
+            creditor: {
+                id: stationDoc?._id || stationKey,
+                name: stationName,
+                type: 'Diesel Station',
+                openingBalance: Math.abs(opening),
+                openingBalanceType: opening >= 0 ? 'credit' : 'debit',
+                tripAmount: stationTripAmount,
+                payments: tripStationPayments,
+                closingBalance: Math.abs(closing),
+                closingBalanceType: closing >= 0 ? 'credit' : 'debit'
+            }
+        };
+    };
+
+    // Execute vendor and diesel station processors concurrently
+    const [vendorResults, stationResults] = await Promise.all([
+        Promise.all(uniqueVendorIds.map(processVendor)),
+        Promise.all(uniqueStations.map(processStation))
+    ]);
+
+    for (const vRes of vendorResults) {
+        if (!vRes) continue;
+        totalOpeningCreditor += vRes.opening;
+        totalClosingCreditor += vRes.closing;
+        totalPurchases += vRes.vendorTripPurchases;
+        totalPayments += vRes.tripVendorPayments;
+        creditors.push(vRes.creditor);
+    }
+
+    for (const sRes of stationResults) {
+        if (!sRes) continue;
+        totalOpeningCreditor += sRes.opening;
+        totalClosingCreditor += sRes.closing;
+        totalDieselCredit += sRes.stationTripAmount;
+        totalPayments += sRes.tripStationPayments;
+        creditors.push(sRes.creditor);
+    }
+
+    return {
+        openingCreditor: Math.abs(totalOpeningCreditor),
+        openingCreditorType: totalOpeningCreditor >= 0 ? 'credit' : 'debit',
+        closingCreditor: Math.abs(totalClosingCreditor),
+        closingCreditorType: totalClosingCreditor >= 0 ? 'credit' : 'debit',
+        netOpeningCreditorSigned: totalOpeningCreditor,
+        netClosingCreditorSigned: totalClosingCreditor,
+        totalPurchases,
+        totalDieselCredit,
+        totalPayments,
+        creditors
+    };
 };
 
 // Get trip by ID
@@ -209,15 +530,26 @@ export const getTripById = async (req, res, next) => {
             query.supervisor = req.user._id;
         }
 
-        const trip = await populateTripDetails(Trip.findOne(query));
+        const tripDoc = await populateTripDetails(Trip.findOne(query).lean());
 
-        if (!trip) throw new AppError('Trip not found', 404);
+        if (!tripDoc) throw new AppError('Trip not found', 404);
 
-        successResponse(res, "Trip fetch successfully", 200, trip)
+        const creditorsSummary = await calculateTripCreditors(tripDoc);
+        const trip = tripDoc.toObject ? tripDoc.toObject() : { ...tripDoc };
+        trip.id = trip.id || trip._id;
+        trip.creditorsSummary = creditorsSummary;
+        trip.isLocked = isTripLocked(tripDoc);
+
+        // Prevent browser/proxy caching of trip status
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+
+        successResponse(res, "Trip fetch successfully", 200, trip);
     } catch (error) {
-        next(error)
+        next(error);
     }
-}
+};
 
 // Update trip (Admin or Supervisor for their own trip)
 export const updateTrip = async (req, res, next) => {
@@ -236,6 +568,10 @@ export const updateTrip = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (req.user.role === 'supervisor' && isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         if (updateData.supervisor && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
             if (typeof updateData.supervisor === 'object' && (updateData.supervisor._id || updateData.supervisor.id)) {
@@ -316,8 +652,11 @@ export const updateTrip = async (req, res, next) => {
         await trip.save();
 
         const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
+        const creditorsSummary = await calculateTripCreditors(populatedTrip);
+        const tripData = populatedTrip.toObject ? populatedTrip.toObject() : populatedTrip;
+        tripData.creditorsSummary = creditorsSummary;
 
-        successResponse(res, "Trip updated successfully", 200, populatedTrip);
+        successResponse(res, "Trip updated successfully", 200, tripData);
     } catch (error) {
         next(error);
     }
@@ -365,6 +704,10 @@ export const addPurchase = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         // Prevent adding purchases to transferred trips
         if (trip.type === 'transferred') {
             throw new AppError('Cannot add purchases to transferred trips. This trip contains transferred stock.', 403);
@@ -404,7 +747,7 @@ export const addPurchase = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Purchase added to trip", 200, populatedTrip);
@@ -445,6 +788,10 @@ export const addSale = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         // Check for duplicate sale in the last 5 seconds or same billNumber in the trip
         const fiveSecondsAgo = new Date(Date.now() - 5000);
         const isDuplicateSale = trip.sales.some(sale => {
@@ -468,10 +815,10 @@ export const addSale = async (req, res, next) => {
         // Get vendor name from first purchase if purchases exist
         if (trip.purchases && trip.purchases.length > 0) {
             // Populate supplier if not already populated
-            await trip.populate('purchases.supplier', 'vendorName name');
+            await trip.populate('purchases.supplier', 'vendorName name companyName');
             const firstPurchase = trip.purchases[0];
             if (firstPurchase.supplier) {
-                saleData.product = firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
+                saleData.product = firstPurchase.supplier.companyName || firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
             }
         }
 
@@ -743,6 +1090,10 @@ export const editPurchase = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         // Prevent editing purchases in transferred trips
         if (trip.type === 'transferred') {
             throw new AppError('Cannot edit purchases in transferred trips. This trip contains transferred stock.', 403);
@@ -805,7 +1156,7 @@ export const editPurchase = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Purchase updated successfully", 200, populatedTrip);
@@ -844,6 +1195,10 @@ export const editSale = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         // Validate index
         const saleIndex = parseInt(index);
         if (saleIndex < 0 || saleIndex >= trip.sales.length) {
@@ -865,10 +1220,10 @@ export const editSale = async (req, res, next) => {
 
         // Get vendor name from first purchase if purchases exist
         if (trip.purchases && trip.purchases.length > 0) {
-            await trip.populate('purchases.supplier', 'vendorName name');
+            await trip.populate('purchases.supplier', 'vendorName name companyName');
             const firstPurchase = trip.purchases[0];
             if (firstPurchase.supplier) {
-                saleData.product = firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
+                saleData.product = firstPurchase.supplier.companyName || firstPurchase.supplier.vendorName || firstPurchase.supplier.name || '';
             }
         }
 
@@ -1196,15 +1551,11 @@ export const editSale = async (req, res, next) => {
 // Add death birds to trip (Supervisor)
 export const addDeathBirds = async (req, res, next) => {
     try {
-        const { quantity, weight, reason, date } = req.body;
+        const { quantity, weight, reason, date, rate } = req.body;
 
-        // Validate required fields (rate is no longer required, will be calculated)
-        if (!quantity || !weight || !date) {
-            throw new AppError("Quantity, weight, and date are required", 400);
-        }
-
-        if (quantity <= 0 || weight <= 0) {
-            throw new AppError("Quantity and weight must be greater than 0", 400);
+        const numQuantity = Number(quantity);
+        if (isNaN(numQuantity) || numQuantity < 0) {
+            throw new AppError("Quantity must be 0 or greater", 400);
         }
 
         let query = { _id: req.params.id };
@@ -1217,60 +1568,75 @@ export const addDeathBirds = async (req, res, next) => {
             throw new AppError("Trip not found or access denied", 404);
         }
 
-        // Calculate purchase totals to determine avgPurchaseRate
-        const totalPurchaseAmount = trip.purchases.reduce((sum, p) => sum + (p.amount || 0), 0);
-        const totalWeightPurchased = trip.purchases.reduce((sum, p) => sum + (p.weight || 0), 0);
-
-        // Calculate average purchase rate using formula: total purchase cost / total purchase weight
-        const avgPurchaseRate = totalWeightPurchased > 0 ?
-            totalPurchaseAmount / totalWeightPurchased : 0;
-
-        if (avgPurchaseRate <= 0) {
-            throw new AppError("Cannot add death birds: No purchases found or invalid purchase data", 400);
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
         }
 
-        // Calculate derived fields using avgPurchaseRate
-        const avgWeight = Number((weight / quantity).toFixed(2));
-        const total = Number((weight * avgPurchaseRate).toFixed(2));
+        // Calculate purchase totals to determine avgPurchaseRate and avgPurchaseWeight
+        const totalPurchaseAmount = (trip.purchases || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+        const totalWeightPurchased = (trip.purchases || []).reduce((sum, p) => sum + (p.weight || 0), 0);
+        const totalBirdsPurchased = (trip.purchases || []).reduce((sum, p) => sum + (p.birds || 0), 0);
 
-        const deathBirdData = {
-            quantity,
-            weight,
-            avgWeight,
-            rate: Number(avgPurchaseRate.toFixed(2)), // Use calculated avgPurchaseRate
-            total,
-            reason: reason || '',
-            date: new Date(date)
-        };
+        const avgPurchaseRate = totalWeightPurchased > 0 ?
+            (totalPurchaseAmount / totalWeightPurchased) : (Number(rate) || trip.summary?.avgPurchaseRate || 0);
 
-        // Add death bird to losses array
-        trip.losses.push(deathBirdData);
+        const avgPurchaseWeight = totalBirdsPurchased > 0 ?
+            (totalWeightPurchased / totalBirdsPurchased) : 0;
 
-        // Recalculate summary
+        // Clear existing death bird losses to replace with the updated entry
+        trip.losses = (trip.losses || []).filter(loss => loss.reason === 'Other Loss');
+
+        if (numQuantity > 0) {
+            let numWeight = Number(weight);
+            if (isNaN(numWeight) || numWeight <= 0) {
+                numWeight = Number((numQuantity * (avgPurchaseWeight || 1.8)).toFixed(2));
+            }
+
+            const avgWeight = Number((numWeight / numQuantity).toFixed(2));
+            const appliedRate = Number((avgPurchaseRate || 0).toFixed(2));
+            const total = Number((numWeight * appliedRate).toFixed(2));
+
+            const deathBirdData = {
+                quantity: numQuantity,
+                weight: numWeight,
+                avgWeight,
+                rate: appliedRate,
+                total,
+                reason: reason || 'Death birds during trip',
+                date: date ? new Date(date) : (trip.date || new Date())
+            };
+
+            trip.losses.push(deathBirdData);
+        }
+
+        // Recalculate summary totals
         trip.summary.totalLosses = trip.losses.reduce((sum, loss) => sum + (loss.total || 0), 0);
         trip.summary.totalBirdsLost = trip.losses.reduce((sum, loss) => sum + (loss.quantity || 0), 0);
         trip.summary.totalWeightLost = trip.losses.reduce((sum, loss) => sum + (loss.weight || 0), 0);
         trip.summary.mortality = trip.summary.totalBirdsLost;
 
         // Calculate bird weight loss: purchased - sold - stock - lost - transferred
-        const totalStockWeight = trip.stocks.reduce((sum, stock) => sum + (stock.weight || 0), 0);
-        const totalTransferredWeight = trip.transferHistory.reduce((sum, transfer) => sum + (transfer.transferredStock?.weight || 0), 0);
+        const totalStockWeight = (trip.stocks || []).reduce((sum, stock) => sum + (stock.weight || 0), 0);
+        const totalTransferredWeight = (trip.transferHistory || []).reduce((sum, transfer) => sum + (transfer.transferredStock?.weight || 0), 0);
         trip.summary.birdWeightLoss = (trip.summary.totalWeightPurchased || 0) -
             (trip.summary.totalWeightSold || 0) -
             totalStockWeight -
             (trip.summary.totalWeightLost || 0) -
             totalTransferredWeight;
 
-        // Summary will be recalculated by pre-save middleware including stock and transfers
+        trip.hasManualMortality = true;
+        trip.updatedBy = req.user._id;
+        trip.updatedAt = new Date();
+
+        // Summary will also be recalculated by pre-save middleware
         await trip.save();
 
-        const populatedTrip = await Trip.findById(trip._id)
-            .populate('supervisor', 'name email')
-            .populate('vehicle', 'vehicleNumber driverName')
-            .populate('purchases.supplier', 'vendorName contactNumber')
-            .populate('sales.client', 'shopName ownerName contact');
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
+        const creditorsSummary = await calculateTripCreditors(populatedTrip);
+        const tripData = populatedTrip.toObject ? populatedTrip.toObject() : populatedTrip;
+        tripData.creditorsSummary = creditorsSummary;
 
-        successResponse(res, "Death birds added to trip", 200, populatedTrip);
+        successResponse(res, "Death birds updated successfully", 200, tripData);
     } catch (error) {
         next(error);
     }
@@ -1290,6 +1656,10 @@ export const updateTripDiesel = async (req, res, next) => {
         const trip = await Trip.findOne(query);
 
         if (!trip) throw new AppError('Trip not found!', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         // 1. Revert Old Entries
         for (const oldStation of trip.diesel.stations) {
@@ -1369,6 +1739,10 @@ export const updateTripExpenses = async (req, res, next) => {
 
         if (!trip) throw new AppError('Trip not found!', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         trip.expenses = expenses;
         trip.summary.totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
         trip.updatedBy = req.user._id;
@@ -1396,6 +1770,10 @@ export const editExpense = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         // Validate index
         const expenseIndex = parseInt(index);
         if (expenseIndex < 0 || expenseIndex >= trip.expenses.length) {
@@ -1414,7 +1792,7 @@ export const editExpense = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Expense updated successfully", 200, populatedTrip);
@@ -1436,6 +1814,10 @@ export const editDieselStation = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         // Validate index
         const stationIndex = parseInt(index);
@@ -1504,7 +1886,7 @@ export const editDieselStation = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Diesel station updated successfully", 200, populatedTrip);
@@ -1549,8 +1931,8 @@ export const completeTrip = async (req, res, next) => {
             supervisorSignature: req.user.name
         };
 
-        // Add death birds record if mortality is provided
-        if (mortality && mortality > 0) {
+        // Add death birds record if mortality is provided and not already manually set
+        if (!trip.hasManualMortality && mortality && mortality > 0) {
             // Calculate average weight for death birds
             const totalBirdsPurchased = trip.summary?.totalBirdsPurchased || 0;
             const totalWeightPurchased = trip.summary?.totalWeightPurchased || 0;
@@ -1578,7 +1960,7 @@ export const completeTrip = async (req, res, next) => {
 
         // Update summary - mortality represents remaining birds (death birds)
         trip.summary.birdsRemaining = 0; // No birds remaining after completion
-        trip.summary.mortality = mortality || 0;
+        trip.summary.mortality = trip.hasManualMortality ? (trip.summary.totalBirdsLost || trip.summary.mortality || 0) : (mortality || 0);
         trip.summary.totalExpenses = trip.expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
         trip.summary.totalDieselAmount = trip.diesel.totalAmount;
 
@@ -1615,6 +1997,7 @@ export const completeTrip = async (req, res, next) => {
         }
 
         trip.status = 'completed';
+        trip.isLocked = true;
         trip.updatedBy = req.user._id;
         trip.updatedAt = new Date();
 
@@ -1631,10 +2014,52 @@ export const completeTrip = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Trip completed successfully!", 200, populatedTrip);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Lock / Unlock trip (Admin/Superadmin only)
+export const toggleTripLock = async (req, res, next) => {
+    try {
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+            throw new AppError('Only admin or superadmin can lock or unlock trips', 403);
+        }
+
+        const { id } = req.params;
+        const { isLocked } = req.body;
+
+        const trip = await Trip.findById(id);
+        if (!trip) throw new AppError('Trip not found', 404);
+
+        const currentLock = isTripLocked(trip);
+        const nextLock = typeof isLocked === 'boolean' ? isLocked : !currentLock;
+
+        await Trip.findByIdAndUpdate(trip._id, {
+            $set: {
+                isLocked: nextLock,
+                updatedBy: req.user._id,
+                updatedAt: new Date()
+            }
+        });
+
+        const populatedTrip = await populateTripDetails(Trip.findById(trip._id));
+        const creditorsSummary = await calculateTripCreditors(populatedTrip);
+        const tripObj = populatedTrip.toObject ? populatedTrip.toObject() : populatedTrip;
+        tripObj.creditorsSummary = creditorsSummary;
+        tripObj.isLocked = nextLock;
+
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+
+        const message = nextLock ? 'Trip locked successfully' : 'Trip unlocked successfully';
+
+        successResponse(res, message, 200, tripObj);
     } catch (error) {
         next(error);
     }
@@ -1654,6 +2079,10 @@ export const addStock = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found!', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         // Calculate avgWeight and value
         const avgWeight = stockData.birds > 0 ? stockData.weight / stockData.birds : 0;
@@ -1696,6 +2125,10 @@ export const updateStock = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found!', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         const stockIndex = parseInt(index);
         if (stockIndex < 0 || stockIndex >= trip.stocks.length) {
@@ -1740,6 +2173,10 @@ export const deleteStock = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found!', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         const stockIndex = parseInt(index);
         if (stockIndex < 0 || stockIndex >= trip.stocks.length) {
@@ -1828,6 +2265,11 @@ export const updateTripStatus = async (req, res, next) => {
 
         // Update trip status
         trip.status = status;
+        if (status === 'completed') {
+            trip.isLocked = true;
+        } else {
+            trip.isLocked = false;
+        }
         trip.updatedBy = req.user._id;
         trip.updatedAt = new Date();
 
@@ -1859,15 +2301,19 @@ export const transferTrip = async (req, res, next) => {
         }
 
         const originalTrip = await Trip.findOne(query)
-            .populate('purchases.supplier', 'vendorName name');
+            .populate('purchases.supplier', 'vendorName name companyName');
         if (!originalTrip) throw new AppError('Trip not found', 404);
+
+        if (isTripLocked(originalTrip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         // Get vendor name from first purchase of original trip
         let vendorNameFromOriginalTrip = '';
         if (originalTrip.purchases && originalTrip.purchases.length > 0) {
             const firstPurchase = originalTrip.purchases[0];
             if (firstPurchase.supplier) {
-                vendorNameFromOriginalTrip = firstPurchase.supplier?.vendorName || firstPurchase.supplier?.name || '';
+                vendorNameFromOriginalTrip = firstPurchase.supplier?.companyName || firstPurchase.supplier?.vendorName || firstPurchase.supplier?.name || '';
             }
         }
 
@@ -1988,7 +2434,7 @@ export const transferTrip = async (req, res, next) => {
         const populatedOriginalTrip = await Trip.findById(originalTrip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact')
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
             .populate({
@@ -2002,7 +2448,7 @@ export const transferTrip = async (req, res, next) => {
         const populatedNewTrip = await Trip.findById(newTrip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('transferredFrom', 'tripId');
 
         successResponse(res, "Trip transferred successfully", 200, {
@@ -2242,6 +2688,10 @@ export const deletePurchase = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         if (trip.type === 'transferred') {
             throw new AppError('Cannot delete purchases in transferred trips.', 403);
         }
@@ -2266,7 +2716,7 @@ export const deletePurchase = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Purchase deleted successfully", 200, populatedTrip);
@@ -2287,6 +2737,10 @@ export const deleteSale = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         const saleIndex = parseInt(index);
         if (saleIndex < 0 || saleIndex >= trip.sales.length) {
@@ -2383,7 +2837,7 @@ export const deleteSale = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Sale/Receipt deleted successfully", 200, populatedTrip);
@@ -2404,6 +2858,10 @@ export const deleteTripDiesel = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         const dieselIndex = parseInt(index);
         if (dieselIndex < 0 || dieselIndex >= trip.diesel.stations.length) {
@@ -2441,7 +2899,7 @@ export const deleteTripDiesel = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Diesel record deleted successfully", 200, populatedTrip);
@@ -2463,6 +2921,10 @@ export const deleteExpense = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         const expenseIndex = parseInt(index);
         if (expenseIndex < 0 || expenseIndex >= trip.expenses.length) {
             throw new AppError('Invalid expense index', 400);
@@ -2481,7 +2943,7 @@ export const deleteExpense = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Expense deleted successfully", 200, populatedTrip);
@@ -2502,6 +2964,10 @@ export const deleteLoss = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         const lossIndex = parseInt(index);
         if (lossIndex < 0 || lossIndex >= trip.losses.length) {
@@ -2524,7 +2990,7 @@ export const deleteLoss = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Loss entry deleted successfully", 200, populatedTrip);
@@ -2546,6 +3012,10 @@ export const deleteTransfer = async (req, res, next) => {
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
 
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
+
         const transferIndex = parseInt(index);
         if (transferIndex < 0 || transferIndex >= trip.transferHistory.length) {
             throw new AppError('Invalid transfer index', 400);
@@ -2557,6 +3027,10 @@ export const deleteTransfer = async (req, res, next) => {
         if (receiverTripId) {
             const receiverTrip = await Trip.findById(receiverTripId);
             if (receiverTrip) {
+                if (isTripLocked(receiverTrip)) {
+                    throw new AppError('Cannot delete transfer: The receiving trip is already completed and locked.', 400);
+                }
+
                 // Reset receiving vehicle status to idle
                 if (receiverTrip.vehicle) {
                     await Vehicle.findByIdAndUpdate(receiverTrip.vehicle, { currentStatus: 'idle' });
@@ -2582,7 +3056,7 @@ export const deleteTransfer = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact');
 
         successResponse(res, "Transfer reverted and deleted successfully", 200, populatedTrip);
@@ -2608,6 +3082,10 @@ export const updateTransfer = async (req, res, next) => {
 
         const trip = await Trip.findOne(query);
         if (!trip) throw new AppError('Trip not found or access denied', 404);
+
+        if (isTripLocked(trip)) {
+            throw new AppError('Trip is locked. Modifications are not allowed.', 403);
+        }
 
         const transferIndex = parseInt(index);
         if (isNaN(transferIndex) || transferIndex < 0 || transferIndex >= trip.transferHistory.length) {
@@ -2665,19 +3143,25 @@ export const updateTransfer = async (req, res, next) => {
         if (receiverTripId) {
             const receiverTrip = await Trip.findById(receiverTripId);
             if (receiverTrip) {
-                // Find the transfer purchase entry (dcNumber starts with "TRANSFER-")
-                const purchaseIndex = receiverTrip.purchases.findIndex(
-                    p => p.dcNumber && p.dcNumber.startsWith('TRANSFER-')
-                );
-                if (purchaseIndex >= 0) {
-                    receiverTrip.purchases[purchaseIndex].birds     = newBirds;
-                    receiverTrip.purchases[purchaseIndex].weight    = newWeight;
-                    receiverTrip.purchases[purchaseIndex].avgWeight = newAvgWeight;
-                    receiverTrip.purchases[purchaseIndex].rate      = newRate;
-                    receiverTrip.purchases[purchaseIndex].amount    = newAmount;
+                if (isTripLocked(receiverTrip) && req.user.role === 'supervisor') {
+                    // The receiver is already completed and locked — surface a warning but don't fail.
+                    // Original trip is already updated; just skip receiver sync.
+                    console.warn(`updateTransfer: receiver trip ${receiverTripId} is completed and locked — skipping purchase sync.`);
+                } else {
+                    // Find the transfer purchase entry (dcNumber starts with "TRANSFER-")
+                    const purchaseIndex = receiverTrip.purchases.findIndex(
+                        p => p.dcNumber && p.dcNumber.startsWith('TRANSFER-')
+                    );
+                    if (purchaseIndex >= 0) {
+                        receiverTrip.purchases[purchaseIndex].birds     = newBirds;
+                        receiverTrip.purchases[purchaseIndex].weight    = newWeight;
+                        receiverTrip.purchases[purchaseIndex].avgWeight = newAvgWeight;
+                        receiverTrip.purchases[purchaseIndex].rate      = newRate;
+                        receiverTrip.purchases[purchaseIndex].amount    = newAmount;
+                    }
+                    receiverTrip.updatedBy = req.user._id;
+                    await receiverTrip.save(); // pre-save recalculates receiver's full summary
                 }
-                receiverTrip.updatedBy = req.user._id;
-                await receiverTrip.save(); // pre-save recalculates receiver's full summary
             }
         }
 
@@ -2685,7 +3169,7 @@ export const updateTransfer = async (req, res, next) => {
         const populatedTrip = await Trip.findById(trip._id)
             .populate('vehicle', 'vehicleNumber type')
             .populate('supervisor', 'name mobileNumber')
-            .populate('purchases.supplier', 'vendorName contactNumber')
+            .populate('purchases.supplier', 'vendorName companyName contactNumber')
             .populate('sales.client', 'shopName ownerName contact')
             .populate('transferHistory.transferredToSupervisor', 'name mobileNumber')
             .populate({

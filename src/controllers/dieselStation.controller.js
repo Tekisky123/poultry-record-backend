@@ -35,7 +35,8 @@ export const getDieselStations = async (req, res, next) => {
   try {
     const stations = await DieselStation.find({ isActive: true })
       .populate('group', 'name')
-      .sort({ name: 1 });
+      .sort({ name: 1 })
+      .lean();
     successResponse(res, "Diesel stations fetched successfully", 200, stations);
   } catch (error) {
     next(error);

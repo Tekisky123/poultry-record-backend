@@ -71,7 +71,7 @@ const mergeToBalanceMap = (map, ledgerName, debit = 0, credit = 0) => {
 };
 
 // Build Period Balance Map (Vouchers + Trips + Stocks)
-const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
+const buildPeriodBalanceMap = async (startDate, endDate, allLedgers, preFetchedVouchers = null, preFetchedTrips = null, preFetchedStocks = null) => {
     try {
         const query = { isActive: true };
         let sDate = null;
@@ -106,7 +106,7 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
         };
 
         // 1. Process Vouchers (Payment, Receipt, Journal, Contra)
-        const vouchers = await Voucher.find(query).lean();
+        const vouchers = preFetchedVouchers || await Voucher.find(query).lean();
         const map = new Map();
 
         vouchers.forEach(v => {
@@ -140,19 +140,26 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
         });
 
         // 2. Process Trips (Date filtering on date / createdAt)
-        const tripDateQuery = {};
-        if (sDate) tripDateQuery.$gte = sDate;
-        if (eDate) tripDateQuery.$lte = eDate;
+        let trips;
+        if (preFetchedTrips) {
+            trips = preFetchedTrips.filter(t => {
+                const d = new Date(t.date || t.createdAt);
+                return (!sDate || d >= sDate) && (!eDate || d <= eDate);
+            });
+        } else {
+            const tripDateQuery = {};
+            if (sDate) tripDateQuery.$gte = sDate;
+            if (eDate) tripDateQuery.$lte = eDate;
 
-        let tQuery = {};
-        if (sDate || eDate) {
-            tQuery.$or = [
-                { date: tripDateQuery },
-                { createdAt: tripDateQuery }
-            ];
+            let tQuery = {};
+            if (sDate || eDate) {
+                tQuery.$or = [
+                    { date: tripDateQuery },
+                    { createdAt: tripDateQuery }
+                ];
+            }
+            trips = await Trip.find(tQuery).lean();
         }
-
-        const trips = await Trip.find(tQuery).lean();
 
         trips.forEach(t => {
             if (t.sales) {
@@ -172,14 +179,22 @@ const buildPeriodBalanceMap = async (startDate, endDate, allLedgers) => {
         });
 
         // 3. Process Stocks (Date filtering on date)
-        const stockDateQuery = {};
-        if (sDate) stockDateQuery.$gte = sDate;
-        if (eDate) stockDateQuery.$lte = eDate;
+        let stocks;
+        if (preFetchedStocks) {
+            stocks = preFetchedStocks.filter(s => {
+                const d = new Date(s.date);
+                return (!sDate || d >= sDate) && (!eDate || d <= eDate);
+            });
+        } else {
+            const stockDateQuery = {};
+            if (sDate) stockDateQuery.$gte = sDate;
+            if (eDate) stockDateQuery.$lte = eDate;
 
-        let sQuery = {};
-        if (sDate || eDate) sQuery.date = stockDateQuery;
+            let sQuery = {};
+            if (sDate || eDate) sQuery.date = stockDateQuery;
 
-        const stocks = await InventoryStock.find(sQuery).lean();
+            stocks = await InventoryStock.find(sQuery).lean();
+        }
 
         stocks.forEach(s => {
             const amt = Number(s.amount) || ((Number(s.weight) || Number(s.feedQty) || 0) * (Number(s.rate) || 0)) || 0;
@@ -377,14 +392,34 @@ export const getProfitAndLoss = async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
 
-        // Fetch data
-        const [allLedgers, allGroupsData] = await Promise.all([
+        let sDate = startDate ? new Date(startDate) : new Date(0);
+        let eDate = endDate ? new Date(endDate) : new Date();
+        eDate.setHours(23, 59, 59, 999);
+
+        const voucherQuery = { isActive: true };
+        if (startDate || endDate) {
+            voucherQuery.date = {};
+            if (startDate) voucherQuery.date.$gte = sDate;
+            if (endDate) voucherQuery.date.$lte = eDate;
+        }
+
+        // Parallel batch fetch of ALL required collections in a single round-trip
+        const [allLedgers, allGroupsData, vouchers, stocks, trips, isales] = await Promise.all([
             Ledger.find({ isActive: true }).lean(),
-            Group.find({ isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 })
+            Group.find({ isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),
+            Voucher.find(voucherQuery).lean(),
+            InventoryStock.find({ date: { $lte: eDate } }).lean(),
+            Trip.find({
+                $or: [
+                    { date: { $lte: eDate } },
+                    { createdAt: { $lte: eDate } }
+                ]
+            }).select('date createdAt sales purchases diesel expenses losses stocks summary').lean(),
+            IndirectSale.find({ date: { $gte: sDate, $lte: eDate } }).lean()
         ]);
 
-        // Build Comprehensive Map
-        const periodBalanceMap = await buildPeriodBalanceMap(startDate, endDate, allLedgers);
+        // Build Comprehensive Map using pre-fetched data
+        const periodBalanceMap = await buildPeriodBalanceMap(startDate, endDate, allLedgers, vouchers, trips, stocks);
 
         // Map Ledgers to Groups
         const ledgerGroupMap = new Map();
@@ -445,19 +480,11 @@ export const getProfitAndLoss = async (req, res, next) => {
         const processedIncome = await processGroups(incomeGroups);
         const processedExpenses = await processGroups(expenseGroups);
 
-        const injectNatives = async (incomeList, expenseList, startDate, endDate) => {
+        const injectNatives = async (incomeList, expenseList, startDate, endDate, stocks, trips, isales) => {
             let sDate = startDate ? new Date(startDate) : new Date(0);
             let eDate = endDate ? new Date(endDate) : new Date();
             // ensure eDate goes to end of day
             eDate.setHours(23, 59, 59, 999);
-
-            const [stocks, trips, isales, allVendors, allCustomers] = await Promise.all([
-                InventoryStock.find({ date: { $lte: eDate } }).lean(),
-                Trip.find({ date: { $lte: eDate } }).lean(),
-                IndirectSale.find({ date: { $gte: sDate, $lte: eDate } }).lean(),
-                Vendor.find({ isActive: true }).lean(),
-                Customer.find({ isActive: true }).lean()
-            ]);
 
             let metricPurchase = 0;
             let metricFeedPurchase = 0;
@@ -767,7 +794,7 @@ export const getProfitAndLoss = async (req, res, next) => {
             updateTrees(expenseList);
         };
 
-        await injectNatives(processedIncome, processedExpenses, startDate, endDate);
+        await injectNatives(processedIncome, processedExpenses, startDate, endDate, stocks, trips, isales);
 
         // Calculate Totals - using the processed root groups
         const calculateTotal = (groups) => {

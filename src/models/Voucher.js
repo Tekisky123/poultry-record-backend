@@ -248,6 +248,10 @@ voucherSchema.pre('save', async function(next) {
 voucherSchema.index({ voucherType: 1 });
 voucherSchema.index({ date: -1 });
 voucherSchema.index({ party: 1 });
+voucherSchema.index({ isActive: 1, date: -1 });
+voucherSchema.index({ account: 1 });
+voucherSchema.index({ 'parties.partyId': 1 });
+voucherSchema.index({ 'entries.account': 1 });
 
 const Voucher = mongoose.model("Voucher", voucherSchema);
 

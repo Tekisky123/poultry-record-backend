@@ -91,17 +91,18 @@ export const getGroups = async (req, res, next) => {
             query.type = type;
         }
 
-        const groups = await Group.find(query)
-            .populate('parentGroup', 'name type slug')
-            .populate('createdBy', 'name')
-            .populate('updatedBy', 'name')
-            .sort({ name: 1 })
-            .lean();
-
-        // Get ledger counts for all groups in a single aggregation query
-        const ledgerCounts = await Ledger.aggregate([
-            { $match: { isActive: true, group: { $exists: true, $ne: null } } },
-            { $group: { _id: '$group', count: { $sum: 1 } } }
+        // Parallel fetch of groups and ledger counts
+        const [groups, ledgerCounts] = await Promise.all([
+            Group.find(query)
+                .populate('parentGroup', 'name type slug')
+                .populate('createdBy', 'name')
+                .populate('updatedBy', 'name')
+                .sort({ name: 1 })
+                .lean(),
+            Ledger.aggregate([
+                { $match: { isActive: true, group: { $exists: true, $ne: null } } },
+                { $group: { _id: '$group', count: { $sum: 1 } } }
+            ])
         ]);
 
         // Create a map of groupId -> ledger count
@@ -1199,60 +1200,88 @@ const calculateStockValue = (combinedStocks, inventoryType, targetDate) => {
 // Get group summary with ledgers and sub-groups
 export const getGroupSummary = async (req, res, next) => {
     const { id } = req.params;
-    const { asOnDate, startDate, endDate } = req.query; // Added startDate and endDate
-
-    // Determine the date range
-    // If startDate and endDate are provided, use them.
-    // If only asOnDate is provided, assume it's the end date and perform generic calc?
-    // Maintain backward compatibility: if asOnDate is used, use it as endDate and startDate=null (infinite start)
-    // But calculateCustomerBalance etc now handle startDate filtering.
+    const { asOnDate, startDate, endDate } = req.query;
 
     const finalEndDate = endDate || asOnDate;
     const finalStartDate = startDate || null;
 
     try {
-        const group = await Group.findById(id).lean();
-        if (!group || !group.isActive) {
-            throw new AppError('Group not found', 404);
-        }
-
-        // Fetch all vouchers and trips once
         let endDateObj = null;
         if (finalEndDate) {
             endDateObj = new Date(finalEndDate);
             endDateObj.setHours(23, 59, 59, 999);
         }
+        const startDateObj = finalStartDate ? new Date(finalStartDate) : null;
 
-        const voucherQuery = {
-            isActive: true
-        };
-        if (endDateObj) {
-            voucherQuery.date = { $lte: endDateObj };
-        }
-        const vouchers = await Voucher.find(voucherQuery).lean();
+        const voucherQuery = { isActive: true };
+        if (endDateObj) voucherQuery.date = { $lte: endDateObj };
 
-        // Fetch all trips for optimization
         const tripQuery = {};
-        if (endDateObj) {
-            tripQuery.createdAt = { $lte: endDateObj };
-        }
-        const trips = await Trip.find(tripQuery).lean();
+        if (endDateObj) tripQuery.createdAt = { $lte: endDateObj };
 
-        // Fetch all inventory stocks for optimization
         const stockQuery = {};
-        if (endDateObj) {
-            stockQuery.date = { $lte: endDateObj };
-        }
-        const stocks = await InventoryStock.find(stockQuery).lean();
+        if (endDateObj) stockQuery.date = { $lte: endDateObj };
 
-        // Fetch Indirect Sales (was missing)
         const indirectSaleQuery = {};
-        if (endDateObj) {
-            indirectSaleQuery.date = { $lte: endDateObj };
-        }
-        const indirectSales = await IndirectSale.find(indirectSaleQuery).lean();
+        if (endDateObj) indirectSaleQuery.date = { $lte: endDateObj };
 
-        // Build combinedStocks for stock valuation if this group or its subgroups are stock-in-hand
+        // Parallel batch fetch of ALL needed collections in a single round-trip
+        const [
+            allGroups,
+            allLedgers,
+            allCustomers,
+            allVendors,
+            allStations,
+            vouchers,
+            trips,
+            stocks,
+            indirectSales
+        ] = await Promise.all([
+            Group.find({ isActive: true }).lean(),
+            Ledger.find({ isActive: true }).lean(),
+            Customer.find({ isActive: true }).lean(),
+            Vendor.find({ isActive: true }).lean(),
+            DieselStation.find({ isActive: true }).lean(),
+            Voucher.find(voucherQuery).lean(),
+            Trip.find(tripQuery).select('date createdAt sales purchases diesel stocks').lean(),
+            InventoryStock.find(stockQuery).lean(),
+            IndirectSale.find(indirectSaleQuery).lean()
+        ]);
+
+        const group = allGroups.find(g => g._id.toString() === id.toString());
+        if (!group) {
+            throw new AppError('Group not found', 404);
+        }
+
+        // Precompute descendants for each group in memory
+        const childrenMap = new Map();
+        allGroups.forEach(g => {
+            const pId = g.parentGroup ? (g.parentGroup._id || g.parentGroup).toString() : null;
+            if (pId) {
+                if (!childrenMap.has(pId)) childrenMap.set(pId, []);
+                childrenMap.get(pId).push(g._id.toString());
+            }
+        });
+
+        const getDescendants = (targetId) => {
+            const result = new Set([targetId.toString()]);
+            const queue = [targetId.toString()];
+            while (queue.length > 0) {
+                const curr = queue.shift();
+                const children = childrenMap.get(curr);
+                if (children) {
+                    for (const c of children) {
+                        if (!result.has(c)) {
+                            result.add(c);
+                            queue.push(c);
+                        }
+                    }
+                }
+            }
+            return result;
+        };
+
+        // Stock value calculation for stock-in-hand
         const tripStocks = [];
         trips.forEach(t => {
             if (t.stocks && t.stocks.length > 0) {
@@ -1276,21 +1305,426 @@ export const getGroupSummary = async (req, res, next) => {
         const feedClosingStockValue = calculateStockValue(combinedStocks, 'feed', queryDate);
         const totalClosingStock = birdsClosingStockValue + feedClosingStockValue;
 
-        const subGroups = await Group.find({ parentGroup: id, isActive: true }).sort({ name: 1 }).lean();
-        const directLedgers = await Ledger.find({ group: id, isActive: true }).sort({ name: 1 }).lean();
-        const directCustomers = await Customer.find({ group: id, isActive: true }).sort({ shopName: 1 }).lean();
+        // Single-pass Transaction Accumulators
+        const initAccumulator = () => ({
+            allDebit: 0,
+            allCredit: 0,
+            periodDebit: 0,
+            periodCredit: 0,
+            birdsTotal: 0,
+            weightTotal: 0,
+            volume: 0,
+            discountAndOther: 0
+        });
 
-        // Special handling for Purchase Account group - include all vendors
-        let directVendors = [];
-        if (group.name.trim().toLowerCase() === 'purchase account' || group.name.trim().toLowerCase() === 'purchase accounts') {
-            directVendors = await Vendor.find({ isActive: true }).sort({ vendorName: 1 }).lean();
-        } else {
-            directVendors = await Vendor.find({ group: id, isActive: true }).sort({ vendorName: 1 }).lean();
-        }
+        const customerSummary = new Map();
+        const vendorSummary = new Map();
+        const ledgerSummary = new Map();
+        const stationSummary = new Map();
 
-        let entries = [];
+        const getCustomerAcc = (cId) => {
+            const idStr = cId.toString();
+            if (!customerSummary.has(idStr)) customerSummary.set(idStr, initAccumulator());
+            return customerSummary.get(idStr);
+        };
+        const getVendorAcc = (vId) => {
+            const idStr = vId.toString();
+            if (!vendorSummary.has(idStr)) vendorSummary.set(idStr, initAccumulator());
+            return vendorSummary.get(idStr);
+        };
+        const getLedgerAcc = (lId) => {
+            const idStr = lId.toString();
+            if (!ledgerSummary.has(idStr)) ledgerSummary.set(idStr, initAccumulator());
+            return ledgerSummary.get(idStr);
+        };
+        const getStationAcc = (sId) => {
+            const idStr = sId.toString();
+            if (!stationSummary.has(idStr)) stationSummary.set(idStr, initAccumulator());
+            return stationSummary.get(idStr);
+        };
 
-        // Add sub-groups with their calculated debit/credit (sum of all ledgers in that group)
+        // Name maps for Journal lookups
+        const customerByName = new Map();
+        allCustomers.forEach(c => {
+            const name = (c.shopName || c.ownerName || '').trim().toLowerCase();
+            if (name) customerByName.set(name, c._id.toString());
+        });
+        const vendorByName = new Map();
+        allVendors.forEach(v => {
+            if (v.vendorName) vendorByName.set(v.vendorName.trim().toLowerCase(), v._id.toString());
+            if (v.companyName) vendorByName.set(v.companyName.trim().toLowerCase(), v._id.toString());
+        });
+        const ledgerByName = new Map();
+        allLedgers.forEach(l => {
+            if (l.name) ledgerByName.set(l.name.trim().toLowerCase(), l._id.toString());
+        });
+        const stationByName = new Map();
+        allStations.forEach(s => {
+            if (s.name) stationByName.set(s.name.trim().toLowerCase(), s._id.toString());
+        });
+
+        // 1. Process Vouchers ONCE
+        vouchers.forEach(v => {
+            const vDate = new Date(v.date);
+            if (endDateObj && vDate > endDateObj) return;
+            const isInPeriod = (!startDateObj || vDate >= startDateObj);
+
+            if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+                const isPayment = v.voucherType === 'Payment';
+                const totalAmount = (v.parties || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+                if (v.account) {
+                    const accId = ledgerByName.get(v.account.toString().trim().toLowerCase()) || v.account.toString();
+                    const acc = getLedgerAcc(accId);
+                    if (isPayment) {
+                        acc.allCredit += totalAmount;
+                        if (isInPeriod) acc.periodCredit += totalAmount;
+                    } else {
+                        acc.allDebit += totalAmount;
+                        if (isInPeriod) acc.periodDebit += totalAmount;
+                    }
+                }
+
+                (v.parties || []).forEach(p => {
+                    if (!p.partyId) return;
+                    const pId = p.partyId.toString();
+                    const pAmt = Number(p.amount) || 0;
+                    if (pAmt <= 0) return;
+
+                    const cAcc = customerSummary.has(pId) ? customerSummary.get(pId) : (allCustomers.some(c => c._id.toString() === pId) ? getCustomerAcc(pId) : null);
+                    if (cAcc) {
+                        if (isPayment) {
+                            cAcc.allDebit += pAmt;
+                            if (isInPeriod) cAcc.periodDebit += pAmt;
+                        } else {
+                            cAcc.allCredit += pAmt;
+                            if (isInPeriod) cAcc.periodCredit += pAmt;
+                        }
+                    }
+
+                    const vAcc = vendorSummary.has(pId) ? vendorSummary.get(pId) : (allVendors.some(v => v._id.toString() === pId) ? getVendorAcc(pId) : null);
+                    if (vAcc) {
+                        vAcc.allDebit += pAmt;
+                        if (isInPeriod) vAcc.periodDebit += pAmt;
+                    }
+
+                    const sAcc = stationSummary.has(pId) ? stationSummary.get(pId) : (allStations.some(s => s._id.toString() === pId) ? getStationAcc(pId) : null);
+                    if (sAcc) {
+                        if (isPayment) {
+                            sAcc.allDebit += pAmt;
+                            if (isInPeriod) sAcc.periodDebit += pAmt;
+                        }
+                    }
+
+                    const lAcc = ledgerSummary.has(pId) ? ledgerSummary.get(pId) : (allLedgers.some(l => l._id.toString() === pId) ? getLedgerAcc(pId) : null);
+                    if (lAcc) {
+                        if (isPayment) {
+                            lAcc.allDebit += pAmt;
+                            if (isInPeriod) lAcc.periodDebit += pAmt;
+                        } else {
+                            lAcc.allCredit += pAmt;
+                            if (isInPeriod) lAcc.periodCredit += pAmt;
+                        }
+                    }
+                });
+            } else {
+                (v.entries || []).forEach(e => {
+                    const accName = (e.account || '').toString().trim().toLowerCase();
+                    const dAmt = Number(e.debitAmount) || 0;
+                    const cAmt = Number(e.creditAmount) || 0;
+                    const amt = dAmt || cAmt;
+                    if (amt <= 0) return;
+
+                    const cId = customerByName.get(accName);
+                    if (cId) {
+                        const acc = getCustomerAcc(cId);
+                        if (dAmt > 0) {
+                            acc.allDebit += dAmt;
+                            if (isInPeriod) { acc.periodDebit += dAmt; acc.discountAndOther += dAmt; }
+                        } else {
+                            acc.allCredit += cAmt;
+                            if (isInPeriod) { acc.periodCredit += cAmt; acc.discountAndOther += cAmt; }
+                        }
+                    }
+
+                    const vId = vendorByName.get(accName);
+                    if (vId) {
+                        const acc = getVendorAcc(vId);
+                        if (cAmt > 0) {
+                            acc.allCredit += cAmt;
+                            if (isInPeriod) { acc.periodCredit += cAmt; acc.discountAndOther += cAmt; }
+                        } else {
+                            acc.allDebit += dAmt;
+                            if (isInPeriod) acc.periodDebit += dAmt;
+                        }
+                    }
+
+                    const sId = stationByName.get(accName);
+                    if (sId) {
+                        const acc = getStationAcc(sId);
+                        if (cAmt > 0) {
+                            acc.allCredit += cAmt;
+                            if (isInPeriod) { acc.periodCredit += cAmt; acc.discountAndOther += cAmt; }
+                        } else {
+                            acc.allDebit += dAmt;
+                            if (isInPeriod) acc.periodDebit += dAmt;
+                        }
+                    }
+
+                    const lId = ledgerByName.get(accName);
+                    if (lId) {
+                        const acc = getLedgerAcc(lId);
+                        acc.allDebit += dAmt;
+                        acc.allCredit += cAmt;
+                        if (isInPeriod) {
+                            acc.periodDebit += dAmt;
+                            acc.periodCredit += cAmt;
+                        }
+                    }
+                });
+            }
+        });
+
+        // 2. Process Trips ONCE
+        trips.forEach(trip => {
+            const tDate = new Date(trip.createdAt || trip.date);
+            if (endDateObj && tDate > endDateObj) return;
+            const isInPeriod = (!startDateObj || tDate >= startDateObj);
+
+            (trip.sales || []).forEach(sale => {
+                const saleAmt = Number(sale.amount) || 0;
+                const cashPaid = Number(sale.cashPaid) || 0;
+                const onlinePaid = Number(sale.onlinePaid) || 0;
+                const discount = Number(sale.discount) || 0;
+                const receiptAmt = cashPaid + onlinePaid + discount;
+                const birds = Number(sale.birds || sale.birdsCount) || 0;
+                const weight = Number(sale.weight) || 0;
+
+                if (sale.client) {
+                    const cAcc = getCustomerAcc(sale.client);
+                    cAcc.allDebit += saleAmt;
+                    cAcc.allCredit += receiptAmt;
+                    if (isInPeriod) {
+                        cAcc.periodDebit += saleAmt;
+                        cAcc.periodCredit += receiptAmt;
+                        cAcc.birdsTotal += birds;
+                        cAcc.weightTotal += weight;
+                        cAcc.discountAndOther += discount;
+                    }
+                }
+
+                if (sale.cashLedger && cashPaid > 0) {
+                    const lAcc = getLedgerAcc(sale.cashLedger);
+                    lAcc.allDebit += cashPaid;
+                    if (isInPeriod) lAcc.periodDebit += cashPaid;
+                }
+                if (sale.onlineLedger && onlinePaid > 0) {
+                    const lAcc = getLedgerAcc(sale.onlineLedger);
+                    lAcc.allDebit += onlinePaid;
+                    if (isInPeriod) lAcc.periodDebit += onlinePaid;
+                }
+            });
+
+            (trip.purchases || []).forEach(p => {
+                const supplierId = p.supplier?._id || p.supplier;
+                const vId = supplierId ? supplierId.toString() : (p.vendorName ? vendorByName.get(p.vendorName.trim().toLowerCase()) : null);
+                if (vId) {
+                    const vAcc = getVendorAcc(vId);
+                    const pAmt = Number(p.amount) || 0;
+                    const pBirds = Number(p.birds) || 0;
+                    const pWeight = Number(p.weight) || 0;
+                    vAcc.allCredit += pAmt;
+                    if (isInPeriod) {
+                        vAcc.periodCredit += pAmt;
+                        vAcc.birdsTotal += pBirds;
+                        vAcc.weightTotal += pWeight;
+                    }
+                }
+            });
+
+            if (trip.diesel?.stations) {
+                trip.diesel.stations.forEach(station => {
+                    if (station.dieselStation) {
+                        const sAcc = getStationAcc(station.dieselStation);
+                        const sAmt = Number(station.amount) || 0;
+                        const sVol = Number(station.volume) || 0;
+                        sAcc.allCredit += sAmt;
+                        if (isInPeriod) {
+                            sAcc.periodCredit += sAmt;
+                            sAcc.volume += sVol;
+                        }
+                    }
+                });
+            }
+        });
+
+        // 3. Process Indirect Sales ONCE
+        indirectSales.forEach(sale => {
+            const sDate = new Date(sale.date);
+            if (endDateObj && sDate > endDateObj) return;
+            const isInPeriod = (!startDateObj || sDate >= startDateObj);
+
+            if (sale.customer) {
+                const cAcc = getCustomerAcc(sale.customer);
+                const salesInfo = sale.sales || {};
+                const saleAmt = Number(salesInfo.amount) || 0;
+                cAcc.allDebit += saleAmt;
+                if (isInPeriod) {
+                    cAcc.periodDebit += saleAmt;
+                    cAcc.birdsTotal += Number(salesInfo.birds) || 0;
+                    cAcc.weightTotal += Number(salesInfo.weight) || 0;
+                }
+            }
+
+            if (sale.vendor) {
+                const vAcc = getVendorAcc(sale.vendor);
+                const amt = Number(sale.summary?.totalPurchaseAmount) || 0;
+                vAcc.allCredit += amt;
+                if (isInPeriod) {
+                    vAcc.periodCredit += amt;
+                    vAcc.birdsTotal += Number(sale.summary?.totalPurchaseBirds) || 0;
+                    vAcc.weightTotal += Number(sale.summary?.totalPurchaseWeight) || 0;
+                }
+            }
+        });
+
+        // 4. Process Inventory Stocks ONCE
+        stocks.forEach(stock => {
+            const sDate = new Date(stock.date);
+            if (endDateObj && sDate > endDateObj) return;
+            const isInPeriod = (!startDateObj || sDate >= startDateObj);
+
+            if (stock.customerId && (stock.type === 'sale' || stock.type === 'receipt')) {
+                const cAcc = getCustomerAcc(stock.customerId);
+                const saleAmt = stock.type === 'sale' ? (Number(stock.amount) || 0) : 0;
+                const receiptAmt = (Number(stock.cashPaid) || 0) + (Number(stock.onlinePaid) || 0) + (Number(stock.discount) || 0);
+
+                cAcc.allDebit += saleAmt;
+                cAcc.allCredit += receiptAmt;
+                if (isInPeriod) {
+                    if (stock.type === 'sale') {
+                        cAcc.periodDebit += Number(stock.amount) || 0;
+                        cAcc.birdsTotal += Number(stock.birds) || 0;
+                        cAcc.weightTotal += Number(stock.weight) || 0;
+                    }
+                    cAcc.periodCredit += receiptAmt;
+                    cAcc.discountAndOther += Number(stock.discount) || 0;
+                }
+            }
+
+            if (stock.vendorId && (stock.type === 'purchase' || stock.type === 'opening')) {
+                const vAcc = getVendorAcc(stock.vendorId);
+                const amt = Number(stock.amount) || 0;
+                vAcc.allCredit += amt;
+                if (isInPeriod) {
+                    vAcc.periodCredit += amt;
+                    vAcc.birdsTotal += Number(stock.bags || stock.birds) || 0;
+                    vAcc.weightTotal += Number(stock.feedQty || stock.weight) || 0;
+                }
+            }
+
+            if (stock.type === 'sale' || stock.type === 'receipt') {
+                if (stock.cashLedgerId && Number(stock.cashPaid) > 0) {
+                    const lAcc = getLedgerAcc(stock.cashLedgerId);
+                    lAcc.allDebit += Number(stock.cashPaid);
+                    if (isInPeriod) lAcc.periodDebit += Number(stock.cashPaid);
+                }
+                if (stock.onlineLedgerId && Number(stock.onlinePaid) > 0) {
+                    const lAcc = getLedgerAcc(stock.onlineLedgerId);
+                    lAcc.allDebit += Number(stock.onlinePaid);
+                    if (isInPeriod) lAcc.periodDebit += Number(stock.onlinePaid);
+                }
+            }
+
+            if (stock.expenseLedgerId && Number(stock.amount) > 0) {
+                const lAcc = getLedgerAcc(stock.expenseLedgerId);
+                lAcc.allDebit += Number(stock.amount);
+                if (isInPeriod) lAcc.periodDebit += Number(stock.amount);
+            }
+        });
+
+        // Entity evaluators
+        const evalCustomer = (c) => {
+            const cId = c._id.toString();
+            const acc = customerSummary.get(cId) || initAccumulator();
+            const openingSigned = toSignedValue(c.openingBalance || 0, c.openingBalanceType || 'debit');
+            const finalSigned = openingSigned + acc.allDebit - acc.allCredit;
+            return {
+                debitTotal: acc.periodDebit,
+                creditTotal: acc.periodCredit,
+                finalBalance: finalSigned,
+                birdsTotal: acc.birdsTotal,
+                weightTotal: acc.weightTotal,
+                discountAndOther: acc.discountAndOther
+            };
+        };
+
+        const evalVendor = (v) => {
+            const vId = v._id.toString();
+            const acc = vendorSummary.get(vId) || initAccumulator();
+            const openingSigned = toSignedValue(v.openingBalance || 0, v.openingBalanceType || 'credit');
+            const finalSigned = openingSigned + acc.allCredit - acc.allDebit;
+            return {
+                debitTotal: acc.periodDebit,
+                creditTotal: acc.periodCredit,
+                finalBalance: finalSigned,
+                birdsTotal: acc.birdsTotal,
+                weightTotal: acc.weightTotal,
+                discountAndOther: acc.discountAndOther
+            };
+        };
+
+        const evalLedger = (l) => {
+            const lId = l._id.toString();
+            const acc = ledgerSummary.get(lId) || initAccumulator();
+            const openingSigned = toSignedValue(l.openingBalance || 0, l.openingBalanceType || 'debit');
+            const finalSigned = openingSigned + acc.allDebit - acc.allCredit;
+            return {
+                debitTotal: acc.periodDebit,
+                creditTotal: acc.periodCredit,
+                finalBalance: finalSigned,
+                discountAndOther: acc.discountAndOther
+            };
+        };
+
+        const evalStation = (s) => {
+            const sId = s._id.toString();
+            const acc = stationSummary.get(sId) || initAccumulator();
+            const openingSigned = toSignedValue(s.openingBalance || 0, s.openingBalanceType || 'credit');
+            const finalSigned = openingSigned + acc.allDebit - acc.allCredit;
+            return {
+                debitTotal: acc.periodDebit,
+                creditTotal: acc.periodCredit,
+                finalBalance: finalSigned,
+                volume: acc.volume,
+                discountAndOther: acc.discountAndOther
+            };
+        };
+
+        const applyGroupTypeSign = (type, finalSigned) => {
+            let debit = 0;
+            let credit = 0;
+            if (type === 'Assets' || type === 'Expenses') {
+                if (finalSigned >= 0) debit = Math.abs(finalSigned);
+                else credit = Math.abs(finalSigned);
+            } else if (type === 'Liability' || type === 'Income') {
+                if (finalSigned >= 0) credit = Math.abs(finalSigned);
+                else debit = Math.abs(finalSigned);
+            } else {
+                if (finalSigned >= 0) debit = Math.abs(finalSigned);
+                else credit = Math.abs(finalSigned);
+            }
+            return { debit, credit };
+        };
+
+        const entries = [];
+
+        // 1. Subgroups
+        const subGroups = allGroups.filter(g => {
+            const pId = g.parentGroup ? (g.parentGroup._id || g.parentGroup).toString() : null;
+            return pId === id.toString();
+        }).sort((a, b) => a.name.localeCompare(b.name));
+
         for (const subGroup of subGroups) {
             const groupSlug = subGroup.slug ? subGroup.slug.trim().toLowerCase() : '';
             const groupName = subGroup.name ? subGroup.name.trim().toUpperCase() : '';
@@ -1311,23 +1745,61 @@ export const getGroupSummary = async (req, res, next) => {
             } else if (groupSlug === 'feed-stock' || groupName === 'FEED STOCK') {
                 closingBalance = feedClosingStockValue;
             } else {
-                const balances = await calculateGroupDebitCredit(
-                    subGroup._id,
-                    group.type,
-                    finalStartDate,
-                    finalEndDate,
-                    vouchers,
-                    trips,
-                    stocks,
-                    indirectSales
-                );
-                debit = balances.debit;
-                credit = balances.credit;
-                birds = balances.birds;
-                weight = balances.weight;
-                transactionDebit = balances.transactionDebit;
-                transactionCredit = balances.transactionCredit;
-                discountAndOther = balances.discountAndOther;
+                const descendantIds = getDescendants(subGroup._id);
+
+                for (const ledger of allLedgers) {
+                    if (ledger.group && descendantIds.has(ledger.group.toString())) {
+                        const bal = evalLedger(ledger);
+                        transactionDebit += bal.debitTotal;
+                        transactionCredit += bal.creditTotal;
+                        discountAndOther += bal.discountAndOther;
+                        const dc = applyGroupTypeSign(group.type, bal.finalBalance);
+                        debit += dc.debit;
+                        credit += dc.credit;
+                    }
+                }
+
+                for (const customer of allCustomers) {
+                    if (customer.group && descendantIds.has(customer.group.toString())) {
+                        const bal = evalCustomer(customer);
+                        transactionDebit += bal.debitTotal;
+                        transactionCredit += bal.creditTotal;
+                        birds += bal.birdsTotal;
+                        weight += bal.weightTotal;
+                        discountAndOther += bal.discountAndOther;
+                        const dc = applyGroupTypeSign(group.type, bal.finalBalance);
+                        debit += dc.debit;
+                        credit += dc.credit;
+                    }
+                }
+
+                const isPurchaseAcc = subGroup.name && (subGroup.name.trim().toLowerCase() === 'purchase account' || subGroup.name.trim().toLowerCase() === 'purchase accounts');
+                for (const vendor of allVendors) {
+                    if (isPurchaseAcc || (vendor.group && descendantIds.has(vendor.group.toString()))) {
+                        const bal = evalVendor(vendor);
+                        transactionDebit += bal.debitTotal;
+                        transactionCredit += bal.creditTotal;
+                        birds += bal.birdsTotal;
+                        weight += bal.weightTotal;
+                        discountAndOther += bal.discountAndOther;
+                        const dc = applyGroupTypeSign(group.type, bal.finalBalance);
+                        debit += dc.debit;
+                        credit += dc.credit;
+                    }
+                }
+
+                for (const station of allStations) {
+                    if (station.group && descendantIds.has(station.group.toString())) {
+                        const bal = evalStation(station);
+                        transactionDebit += bal.debitTotal;
+                        transactionCredit += bal.creditTotal;
+                        discountAndOther += bal.discountAndOther;
+                        const dc = applyGroupTypeSign(group.type, bal.finalBalance);
+                        debit += dc.debit;
+                        credit += dc.credit;
+                    }
+                }
+
                 closingBalance = debit - credit;
             }
 
@@ -1346,209 +1818,79 @@ export const getGroupSummary = async (req, res, next) => {
             });
         }
 
-        // Add direct ledgers (not in sub-groups)
+        // 2. Direct Ledgers
+        const directLedgers = allLedgers.filter(l => l.group && l.group.toString() === id.toString()).sort((a, b) => a.name.localeCompare(b.name));
         for (const ledger of directLedgers) {
-            const openingBalance = ledger.openingBalance || 0;
-            const openingBalanceType = ledger.openingBalanceType || 'debit';
-
-            const ledgerBalance = await calculateLedgerBalance(
-                ledger,
-                finalStartDate,
-                finalEndDate,
-                vouchers,
-                trips,
-                stocks
-            );
-
-            const finalSigned = ledgerBalance.finalBalance;
-
-            let debit = 0;
-            let credit = 0;
-
-            // For Assets: Debit increases, Credit decreases
-            // For Liability: Credit increases, Debit decreases
-            // For Income: Credit increases, Debit decreases (similar to Liability)
-            // For Expenses: Debit increases, Credit decreases (similar to Assets)
-            if (group.type === 'Assets' || group.type === 'Expenses') {
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            } else if (group.type === 'Liability' || group.type === 'Income') {
-                if (finalSigned >= 0) {
-                    credit = Math.abs(finalSigned);
-                } else {
-                    debit = Math.abs(finalSigned);
-                }
-            } else {
-                // For Others type, use Assets logic
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            }
-
+            const bal = evalLedger(ledger);
+            const dc = applyGroupTypeSign(group.type, bal.finalBalance);
             entries.push({
                 type: 'ledger',
                 id: ledger._id.toString(),
                 name: ledger.name,
-                debit,
-                credit,
+                debit: dc.debit,
+                credit: dc.credit,
                 birds: 0,
                 weight: 0,
-                transactionDebit: ledgerBalance.debitTotal || 0,
-                transactionCredit: ledgerBalance.creditTotal || 0,
-                discountAndOther: ledgerBalance.discountAndOther || 0,
-                closingBalance: finalSigned
+                transactionDebit: bal.debitTotal || 0,
+                transactionCredit: bal.creditTotal || 0,
+                discountAndOther: bal.discountAndOther || 0,
+                closingBalance: bal.finalBalance
             });
         }
 
-        // Add customers
+        // 3. Direct Customers
+        const directCustomers = allCustomers.filter(c => c.group && c.group.toString() === id.toString()).sort((a, b) => (a.shopName || a.ownerName || '').localeCompare(b.shopName || b.ownerName || ''));
         for (const customer of directCustomers) {
-            const openingBalance = customer.openingBalance || 0;
-            const openingBalanceType = customer.openingBalanceType || 'debit';
-            const customerName = customer.shopName || customer.ownerName || 'Customer';
-
-            const customerBalance = await calculateCustomerBalance(
-                customer,
-                finalStartDate,
-                finalEndDate,
-                vouchers,
-                trips,
-                indirectSales,
-                stocks
-            );
-
-            const finalSigned = customerBalance.finalBalance;
-
-            let debit = 0;
-            let credit = 0;
-
-            if (group.type === 'Assets' || group.type === 'Expenses') {
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            } else if (group.type === 'Liability' || group.type === 'Income') {
-                if (finalSigned >= 0) {
-                    credit = Math.abs(finalSigned);
-                } else {
-                    debit = Math.abs(finalSigned);
-                }
-            } else {
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            }
-
+            const bal = evalCustomer(customer);
+            const dc = applyGroupTypeSign(group.type, bal.finalBalance);
             entries.push({
                 type: 'customer',
                 id: customer._id.toString(),
-                name: customer.shopName,
-                debit: debit,
-                credit: credit,
-                transactionDebit: customerBalance.debitTotal,
-                transactionCredit: customerBalance.creditTotal,
-                discountAndOther: customerBalance.discountAndOther || 0,
-                closingBalance: finalSigned,
-                birds: customerBalance.birdsTotal || 0,
-                weight: customerBalance.weightTotal || 0
+                name: customer.shopName || customer.ownerName || 'Customer',
+                debit: dc.debit,
+                credit: dc.credit,
+                birds: bal.birdsTotal || 0,
+                weight: bal.weightTotal || 0,
+                transactionDebit: bal.debitTotal || 0,
+                transactionCredit: bal.creditTotal || 0,
+                discountAndOther: bal.discountAndOther || 0,
+                closingBalance: bal.finalBalance
             });
         }
 
-        // Add vendors
+        // 4. Direct Vendors
+        const isMainPurchaseAcc = group.name && (group.name.trim().toLowerCase() === 'purchase account' || group.name.trim().toLowerCase() === 'purchase accounts');
+        const directVendors = (isMainPurchaseAcc ? allVendors : allVendors.filter(v => v.group && v.group.toString() === id.toString())).sort((a, b) => (a.companyName || a.vendorName || '').localeCompare(b.companyName || b.vendorName || ''));
         for (const vendor of directVendors) {
-            const vendorName = vendor.vendorName || 'Vendor';
-
-            const vendorBalance = await calculateVendorBalance(
-                vendor,
-                finalStartDate,
-                finalEndDate,
-                vouchers,
-                trips,
-                stocks,
-                indirectSales
-            );
-
-            const finalSigned = vendorBalance.finalBalance;
-            let debit = 0;
-            let credit = 0;
-
-            if (group.type === 'Assets' || group.type === 'Expenses') {
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            } else if (group.type === 'Liability' || group.type === 'Income') {
-                if (finalSigned >= 0) {
-                    credit = Math.abs(finalSigned);
-                } else {
-                    debit = Math.abs(finalSigned);
-                }
-            } else {
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            }
-
+            const bal = evalVendor(vendor);
+            const dc = applyGroupTypeSign(group.type, bal.finalBalance);
             entries.push({
                 type: 'vendor',
                 id: vendor._id.toString(),
                 name: vendor.companyName || vendor.vendorName,
-                debit,
-                credit,
-                birds: vendorBalance.birdsTotal || 0,
-                weight: vendorBalance.weightTotal || 0,
-                transactionDebit: vendorBalance.debitTotal || 0,
-                transactionCredit: vendorBalance.creditTotal || 0,
-                discountAndOther: vendorBalance.discountAndOther || 0,
-                closingBalance: finalSigned
+                debit: dc.debit,
+                credit: dc.credit,
+                birds: bal.birdsTotal || 0,
+                weight: bal.weightTotal || 0,
+                transactionDebit: bal.debitTotal || 0,
+                transactionCredit: bal.creditTotal || 0,
+                discountAndOther: bal.discountAndOther || 0,
+                closingBalance: bal.finalBalance
             });
         }
 
-        // Add diesel stations
-        const directStations = await DieselStation.find({ group: id, isActive: true }).sort({ name: 1 }).lean();
+        // 5. Direct Diesel Stations
+        const directStations = allStations.filter(s => s.group && s.group.toString() === id.toString()).sort((a, b) => a.name.localeCompare(b.name));
         for (const station of directStations) {
-            const stationBalance = await calculateDieselStationBalance(
-                station,
-                finalStartDate,
-                finalEndDate,
-                vouchers,
-                trips
-            );
-
-            const finalSigned = stationBalance.finalBalance;
-            let debit = 0;
-            let credit = 0;
-
+            const bal = evalStation(station);
+            let debit = 0, credit = 0;
             if (group.type === 'Assets' || group.type === 'Expenses') {
-                if (finalSigned >= 0) {
-                    debit = Math.abs(finalSigned);
-                } else {
-                    credit = Math.abs(finalSigned);
-                }
-            } else if (group.type === 'Liability' || group.type === 'Income') {
-                if (finalSigned >= 0) {
-                    credit = Math.abs(finalSigned);
-                } else {
-                    debit = Math.abs(finalSigned);
-                }
+                if (bal.finalBalance >= 0) debit = Math.abs(bal.finalBalance);
+                else credit = Math.abs(bal.finalBalance);
             } else {
-                if (finalSigned >= 0) {
-                    credit = Math.abs(finalSigned); // Stations usually credit balance (Vendor-like)
-                } else {
-                    debit = Math.abs(finalSigned);
-                }
+                if (bal.finalBalance >= 0) credit = Math.abs(bal.finalBalance);
+                else debit = Math.abs(bal.finalBalance);
             }
-
             entries.push({
                 type: 'dieselStation',
                 id: station._id.toString(),
@@ -1557,15 +1899,14 @@ export const getGroupSummary = async (req, res, next) => {
                 credit,
                 birds: 0,
                 weight: 0,
-                volume: stationBalance.volume || 0,
-                transactionDebit: stationBalance.debitTotal || 0,
-                transactionCredit: stationBalance.creditTotal || 0,
-                discountAndOther: stationBalance.discountAndOther || 0,
-                closingBalance: finalSigned
+                volume: bal.volume || 0,
+                transactionDebit: bal.debitTotal || 0,
+                transactionCredit: bal.creditTotal || 0,
+                discountAndOther: bal.discountAndOther || 0,
+                closingBalance: bal.finalBalance
             });
         }
 
-        // Calculate totals
         const totals = entries.reduce((acc, entry) => ({
             debit: acc.debit + (entry.debit || 0),
             credit: acc.credit + (entry.credit || 0),

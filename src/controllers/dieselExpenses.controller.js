@@ -17,7 +17,7 @@ export const getDieselExpensesMonthlySummary = async (req, res) => {
         const trips = await Trip.find({
             date: { $gte: startDate, $lte: endDate },
             'diesel.stations.0': { $exists: true }
-        }).sort({ date: 1 });
+        }).select('date diesel.stations').sort({ date: 1 }).lean();
 
         const monthNames = ["April", "May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March"];
         const monthlyData = {};
@@ -91,7 +91,7 @@ export const getDieselExpensesDailyRecords = async (req, res) => {
         const trips = await Trip.find({
             date: { $gte: startDate, $lte: endDate },
             'diesel.stations.0': { $exists: true }
-        }).sort({ date: 1 });
+        }).select('tripId date diesel.stations').sort({ date: 1 }).lean();
 
         const records = [];
         let totalAmount = 0;

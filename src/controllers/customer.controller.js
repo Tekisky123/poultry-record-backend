@@ -14,9 +14,7 @@ import { syncOutstandingBalance, toSignedValue, fromSignedValue } from "../utils
 
 export const addCustomer = async (req, res, next) => {
     try {
-        const customerData = req.body;
-
-
+        const { password, email, ...customerData } = req.body;
 
         // Automatically find and assign "Sundry Debtors" group for customers
         let groupId = customerData.group;
@@ -44,9 +42,32 @@ export const addCustomer = async (req, res, next) => {
         const openingBalance = customerData.openingBalance || 0;
         const openingBalanceType = customerData.openingBalanceType || 'debit';
 
-        // Create Customer record — Customer model is the ONLY model used here. No User is created.
+        let normalizedEmail = undefined;
+        if (email && email.trim() !== '') {
+            if (!validator.isEmail(email.trim())) {
+                throw new AppError('Invalid email format', 400);
+            }
+            normalizedEmail = email.trim().toLowerCase();
+        }
+
+        let hashedPassword = undefined;
+        if (password && password.trim() !== '') {
+            if (!validator.isStrongPassword(password, {
+                minLength: 6,
+                minLowercase: 1,
+                minUppercase: 1,
+                minNumbers: 1,
+                minSymbols: 0
+            })) {
+                throw new AppError('Password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
+            }
+            hashedPassword = await bcrypt.hash(password, 10);
+        }
+
+        // Create Customer record
         const customer = new Customer({
             ...customerData,
+            email: normalizedEmail,
             tdsUpdatedAt: customerData.tdsApplicable ? new Date() : undefined,
             group: groupId,
             createdBy: req.user._id,
@@ -59,12 +80,51 @@ export const addCustomer = async (req, res, next) => {
 
         const savedCustomer = await customer.save();
 
+        // Create or link User if email is provided
+        if (normalizedEmail) {
+            let existingUser = await User.findOne({ email: normalizedEmail });
+            if (!existingUser && customerData.contact) {
+                existingUser = await User.findOne({ mobileNumber: customerData.contact });
+            }
+
+            if (existingUser) {
+                existingUser.customer = savedCustomer._id;
+                if (hashedPassword) {
+                    existingUser.password = hashedPassword;
+                }
+                await existingUser.save();
+                savedCustomer.user = existingUser._id;
+                await savedCustomer.save();
+            } else if (hashedPassword) {
+                const newUser = new User({
+                    name: customerData.ownerName || customerData.shopName,
+                    role: 'customer',
+                    email: normalizedEmail,
+                    mobileNumber: customerData.contact,
+                    password: hashedPassword,
+                    approvalStatus: 'approved',
+                    isActive: true,
+                    customer: savedCustomer._id
+                });
+                const savedUser = await newUser.save();
+                savedCustomer.user = savedUser._id;
+                await savedCustomer.save();
+            }
+        }
+
+        const userFields = 'name email mobileNumber role approvalStatus openingBalance outstandingBalance';
         const populatedCustomer = await Customer.findById(savedCustomer._id)
+            .populate('user', userFields)
             .populate('group', 'name type')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
-        successResponse(res, 'New customer added successfully!', 201, populatedCustomer);
+        const cObj = populatedCustomer.toObject();
+        if (!cObj.email && cObj.user?.email) {
+            cObj.email = cObj.user.email;
+        }
+
+        successResponse(res, 'New customer added successfully!', 201, cObj);
     } catch (error) {
         next(error);
     }
@@ -72,18 +132,25 @@ export const addCustomer = async (req, res, next) => {
 
 export const getCustomers = async (req, res, next) => {
     try {
-        let userFields = 'name email mobileNumber role approvalStatus openingBalance outstandingBalance';
-        if (req.user?.role === 'superadmin') {
-            userFields += ' +plainTextPassword';
-        }
+        const userFields = 'name email mobileNumber role approvalStatus openingBalance outstandingBalance';
 
         const customers = await Customer.find({ isActive: true })
             .populate('user', userFields)
             .populate('group', 'name type slug')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
-            .sort({ shopName: 1 });
-        successResponse(res, "customers", 200, customers)
+            .sort({ shopName: 1 })
+            .lean();
+
+        const formattedCustomers = customers.map(c => {
+            c.id = c.id || c._id;
+            if (!c.email && c.user?.email) {
+                c.email = c.user.email;
+            }
+            return c;
+        });
+
+        successResponse(res, "customers", 200, formattedCustomers);
     } catch (error) {
         next(error);
     }
@@ -92,17 +159,25 @@ export const getCustomers = async (req, res, next) => {
 export const getCustomerById = async (req, res, next) => {
     const { id } = req?.params;
     try {
-        let userFields = 'name email mobileNumber role approvalStatus';
-        if (req.user?.role === 'superadmin') {
-            userFields += ' +plainTextPassword';
-        }
+        const userFields = 'name email mobileNumber role approvalStatus';
 
         const customer = await Customer.findOne({ _id: id, isActive: true })
             .populate('user', userFields)
             .populate('group', 'name type slug')
             .populate('createdBy', 'name')
-            .populate('updatedBy', 'name');
-        successResponse(res, "customer", 200, customer)
+            .populate('updatedBy', 'name')
+            .lean();
+
+        if (!customer) {
+            return res.status(404).json({ message: "Customer not found" });
+        }
+
+        customer.id = customer.id || customer._id;
+        if (!customer.email && customer.user?.email) {
+            customer.email = customer.user.email;
+        }
+
+        successResponse(res, "customer", 200, customer);
     } catch (error) {
         next(error);
     }
@@ -119,38 +194,95 @@ export const updateCustomer = async (req, res, next) => {
             return res.status(404).json({ message: "Customer not found" });
         }
 
-        // Sync linked User account (login credentials) if customer has one and credentials are being updated
-        if (customer.user && (password || email)) {
-            const userUpdateData = {};
-
-            if (email) {
-                if (!validator.isEmail(email)) {
+        let normalizedEmail = undefined;
+        if (email !== undefined && email !== null) {
+            const trimmedEmail = email.trim();
+            if (trimmedEmail !== '') {
+                if (!validator.isEmail(trimmedEmail)) {
                     throw new AppError('Invalid email format', 400);
                 }
-                userUpdateData.email = email.toLowerCase();
+                normalizedEmail = trimmedEmail.toLowerCase();
             }
+        }
 
-            if (password) {
-                if (!validator.isStrongPassword(password, {
-                    minLength: 6,
-                    minLowercase: 1,
-                    minUppercase: 1,
-                    minNumbers: 1,
-                    minSymbols: 0
-                })) {
-                    throw new AppError('Password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
-                }
-                userUpdateData.password = await bcrypt.hash(password, 10);
-                userUpdateData.plainTextPassword = password;
+        // Validate password if provided
+        let hashedPassword = undefined;
+        if (password && password.trim() !== '') {
+            if (!validator.isStrongPassword(password, {
+                minLength: 6,
+                minLowercase: 1,
+                minUppercase: 1,
+                minNumbers: 1,
+                minSymbols: 0
+            })) {
+                throw new AppError('Password must contain at least one uppercase letter, one lowercase letter, and one number', 400);
             }
+            hashedPassword = await bcrypt.hash(password, 10);
+        }
 
-            // Sync mobile number from customer contact to linked user account
+        // Handle linked User account (login credentials)
+        let linkedUserId = customer.user;
+
+        if (linkedUserId) {
+            const userUpdateData = {};
+            if (normalizedEmail) {
+                userUpdateData.email = normalizedEmail;
+            }
+            if (hashedPassword) {
+                userUpdateData.password = hashedPassword;
+            }
             if (customerData.contact) {
                 userUpdateData.mobileNumber = customerData.contact;
             }
+            if (customerData.ownerName || customerData.shopName) {
+                userUpdateData.name = customerData.ownerName || customerData.shopName;
+            }
 
             if (Object.keys(userUpdateData).length > 0) {
-                await User.findByIdAndUpdate(customer.user, userUpdateData);
+                await User.findByIdAndUpdate(linkedUserId, userUpdateData);
+            }
+        } else {
+            // Customer does not currently have customer.user linked
+            const targetEmail = normalizedEmail || customer.email;
+            const targetContact = customerData.contact || customer.contact;
+
+            let existingUser = null;
+            if (targetEmail) {
+                existingUser = await User.findOne({ email: targetEmail });
+            }
+            if (!existingUser && targetContact) {
+                existingUser = await User.findOne({ mobileNumber: targetContact });
+            }
+
+            if (existingUser) {
+                const userUpdateData = {
+                    customer: customer._id,
+                    role: 'customer',
+                    approvalStatus: 'approved'
+                };
+                if (targetEmail) userUpdateData.email = targetEmail;
+                if (targetContact) userUpdateData.mobileNumber = targetContact;
+                if (customerData.ownerName || customerData.shopName) {
+                    userUpdateData.name = customerData.ownerName || customerData.shopName;
+                }
+                if (hashedPassword) {
+                    userUpdateData.password = hashedPassword;
+                }
+                await User.findByIdAndUpdate(existingUser._id, userUpdateData);
+                linkedUserId = existingUser._id;
+            } else if (targetEmail && hashedPassword) {
+                const newUser = new User({
+                    name: customerData.ownerName || customerData.shopName || customer.shopName,
+                    role: 'customer',
+                    email: targetEmail,
+                    mobileNumber: targetContact,
+                    password: hashedPassword,
+                    approvalStatus: 'approved',
+                    isActive: true,
+                    customer: customer._id
+                });
+                const savedUser = await newUser.save();
+                linkedUserId = savedUser._id;
             }
         }
 
@@ -162,7 +294,6 @@ export const updateCustomer = async (req, res, next) => {
                 isActive: true
             });
             if (!sundryDebtorsGroup) {
-                // If slug not found, try fallback to name just in case migration was partial or manual change
                 const fallbackGroup = await Group.findOne({ name: 'Sundry Debtors', isActive: true });
                 if (!fallbackGroup) {
                     throw new AppError('Sundry Debtors group not found (slug: sundry-debtors). Please contact administrator.', 404);
@@ -172,7 +303,6 @@ export const updateCustomer = async (req, res, next) => {
                 groupId = sundryDebtorsGroup._id;
             }
         } else {
-            // Validate provided group exists
             const groupDoc = await Group.findById(groupId);
             if (!groupDoc || !groupDoc.isActive) {
                 throw new AppError('Group not found or inactive', 404);
@@ -182,9 +312,17 @@ export const updateCustomer = async (req, res, next) => {
         // Update customer data
         const updateData = {
             ...customerData,
-            group: groupId, // Use automatically assigned or provided group
+            group: groupId,
             updatedBy: req.user._id
         };
+
+        if (normalizedEmail) {
+            updateData.email = normalizedEmail;
+        }
+
+        if (linkedUserId) {
+            updateData.user = linkedUserId;
+        }
 
         if (customerData.tdsApplicable !== undefined && customerData.tdsApplicable !== customer.tdsApplicable) {
             updateData.tdsApplicable = customerData.tdsApplicable;
@@ -221,10 +359,7 @@ export const updateCustomer = async (req, res, next) => {
             updateData.openingBalanceType = customerData.openingBalanceType;
         }
 
-        let userFields = 'name email mobileNumber role approvalStatus';
-        if (req.user?.role === 'superadmin') {
-            userFields += ' +plainTextPassword';
-        }
+        const userFields = 'name email mobileNumber role approvalStatus';
 
         const updatedCustomer = await Customer.findByIdAndUpdate(
             id,
@@ -235,7 +370,12 @@ export const updateCustomer = async (req, res, next) => {
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name');
 
-        successResponse(res, "Customer updated successfully", 200, updatedCustomer);
+        const cObj = updatedCustomer.toObject();
+        if (!cObj.email && cObj.user?.email) {
+            cObj.email = cObj.user.email;
+        }
+
+        successResponse(res, "Customer updated successfully", 200, cObj);
     } catch (error) {
         next(error);
     }

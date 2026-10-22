@@ -15,23 +15,20 @@ export const getBirdsMortalityMonthlySummary = async (req, res) => {
         const startDate = new Date(`${numericYear}-04-01T00:00:00.000Z`);
         const endDate = new Date(`${numericYear + 1}-03-31T23:59:59.999Z`);
 
-        // Group queries - Trip losses
-        const trips = await Trip.find({
-            'losses.date': { $gte: startDate, $lte: endDate }
-        });
-
-        // InventoryStock mortality
-        const stocks = await InventoryStock.find({
-            inventoryType: 'bird',
-            type: 'mortality',
-            date: { $gte: startDate, $lte: endDate }
-        });
-
-        // IndirectSale mortality
-        const indirectSales = await IndirectSale.find({
-            'mortality.birds': { $gt: 0 },
-            date: { $gte: startDate, $lte: endDate }
-        });
+        const [trips, stocks, indirectSales] = await Promise.all([
+            Trip.find({
+                'losses.date': { $gte: startDate, $lte: endDate }
+            }).select('losses').lean(),
+            InventoryStock.find({
+                inventoryType: 'bird',
+                type: 'mortality',
+                date: { $gte: startDate, $lte: endDate }
+            }).select('date amount weight rate').lean(),
+            IndirectSale.find({
+                'mortality.birds': { $gt: 0 },
+                date: { $gte: startDate, $lte: endDate }
+            }).select('date mortality').lean()
+        ]);
 
         const monthNames = ["April", "May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March"];
         const monthlyData = {};
@@ -129,23 +126,20 @@ export const getBirdsMortalityDailyRecords = async (req, res) => {
         const lastDay = new Date(numericYear, numericMonth, 0).getDate();
         const endDate = new Date(numericYear, numericMonth - 1, lastDay, 23, 59, 59, 999);
 
-        // Group queries - Trip losses
-        const trips = await Trip.find({
-            'losses.date': { $gte: startDate, $lte: endDate }
-        });
-
-        // InventoryStock mortality
-        const stocks = await InventoryStock.find({
-            inventoryType: 'bird',
-            type: 'mortality',
-            date: { $gte: startDate, $lte: endDate }
-        });
-
-        // IndirectSale mortality
-        const indirectSales = await IndirectSale.find({
-            'mortality.birds': { $gt: 0 },
-            date: { $gte: startDate, $lte: endDate }
-        });
+        const [trips, stocks, indirectSales] = await Promise.all([
+            Trip.find({
+                'losses.date': { $gte: startDate, $lte: endDate }
+            }).select('tripId losses').lean(),
+            InventoryStock.find({
+                inventoryType: 'bird',
+                type: 'mortality',
+                date: { $gte: startDate, $lte: endDate }
+            }).select('date amount weight rate').lean(),
+            IndirectSale.find({
+                'mortality.birds': { $gt: 0 },
+                date: { $gte: startDate, $lte: endDate }
+            }).select('invoiceNo date mortality').lean()
+        ]);
 
         const records = [];
         let totalAmount = 0;

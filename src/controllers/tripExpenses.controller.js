@@ -17,7 +17,7 @@ export const getTripExpensesMonthlySummary = async (req, res) => {
         const trips = await Trip.find({
             date: { $gte: startDate, $lte: endDate },
             'expenses.0': { $exists: true }
-        }).sort({ date: 1 });
+        }).select('date expenses').sort({ date: 1 }).lean();
 
         const monthNames = ["April", "May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March"];
         const monthlyData = {};
@@ -91,7 +91,7 @@ export const getTripExpensesDailyRecords = async (req, res) => {
         const trips = await Trip.find({
             date: { $gte: startDate, $lte: endDate },
             'expenses.0': { $exists: true }
-        }).sort({ date: 1 });
+        }).select('tripId date expenses').sort({ date: 1 }).lean();
 
         const records = [];
         let totalAmount = 0;

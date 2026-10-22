@@ -512,7 +512,7 @@ export const getBalanceSheet = async (req, res, next) => {
       Vendor.find({ isActive: true }).lean(),
       Customer.find({ isActive: true }).lean(),
       Voucher.find({ ...queryBase, ...dateQuery }).lean(),
-      Trip.find(createdQuery).lean(), // Trip uses createdAt
+      Trip.find(createdQuery).select('date createdAt sales purchases diesel expenses losses stocks summary').lean(),
       InventoryStock.find({ ...dateQuery }).lean(), // InventoryStock uses date
       Group.find({ type: 'Assets', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),
       Group.find({ type: 'Liability', isActive: true }).populate('parentGroup', 'name type slug').lean().sort({ name: 1 }),

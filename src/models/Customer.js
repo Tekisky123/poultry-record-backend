@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import validator from "validator";
+import "./User.js";
 
 const customerSchema = new mongoose.Schema({
   shopName: {
@@ -22,6 +23,11 @@ const customerSchema = new mongoose.Schema({
       validator: val => validator.isMobilePhone(val, "any", { strictMode: true }),
       message: "Invalid contact number"
     }
+  },
+  email: {
+    type: String,
+    trim: true,
+    lowercase: true
   },
   address: {
     type: String,
@@ -107,6 +113,10 @@ const customerSchema = new mongoose.Schema({
   },
   toObject: { virtuals: true }
 });
+
+customerSchema.index({ group: 1, isActive: 1 });
+customerSchema.index({ isActive: 1 });
+customerSchema.index({ isActive: 1, shopName: 1 });
 
 const Customer = mongoose.model("Customer", customerSchema);
 

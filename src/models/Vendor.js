@@ -178,6 +178,9 @@ const vendorSchema = new mongoose.Schema({
 });
 
 vendorSchema.index({ contactNumber: 1 }, { unique: true });
+vendorSchema.index({ group: 1, isActive: 1 });
+vendorSchema.index({ isActive: 1 });
+vendorSchema.index({ isActive: 1, vendorName: 1 });
 
 const Vendor = mongoose.model("Vendor", vendorSchema);
 

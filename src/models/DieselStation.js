@@ -75,5 +75,8 @@ const dieselStationSchema = new mongoose.Schema({
     toObject: { virtuals: true }
   });
 
+dieselStationSchema.index({ group: 1, isActive: 1 });
+dieselStationSchema.index({ isActive: 1 });
+
 export default mongoose.model("DieselStation", dieselStationSchema);
 

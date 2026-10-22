@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import connectDB from './configs/database.js';
 import cookieParser from 'cookie-parser';
 import router from './routes/index.routes.js';
@@ -18,12 +19,34 @@ const BASE_URL = NODE_ENV === 'production'
 // ✅ CORS must be FIRST middleware
 app.use(corsConfig());
 
+// ✅ Response compression middleware to reduce payload sizes
+app.use(compression({
+  threshold: 1024,
+  level: 6,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(apiLogger);
 
 const server = http.createServer(app);
+
+// Ensure DB connection is established for serverless / standard requests
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 app.use("/api", router);
 
@@ -42,18 +65,22 @@ app.all('/*splat', (req, res) => {
 
 app.use(globalErrorHandler);
 
-connectDB()
-  .then(async () => {
-    console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
+if (!process.env.VERCEL) {
+  connectDB()
+    .then(async () => {
+      console.log(`✔️  Database connected!! ${process.env.DATABASE_USER || ''}`);
 
-    server.listen(port, () =>
-      console.log(
-        `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
-      )
-    );
-  })
-  .catch((err) => {
-    console.error("❌ Database connection failed!!");
-    console.error(err.message);
-  });
+      server.listen(port, () =>
+        console.log(
+          `✔️  PoultryRecord backend server is listening on ::: ${BASE_URL}`
+        )
+      );
+    })
+    .catch((err) => {
+      console.error("❌ Database connection failed!!");
+      console.error(err.message);
+    });
+}
+
+export default app;
 

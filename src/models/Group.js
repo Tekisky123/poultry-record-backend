@@ -66,6 +66,7 @@ const groupSchema = new mongoose.Schema({
 groupSchema.index({ parentGroup: 1 });
 groupSchema.index({ type: 1 });
 groupSchema.index({ isActive: 1 });
+groupSchema.index({ type: 1, isActive: 1 });
 
 
 // Pre-save hook to generate slug

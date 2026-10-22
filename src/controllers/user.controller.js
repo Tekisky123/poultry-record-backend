@@ -19,7 +19,7 @@ export const getUsers = async (req, res, next) => {
             query = query.select('+plainTextPassword');
         }
 
-        const users = await query.sort({ createdAt: -1 });
+        const users = await query.sort({ createdAt: -1 }).lean();
         successResponse(res, "users", 200, users)
     } catch (error) {
         next(error);

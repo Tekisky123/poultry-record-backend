@@ -14,18 +14,17 @@ export const getBirdsWeightLossMonthlySummary = async (req, res) => {
         const startDate = new Date(`${numericYear}-04-01T00:00:00.000Z`);
         const endDate = new Date(`${numericYear + 1}-03-31T23:59:59.999Z`);
 
-        // Group queries - Trip weight loss
-        const trips = await Trip.find({
-            date: { $gte: startDate, $lte: endDate },
-            'summary.birdWeightLoss': { $gt: 0 }
-        });
-
-        // InventoryStock weight loss
-        const stocks = await InventoryStock.find({
-            inventoryType: 'bird',
-            type: { $in: ['weight_loss', 'natural_weight_loss'] },
-            date: { $gte: startDate, $lte: endDate }
-        });
+        const [trips, stocks] = await Promise.all([
+            Trip.find({
+                date: { $gte: startDate, $lte: endDate },
+                'summary.birdWeightLoss': { $gt: 0 }
+            }).select('date summary').lean(),
+            InventoryStock.find({
+                inventoryType: 'bird',
+                type: { $in: ['weight_loss', 'natural_weight_loss'] },
+                date: { $gte: startDate, $lte: endDate }
+            }).select('date weight rate amount type').lean()
+        ]);
 
         const monthNames = ["April", "May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March"];
         const monthlyData = {};
@@ -113,18 +112,17 @@ export const getBirdsWeightLossDailyRecords = async (req, res) => {
         const lastDay = new Date(numericYear, numericMonth, 0).getDate();
         const endDate = new Date(numericYear, numericMonth - 1, lastDay, 23, 59, 59, 999);
 
-        // Group queries - Trip weight loss
-        const trips = await Trip.find({
-            date: { $gte: startDate, $lte: endDate },
-            'summary.birdWeightLoss': { $gt: 0 }
-        });
-
-        // InventoryStock weight loss
-        const stocks = await InventoryStock.find({
-            inventoryType: 'bird',
-            type: { $in: ['weight_loss', 'natural_weight_loss'] },
-            date: { $gte: startDate, $lte: endDate }
-        });
+        const [trips, stocks] = await Promise.all([
+            Trip.find({
+                date: { $gte: startDate, $lte: endDate },
+                'summary.birdWeightLoss': { $gt: 0 }
+            }).select('tripId date summary').lean(),
+            InventoryStock.find({
+                inventoryType: 'bird',
+                type: { $in: ['weight_loss', 'natural_weight_loss'] },
+                date: { $gte: startDate, $lte: endDate }
+            }).select('date weight rate amount type').lean()
+        ]);
 
         const records = [];
         let totalAmount = 0;

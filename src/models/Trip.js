@@ -217,7 +217,13 @@ const tripSchema = new mongoose.Schema({
 
     // Audit fields
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+
+    // Flag for manually edited mortality/death birds
+    hasManualMortality: { type: Boolean, default: false },
+
+    // Persistent trip lock status (completed trips default to locked)
+    isLocked: { type: Boolean }
 
 }, {
     timestamps: true,
@@ -227,6 +233,8 @@ const tripSchema = new mongoose.Schema({
             ret.id = ret._id;
             delete ret._id;
             delete ret.__v;
+            const isCompleted = ret.status === 'completed';
+            ret.isLocked = isCompleted ? (ret.isLocked === false ? false : true) : false;
 
             if (ret.diesel?.stations?.length) {
                 ret.diesel.stations = ret.diesel.stations.map((station) => {
@@ -242,7 +250,14 @@ const tripSchema = new mongoose.Schema({
             return ret;
         }
     },
-    toObject: { virtuals: true }
+    toObject: {
+        virtuals: true,
+        transform(doc, ret) {
+            const isCompleted = ret.status === 'completed';
+            ret.isLocked = isCompleted ? (ret.isLocked === false ? false : true) : false;
+            return ret;
+        }
+    }
 });
 
 // Pre-save middleware to generate tripId if not provided
@@ -524,7 +539,7 @@ tripSchema.pre('save', async function (next) {
         manualBirdsLost = this.losses.reduce((sum, loss) => sum + (loss.quantity || 0), 0);
     }
 
-    if (this.status === 'completed') {
+    if (this.status === 'completed' && !this.hasManualMortality) {
         const unaccountedBirds = (this.summary.totalBirdsPurchased || 0) - (this.summary.totalBirdsSold || 0) - manualBirdsLost;
         if (unaccountedBirds > 0) {
             const avgPurchaseWeight = this.summary.totalBirdsPurchased > 0 ?
@@ -626,6 +641,17 @@ tripSchema.pre('save', async function (next) {
 
     next();
 });
+
+tripSchema.index({ date: -1 });
+tripSchema.index({ createdAt: -1 });
+tripSchema.index({ status: 1 });
+tripSchema.index({ supervisor: 1, status: 1 });
+tripSchema.index({ supervisor: 1, createdAt: -1 });
+tripSchema.index({ 'sales.client': 1 });
+tripSchema.index({ 'purchases.supplier': 1 });
+tripSchema.index({ 'purchases.supplier': 1, date: -1 });
+tripSchema.index({ 'diesel.stations.dieselStation': 1 });
+tripSchema.index({ 'diesel.stations.dieselStation': 1, date: -1 });
 
 const Trip = mongoose.model('Trip', tripSchema);
 

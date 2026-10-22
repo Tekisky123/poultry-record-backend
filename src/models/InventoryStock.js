@@ -64,6 +64,15 @@ const inventoryStockSchema = new mongoose.Schema({
   date: { type: Date, required: true }
 }, { timestamps: true });
 
+inventoryStockSchema.index({ date: -1 });
+inventoryStockSchema.index({ inventoryType: 1, date: -1 });
+inventoryStockSchema.index({ vendorId: 1, date: -1 });
+inventoryStockSchema.index({ customerId: 1, date: -1 });
+inventoryStockSchema.index({ ledgerId: 1, date: -1 });
+inventoryStockSchema.index({ cashLedgerId: 1 });
+inventoryStockSchema.index({ onlineLedgerId: 1 });
+inventoryStockSchema.index({ expenseLedgerId: 1 });
+
 const InventoryStock = mongoose.model("InventoryStock", inventoryStockSchema);
 
 export default InventoryStock;

@@ -84,7 +84,7 @@ const validateVoucherAccountRules = async ({ voucherType, parties, account, entr
 
 export const createVoucher = async (req, res, next) => {
     try {
-        const { voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
+        const { voucherNumber, voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
 
         const isPaymentOrReceipt = voucherType === 'Payment' || voucherType === 'Receipt' || voucherType === 'Journal';
 
@@ -100,7 +100,24 @@ export const createVoucher = async (req, res, next) => {
             }
         }
 
-        const nextVoucherNumber = await Sequence.getNextValue('voucherNumber');
+        let assignedVoucherNumber;
+        if (voucherNumber !== undefined && voucherNumber !== null && voucherNumber !== '' && !isNaN(Number(voucherNumber))) {
+            assignedVoucherNumber = Number(voucherNumber);
+            const existingVoucher = await Voucher.findOne({ voucherNumber: assignedVoucherNumber });
+            if (existingVoucher) {
+                throw new AppError(`Voucher number ${assignedVoucherNumber} already exists`, 400);
+            }
+            const currentSeq = await Sequence.findOne({ name: 'voucherNumber' });
+            if (!currentSeq || assignedVoucherNumber >= currentSeq.value) {
+                await Sequence.findOneAndUpdate(
+                    { name: 'voucherNumber' },
+                    { $set: { value: assignedVoucherNumber } },
+                    { upsert: true, new: true }
+                );
+            }
+        } else {
+            assignedVoucherNumber = await Sequence.getNextValue('voucherNumber');
+        }
 
         // Generate partyName for Payment/Receipt vouchers from parties array
         let generatedPartyName = null;
@@ -141,7 +158,7 @@ export const createVoucher = async (req, res, next) => {
         }
 
         const voucherData = {
-            voucherNumber: nextVoucherNumber,
+            voucherNumber: assignedVoucherNumber,
             voucherType,
             date: date || new Date(),
             party: party || null,
@@ -391,23 +408,33 @@ export const getVouchers = async (req, res, next) => {
             ];
         }
 
-        const vouchers = await Voucher.find(query)
-            .populate('party', 'shopName vendorName')
-            .populate('account', 'name')
-            .populate('createdBy', 'name')
-            .populate('updatedBy', 'name')
-            .sort({ date: -1, createdAt: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
+        const [vouchers, total, totalsAgg] = await Promise.all([
+            Voucher.find(query)
+                .populate('party', 'shopName vendorName')
+                .populate('account', 'name')
+                .populate('createdBy', 'name')
+                .populate('updatedBy', 'name')
+                .sort({ date: -1, createdAt: -1 })
+                .limit(limit * 1)
+                .skip((page - 1) * limit)
+                .lean(),
+            Voucher.countDocuments(query),
+            Voucher.aggregate([
+                { $match: query },
+                {
+                    $group: {
+                        _id: null,
+                        totalDebit: { $sum: '$totalDebit' },
+                        totalCredit: { $sum: '$totalCredit' }
+                    }
+                }
+            ])
+        ]);
 
         await populateVoucherParties(vouchers);
 
-        const total = await Voucher.countDocuments(query);
-
-        // Calculate totals
-        const allVouchers = await Voucher.find(query);
-        const totalDebit = allVouchers.reduce((sum, voucher) => sum + voucher.totalDebit, 0);
-        const totalCredit = allVouchers.reduce((sum, voucher) => sum + voucher.totalCredit, 0);
+        const totalDebit = totalsAgg[0]?.totalDebit || 0;
+        const totalCredit = totalsAgg[0]?.totalCredit || 0;
 
         successResponse(res, "Vouchers retrieved successfully", 200, {
             vouchers,
@@ -436,13 +463,15 @@ export const getVoucherById = async (req, res, next) => {
             .populate('party', 'shopName vendorName contact address')
             .populate('account', 'name')
             .populate('createdBy', 'name email')
-            .populate('updatedBy', 'name email');
-
-        await populateVoucherParties(voucher);
+            .populate('updatedBy', 'name email')
+            .lean();
 
         if (!voucher) {
             throw new AppError('Voucher not found', 404);
         }
+
+        voucher.id = voucher.id || voucher._id;
+        await populateVoucherParties(voucher);
 
         successResponse(res, "Voucher retrieved successfully", 200, voucher);
     } catch (error) {
@@ -453,7 +482,7 @@ export const getVoucherById = async (req, res, next) => {
 export const updateVoucher = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
+        const { voucherNumber, voucherType, date, party, partyName, parties, account, entries, narration } = req.body;
 
         const voucher = await Voucher.findById(id);
         if (!voucher) {
@@ -472,6 +501,16 @@ export const updateVoucher = async (req, res, next) => {
             if (!partyData) {
                 throw new AppError('Party not found', 404);
             }
+        }
+
+        let updatedVoucherNumber;
+        if (voucherNumber !== undefined && voucherNumber !== null && voucherNumber !== '' && !isNaN(Number(voucherNumber))) {
+            const num = Number(voucherNumber);
+            const existing = await Voucher.findOne({ voucherNumber: num, _id: { $ne: id } });
+            if (existing) {
+                throw new AppError(`Voucher number ${num} already exists`, 400);
+            }
+            updatedVoucherNumber = num;
         }
 
         // Generate partyName for Payment/Receipt vouchers from parties array
@@ -513,6 +552,7 @@ export const updateVoucher = async (req, res, next) => {
         }
 
         const updateData = {
+            ...(updatedVoucherNumber !== undefined && { voucherNumber: updatedVoucherNumber }),
             ...(voucherType && { voucherType }),
             ...(date && { date }),
             ...(party !== undefined && { party: party || null }),

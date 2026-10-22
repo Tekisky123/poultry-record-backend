@@ -84,7 +84,8 @@ export const getLedgers = async (req, res, next) => {
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
-            .sort({ name: 1 });
+            .sort({ name: 1 })
+            .lean();
 
         successResponse(res, "Ledgers retrieved successfully", 200, ledgers);
     } catch (error) {
@@ -95,12 +96,63 @@ export const getLedgers = async (req, res, next) => {
 export const getLedgerById = async (req, res, next) => {
     const { id } = req.params;
     try {
-        const ledger = await Ledger.findOne({ _id: id, isActive: true })
-            .populate('group', 'name type slug')
-            .populate('vendor', 'vendorName email contactNumber')
-            .populate('customer', 'shopName contact')
-            .populate('createdBy', 'name')
-            .populate('updatedBy', 'name');
+        const [rawLedger, station, vendor, customer] = await Promise.all([
+            Ledger.findOne({ _id: id, isActive: true })
+                .populate('group', 'name type slug')
+                .populate('vendor', 'vendorName email contactNumber')
+                .populate('customer', 'shopName contact')
+                .populate('createdBy', 'name')
+                .populate('updatedBy', 'name')
+                .lean(),
+            DieselStation.findOne({ _id: id, isActive: true }).populate('group', 'name type slug').lean(),
+            Vendor.findOne({ _id: id, isActive: true }).populate('group', 'name type slug').lean(),
+            Customer.findOne({ _id: id, isActive: true }).populate('group', 'name type slug').lean()
+        ]);
+
+        let ledger = rawLedger;
+        if (!ledger && station) {
+            let grp = station.group;
+            if (!grp) {
+                grp = await Group.findOne({ slug: 'diesel-creditors' }).lean() || { name: 'Diesel Creditors' };
+            }
+            ledger = {
+                _id: station._id,
+                name: station.name,
+                group: grp,
+                openingBalance: station.openingBalance || 0,
+                openingBalanceType: station.openingBalanceType || 'credit',
+                outstandingBalance: station.outstandingBalance || 0,
+                outstandingBalanceType: station.outstandingBalanceType || 'credit'
+            };
+        } else if (!ledger && vendor) {
+            let grp = vendor.group;
+            if (!grp) {
+                grp = await Group.findOne({ slug: 'sundry-creditors' }).lean() || { name: 'Sundry Creditors' };
+            }
+            ledger = {
+                _id: vendor._id,
+                name: vendor.companyName || vendor.vendorName,
+                group: grp,
+                openingBalance: vendor.openingBalance || 0,
+                openingBalanceType: vendor.openingBalanceType || 'credit',
+                outstandingBalance: vendor.outstandingBalance || 0,
+                outstandingBalanceType: vendor.outstandingBalanceType || 'credit'
+            };
+        } else if (!ledger && customer) {
+            let grp = customer.group;
+            if (!grp) {
+                grp = await Group.findOne({ slug: 'sundry-debtors' }).lean() || { name: 'Sundry Debtors' };
+            }
+            ledger = {
+                _id: customer._id,
+                name: customer.shopName || customer.ownerName,
+                group: grp,
+                openingBalance: customer.openingBalance || 0,
+                openingBalanceType: customer.openingBalanceType || 'debit',
+                outstandingBalance: customer.outstandingBalance || 0,
+                outstandingBalanceType: customer.outstandingBalanceType || 'debit'
+            };
+        }
 
         if (!ledger) {
             throw new AppError('Ledger not found', 404);
@@ -127,7 +179,8 @@ export const getLedgersByGroup = async (req, res, next) => {
             .populate('customer', 'shopName contact')
             .populate('createdBy', 'name')
             .populate('updatedBy', 'name')
-            .sort({ name: 1 });
+            .sort({ name: 1 })
+            .lean();
 
         successResponse(res, "Ledgers retrieved successfully", 200, ledgers);
     } catch (error) {
@@ -310,17 +363,35 @@ export const getMonthlySummary = async (req, res, next) => {
             });
         }
 
-        // Fetch Data
-        // Valid Date Query or No Date Query
-        // Fetch Data: Fetching ALL transactions to enable accurate Forward Calculation from openingBalance
-        const voucherQuery = { isActive: true };
-        const tripQueryObj = {};
-        // Date filters removed manually to allow gapBeforeDebit counting
+        const subjectIdStr = id.toString();
+        const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
+            subjectType === 'vendor' ? (subject.companyName || subject.vendorName) : subject.name;
+        const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+        const vendorNameStr = (subjectType === 'vendor' && subject.vendorName) ? subject.vendorName.trim().toLowerCase() : '';
+        const companyNameStr = (subjectType === 'vendor' && subject.companyName) ? subject.companyName.trim().toLowerCase() : '';
 
+        // Target voucher query to match subject by ID, account header, party or legacy name entries
+        const voucherConditions = [
+            { account: id },
+            { 'parties.partyId': id },
+            { 'entries.account': id }
+        ];
+        const nameMatches = [];
+        if (subjectName) nameMatches.push(subjectName);
+        if (vendorNameStr && vendorNameStr !== subjectNameStr) nameMatches.push(subject.vendorName);
+        if (companyNameStr && companyNameStr !== subjectNameStr && companyNameStr !== vendorNameStr) nameMatches.push(subject.companyName);
 
-        let vouchers = await Voucher.find(voucherQuery).lean();
+        nameMatches.forEach(nm => {
+            voucherConditions.push({ 'entries.account': nm });
+            voucherConditions.push({ 'entries.account': new RegExp(`^${nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+        });
 
-        let tripQuery = {
+        const voucherQuery = {
+            isActive: true,
+            $or: voucherConditions
+        };
+
+        const tripQuery = {
             $or: [
                 { 'purchases.supplier': id },
                 { 'sales.client': id },
@@ -329,40 +400,32 @@ export const getMonthlySummary = async (req, res, next) => {
                 { 'diesel.stations.dieselStation': id }
             ]
         };
-        let trips = await Trip.find(tripQuery).lean();
 
-        let stocks = [];
-        if (subjectType !== 'dieselStation') {
-            let stockQuery = {
-                $or: [
-                    { vendorId: id },
-                    { ledgerId: id },
-                    { customerId: id },
-                    { cashLedgerId: id },
-                    { onlineLedgerId: id },
-                    { expenseLedgerId: id }
-                ]
-            };
-            stocks = await InventoryStock.find(stockQuery).lean();
-        }
+        const stockQuery = subjectType !== 'dieselStation' ? {
+            $or: [
+                { vendorId: id },
+                { ledgerId: id },
+                { customerId: id },
+                { cashLedgerId: id },
+                { onlineLedgerId: id },
+                { expenseLedgerId: id }
+            ]
+        } : null;
 
-        let indirectSales = [];
-        if (subjectType !== 'dieselStation') {
-            let indirectQuery = {
-                $or: [
-                    { customer: id },
-                    { vendor: id }
-                ]
-            };
-            indirectSales = await IndirectSale.find(indirectQuery).lean();
-        }
+        const indirectQuery = subjectType !== 'dieselStation' ? {
+            $or: [
+                { customer: id },
+                { vendor: id }
+            ]
+        } : null;
 
-        const subjectIdStr = id.toString();
-        const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
-            subjectType === 'vendor' ? (subject.companyName || subject.vendorName) : subject.name;
-        const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
-        const vendorNameStr = (subjectType === 'vendor' && subject.vendorName) ? subject.vendorName.trim().toLowerCase() : '';
-        const companyNameStr = (subjectType === 'vendor' && subject.companyName) ? subject.companyName.trim().toLowerCase() : '';
+        // Fetch all required data in parallel in a single round-trip
+        const [vouchers, trips, stocks, indirectSales] = await Promise.all([
+            Voucher.find(voucherQuery).lean(),
+            Trip.find(tripQuery).select('date createdAt sales purchases diesel expenses losses stocks summary').lean(),
+            stockQuery ? InventoryStock.find(stockQuery).lean() : Promise.resolve([]),
+            indirectQuery ? IndirectSale.find(indirectQuery).lean() : Promise.resolve([])
+        ]);
 
         // Helper: mirrors vendor.controller.js isTdsApplicableForDate exactly
         const isTdsApplicableForDate = (date) => {
@@ -770,14 +833,36 @@ export const getDailySummary = async (req, res, next) => {
             });
         }
 
-        let vouchers = await Voucher.find({
-            isActive: true,
-            date: { $gte: startDate, $lt: endDate }
-        }).lean();
+        const subjectIdStr = id.toString();
+        const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
+            subjectType === 'vendor' ? (subject.companyName || subject.vendorName) : subject.name;
+        const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+        const vendorNameStr = (subjectType === 'vendor' && subject.vendorName) ? subject.vendorName.trim().toLowerCase() : '';
+        const companyNameStr = (subjectType === 'vendor' && subject.companyName) ? subject.companyName.trim().toLowerCase() : '';
 
-        let trips = [];
-        // Only fetch trips for relevant period
-        let tripQuery = {
+        // Target voucher query to match subject by ID, account header, party or legacy name entries
+        const voucherConditions = [
+            { account: id },
+            { 'parties.partyId': id },
+            { 'entries.account': id }
+        ];
+        const nameMatches = [];
+        if (subjectName) nameMatches.push(subjectName);
+        if (vendorNameStr && vendorNameStr !== subjectNameStr) nameMatches.push(subject.vendorName);
+        if (companyNameStr && companyNameStr !== subjectNameStr && companyNameStr !== vendorNameStr) nameMatches.push(subject.companyName);
+
+        nameMatches.forEach(nm => {
+            voucherConditions.push({ 'entries.account': nm });
+            voucherConditions.push({ 'entries.account': new RegExp(`^${nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+        });
+
+        const voucherQuery = {
+            isActive: true,
+            date: { $gte: startDate, $lt: endDate },
+            $or: voucherConditions
+        };
+
+        const tripQuery = {
             createdAt: { $gte: startDate, $lt: endDate },
             $or: [
                 { 'purchases.supplier': id },
@@ -787,43 +872,35 @@ export const getDailySummary = async (req, res, next) => {
                 { 'diesel.stations.dieselStation': id }
             ]
         };
-        trips = await Trip.find(tripQuery).lean();
 
-        let stocks = [];
-        if (subjectType !== 'dieselStation') {
-            const stockQuery = {
-                date: { $gte: startDate, $lt: endDate },
-                $or: [
-                    { vendorId: id },
-                    { ledgerId: id },
-                    { customerId: id },
-                    { cashLedgerId: id },
-                    { onlineLedgerId: id },
-                    { expenseLedgerId: id }
-                ]
-            };
-            stocks = await InventoryStock.find(stockQuery).lean();
-        }
+        const stockQuery = subjectType !== 'dieselStation' ? {
+            date: { $gte: startDate, $lt: endDate },
+            $or: [
+                { vendorId: id },
+                { ledgerId: id },
+                { customerId: id },
+                { cashLedgerId: id },
+                { onlineLedgerId: id },
+                { expenseLedgerId: id }
+            ]
+        } : null;
 
-        let indirectSales = [];
-        if (subjectType !== 'dieselStation') {
-            let indirectQuery = {
-                date: { $gte: startDate, $lt: endDate },
-                isActive: true,
-                $or: [
-                    { customer: id },
-                    { vendor: id }
-                ]
-            };
-            indirectSales = await IndirectSale.find(indirectQuery).lean();
-        }
+        const indirectQuery = subjectType !== 'dieselStation' ? {
+            date: { $gte: startDate, $lt: endDate },
+            isActive: true,
+            $or: [
+                { customer: id },
+                { vendor: id }
+            ]
+        } : null;
 
-        const subjectIdStr = id.toString();
-        const subjectName = subjectType === 'customer' ? (subject.shopName || subject.ownerName) :
-            subjectType === 'vendor' ? (subject.companyName || subject.vendorName) : subject.name;
-        const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
-        const vendorNameStr = (subjectType === 'vendor' && subject.vendorName) ? subject.vendorName.trim().toLowerCase() : '';
-        const companyNameStr = (subjectType === 'vendor' && subject.companyName) ? subject.companyName.trim().toLowerCase() : '';
+        // Fetch all in parallel
+        const [vouchers, trips, stocks, indirectSales] = await Promise.all([
+            Voucher.find(voucherQuery).lean(),
+            Trip.find(tripQuery).select('date createdAt sales purchases diesel expenses losses stocks summary').lean(),
+            stockQuery ? InventoryStock.find(stockQuery).lean() : Promise.resolve([]),
+            indirectQuery ? IndirectSale.find(indirectQuery).lean() : Promise.resolve([])
+        ]);
 
         // Helper: mirrors vendor.controller.js isTdsApplicableForDate exactly
         const isTdsApplicableForDate = (date) => {
@@ -1109,9 +1186,46 @@ export const getLedgerTransactions = async (req, res, next) => {
     const { startDate, endDate } = req.query;
 
     try {
-        const ledger = await Ledger.findById(id);
+        const [rawLedger, rawStation, rawVendor, rawCustomer] = await Promise.all([
+            Ledger.findById(id).populate('group', 'name type slug').lean(),
+            DieselStation.findById(id).populate('group', 'name type slug').lean(),
+            Vendor.findById(id).populate('group', 'name type slug').lean(),
+            Customer.findById(id).populate('group', 'name type slug').lean()
+        ]);
+
+        let ledger = rawLedger;
+        let subjectType = 'ledger';
+        if (!ledger && rawStation) {
+            ledger = rawStation;
+            subjectType = 'dieselStation';
+        } else if (!ledger && rawVendor) {
+            ledger = rawVendor;
+            subjectType = 'vendor';
+        } else if (!ledger && rawCustomer) {
+            ledger = rawCustomer;
+            subjectType = 'customer';
+        }
+
         if (!ledger) {
             throw new AppError('Ledger not found', 404);
+        }
+
+        let subjectName = ledger.name;
+        if (subjectType === 'vendor') {
+            subjectName = ledger.companyName || ledger.vendorName;
+        } else if (subjectType === 'customer') {
+            subjectName = ledger.shopName || ledger.ownerName;
+        }
+
+        let ledgerGroup = ledger.group;
+        if (!ledgerGroup) {
+            if (subjectType === 'dieselStation') {
+                ledgerGroup = await Group.findOne({ slug: 'diesel-creditors' }) || { name: 'Diesel Creditors' };
+            } else if (subjectType === 'vendor') {
+                ledgerGroup = await Group.findOne({ slug: 'sundry-creditors' }) || { name: 'Sundry Creditors' };
+            } else if (subjectType === 'customer') {
+                ledgerGroup = await Group.findOne({ slug: 'sundry-debtors' }) || { name: 'Sundry Debtors' };
+            }
         }
 
         const queryStartDate = startDate ? new Date(startDate) : null;
@@ -1122,14 +1236,32 @@ export const getLedgerTransactions = async (req, res, next) => {
             queryEndDate.setHours(23, 59, 59, 999);
         }
 
-        // Vouchers Query
+        const subjectIdStr = id.toString();
+        const subjectNameStr = subjectName ? subjectName.trim().toLowerCase() : '';
+        const vendorNameStr = (subjectType === 'vendor' && ledger.vendorName) ? ledger.vendorName.trim().toLowerCase() : '';
+        const companyNameStr = (subjectType === 'vendor' && ledger.companyName) ? ledger.companyName.trim().toLowerCase() : '';
+
+        // Target voucher query to match subject by ID, account header, party or legacy name entries
+        const voucherConditions = [
+            { account: id },
+            { 'parties.partyId': id },
+            { 'entries.account': id }
+        ];
+        const nameMatches = [];
+        if (subjectName) nameMatches.push(subjectName);
+        if (vendorNameStr && vendorNameStr !== subjectNameStr) nameMatches.push(ledger.vendorName);
+        if (companyNameStr && companyNameStr !== subjectNameStr && companyNameStr !== vendorNameStr) nameMatches.push(ledger.companyName);
+
+        nameMatches.forEach(nm => {
+            if (nm) {
+                voucherConditions.push({ 'entries.account': nm });
+                voucherConditions.push({ 'entries.account': new RegExp(`^${nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+            }
+        });
+
         const voucherQuery = {
             isActive: true,
-            $or: [
-                { 'entries.account': ledger.name }, // For Journal/Contra (using Name string)
-                { account: id },                    // For Payment/Receipt Header (using ObjectId)
-                { 'parties.partyId': id }           // For Payment/Receipt Line Items (using ObjectId)
-            ]
+            $or: voucherConditions
         };
 
         if (queryStartDate || queryEndDate) {
@@ -1138,14 +1270,24 @@ export const getLedgerTransactions = async (req, res, next) => {
             if (queryEndDate) voucherQuery.date.$lte = queryEndDate;
         }
 
-        // Trips Query (for Cash/Bank ledgers used in Sales)
+        // Trips Query
+        const tripConditions = [
+            { 'sales.cashLedger': id },
+            { 'sales.onlineLedger': id },
+            { 'sales.client': id },
+            { 'purchases.supplier': id },
+            { 'diesel.stations.dieselStation': id },
+            { 'diesel.stations.paymentLedger': id }
+        ];
+
+        if (subjectType === 'dieselStation' && subjectName) {
+            tripConditions.push({ 'diesel.stations.stationName': subjectName });
+        }
+
         const tripQuery = {
-            $or: [
-                { 'sales.cashLedger': id },
-                { 'sales.onlineLedger': id }
-            ]
+            $or: tripConditions
         };
-        // Date filter for trips usually uses 'date'
+
         if (queryStartDate || queryEndDate) {
             tripQuery.date = {};
             if (queryStartDate) tripQuery.date.$gte = queryStartDate;
@@ -1157,6 +1299,7 @@ export const getLedgerTransactions = async (req, res, next) => {
             $or: [
                 { 'ledgerId': id },
                 { 'vendorId': id },
+                { 'customerId': id },
                 { 'cashLedgerId': id },
                 { 'onlineLedgerId': id },
                 { 'expenseLedgerId': id }
@@ -1170,42 +1313,47 @@ export const getLedgerTransactions = async (req, res, next) => {
 
         const [vouchers, trips, stocks] = await Promise.all([
             Voucher.find(voucherQuery).lean()
-                .populate('party', 'shopName vendorName')
-                .populate('account', 'name'), // Populate header Account to get its name
+                .populate('party', 'shopName vendorName companyName')
+                .populate('account', 'name'),
             Trip.find(tripQuery).lean()
-                .populate('vehicle', 'registrationNumber')
+                .populate('vehicle', 'registrationNumber vehicleNumber')
                 .populate('supervisor', 'name')
-                .populate('sales.client', 'shopName ownerName'),
-            InventoryStock.find(stockQuery).lean().populate('customerId', 'shopName ownerName')
+                .populate('sales.client', 'shopName ownerName')
+                .populate('purchases.supplier', 'companyName vendorName')
+                .populate('diesel.stations.dieselStation', 'name')
+                .populate('diesel.stations.paymentLedger', 'name'),
+            InventoryStock.find(stockQuery).lean()
+                .populate('customerId', 'shopName ownerName')
+                .populate('vendorId', 'shopName vendorName companyName')
         ]);
 
         await populateVoucherParties(vouchers);
 
         let transactions = [];
 
-        // Process Vouchers
+        // 1. Process Vouchers
         vouchers.forEach(v => {
             let debit = 0;
             let credit = 0;
             let description = v.narration || v.voucherType;
             let refNo = v.voucherNumber;
 
-            // Determine Debit/Credit for this ledger
-            if (v.voucherType === 'Payment' || v.voucherType === 'Receipt' || v.voucherType === 'Journal') {
-                // If ledger is the ACCOUNT (Header)
-                // e.g. Payment made FROM Cash/Bank (this ledger) TO Vendor/Parties
+            const isPaymentReceipt = v.voucherType === 'Payment' || v.voucherType === 'Receipt';
+
+            if (isPaymentReceipt) {
+                // If this entity is the Header Account (Cash/Bank)
                 if (v.account && getObjectIdStr(v.account) === id.toString()) {
                     if (v.parties && v.parties.length > 0) {
                         const isNewVoucher = Boolean(v.isMultiPartyDisplay) || (v.parties && v.parties.length > 1) || (v.createdAt && new Date(v.createdAt) >= new Date('2026-08-15T00:00:00.000Z'));
                         if (isNewVoucher) {
-                            v.parties.forEach(p => {
+                            v.parties.forEach((p, pIdx) => {
                                 const partyObj = p.partyId;
-                                const partyName = p.partyName || (partyObj ? (partyObj.shopName || partyObj.vendorName || partyObj.name || partyObj.ownerName) : '') || 'Party';
+                                const partyName = p.partyName || (partyObj ? (partyObj.companyName || partyObj.shopName || partyObj.vendorName || partyObj.name || partyObj.ownerName) : '') || 'Party';
                                 const pAmount = p.amount || 0;
-                                const isPayment = v.voucherType === 'Payment' || v.voucherType === 'Journal';
+                                const isPayment = v.voucherType === 'Payment';
 
                                 transactions.push({
-                                    _id: v._id,
+                                    _id: `${v._id}_party_${pIdx}`,
                                     date: v.date,
                                     createdAt: v.createdAt,
                                     type: v.voucherType,
@@ -1217,18 +1365,17 @@ export const getLedgerTransactions = async (req, res, next) => {
                                     narration: v.narration || ''
                                 });
                             });
-                            return; // Successfully handled header account for multi-parties
+                            return;
                         } else {
-                            // Legacy display for old vouchers
                             const totalAmount = v.parties.reduce((sum, p) => sum + (p.amount || 0), 0);
                             if (v.voucherType === 'Payment') {
                                 credit += totalAmount;
                             } else {
                                 debit += totalAmount;
                             }
-                            const firstParty = v.parties[0].partyId;
+                            const firstParty = v.parties[0]?.partyId;
                             if (v.parties.length === 1 && firstParty) {
-                                description = firstParty.shopName || firstParty.vendorName || firstParty.name || 'Unknown Party';
+                                description = firstParty.companyName || firstParty.shopName || firstParty.vendorName || firstParty.name || 'Unknown Party';
                             } else {
                                 description = `Multiple Accounts (${v.parties.length})`;
                             }
@@ -1236,77 +1383,75 @@ export const getLedgerTransactions = async (req, res, next) => {
                     }
                 }
 
-                // If ledger is in PARTIES (Line Items)
-                // e.g. Payment made TO Vendor (this ledger) FROM Cash
-                if (v.parties) {
+                // If this entity is in PARTIES
+                if (v.parties && v.parties.length > 0) {
                     v.parties.forEach(p => {
-                        if (p.partyId && getObjectIdStr(p.partyId) === id.toString()) {
-                            if (v.voucherType === 'Payment') {
-                                debit += p.amount || 0;
+                        const pId = p.partyId ? getObjectIdStr(p.partyId) : '';
+                        if (pId === id.toString()) {
+                            const pAmount = p.amount || 0;
+                            if (subjectType === 'customer') {
+                                // Receipt from Customer decreases debt (Credit)
+                                if (v.voucherType === 'Receipt') credit += pAmount;
+                                else debit += pAmount;
                             } else {
-                                credit += p.amount || 0;
+                                // Payment to Vendor/Diesel Station/Expense decreases payable (Debit)
+                                if (v.voucherType === 'Payment') debit += pAmount;
+                                else credit += pAmount;
                             }
 
-                            // For Vendor/Expense Ledger (Party), the "Particulars" should be the Source Account (Cash/Bank)
                             if (!v.account || getObjectIdStr(v.account) !== id.toString()) {
-                                // Use header account name as description
-                                // v.account is now populated
                                 description = v.account ? v.account.name : 'Unknown Account';
                             }
                         }
                     });
                 }
 
-                // Fallback: If neither account nor parties matched via ObjectId, try matching via entries (name-based)
-                // This handles Payment/Receipt vouchers matched to this ledger via entries.account string
+                // Fallback: match via entries name
                 if (debit === 0 && credit === 0 && v.entries && v.entries.length > 0) {
                     v.entries.forEach(e => {
-                        if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                        const accName = e.account ? e.account.toLowerCase().trim() : '';
+                        const isMatch = nameMatches.some(nm => nm && nm.toLowerCase().trim() === accName);
+                        if (isMatch) {
                             debit += e.debitAmount || 0;
                             credit += e.creditAmount || 0;
 
-                            // Show the opposite account as the description
                             let oppositeAccountName = '';
                             if (e.debitAmount > 0) {
-                                const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && !nameMatches.some(nm => nm.toLowerCase().trim() === entry.account.toLowerCase().trim()));
                                 if (crEntry) oppositeAccountName = crEntry.account;
                             } else if (e.creditAmount > 0) {
-                                const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && !nameMatches.some(nm => nm.toLowerCase().trim() === entry.account.toLowerCase().trim()));
                                 if (drEntry) oppositeAccountName = drEntry.account;
                             }
-                            if (oppositeAccountName) {
-                                description = oppositeAccountName;
-                            }
+                            if (oppositeAccountName) description = oppositeAccountName;
                         }
                     });
                 }
             } else {
                 // Contra / Journal
-                v.entries.forEach(e => {
-                    if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
-                        debit += e.debitAmount || 0;
-                        credit += e.creditAmount || 0;
+                if (v.entries && v.entries.length > 0) {
+                    v.entries.forEach(e => {
+                        const accName = e.account ? e.account.toLowerCase().trim() : '';
+                        const isMatch = nameMatches.some(nm => nm && nm.toLowerCase().trim() === accName) || (e.account && e.account.toString() === id.toString());
+                        if (isMatch) {
+                            debit += e.debitAmount || 0;
+                            credit += e.creditAmount || 0;
 
-                        // For both Contra and Journal: show the opposite account name in Particulars
-                        if (v.voucherType === 'Journal' || v.voucherType === 'Contra') {
                             let oppositeAccountName = '';
                             if (e.debitAmount > 0) {
-                                // This entry is debit: find the credit entry (opposite)
-                                const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                const crEntry = v.entries.find(entry => entry.creditAmount > 0 && entry.account && !nameMatches.some(nm => nm.toLowerCase().trim() === entry.account.toLowerCase().trim()));
                                 if (crEntry) oppositeAccountName = crEntry.account;
                             } else if (e.creditAmount > 0) {
-                                // This entry is credit: find the debit entry (opposite)
-                                const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && entry.account.toLowerCase() !== ledger.name.toLowerCase());
+                                const drEntry = v.entries.find(entry => entry.debitAmount > 0 && entry.account && !nameMatches.some(nm => nm.toLowerCase().trim() === entry.account.toLowerCase().trim()));
                                 if (drEntry) oppositeAccountName = drEntry.account;
                             }
-
-                            if (oppositeAccountName) {
-                                description = oppositeAccountName;
-                            }
+                            if (oppositeAccountName) description = oppositeAccountName;
                         }
-                    }
-                });
-            } if (debit > 0 || credit > 0) {
+                    });
+                }
+            }
+
+            if (debit > 0 || credit > 0) {
                 transactions.push({
                     _id: v._id,
                     date: v.date,
@@ -1322,49 +1467,152 @@ export const getLedgerTransactions = async (req, res, next) => {
             }
         });
 
-        // Process Trips
+        // 2. Process Trips
         trips.forEach(t => {
-            if (t.sales) {
-                t.sales.forEach(s => {
-                    let debit = 0;
-                    let credit = 0;
-                    let isRelevant = false;
+            const vNo = t.vehicle?.registrationNumber || t.vehicle?.vehicleNumber || '';
+            // A) Sales
+            if (t.sales && t.sales.length > 0) {
+                t.sales.forEach((s, sIdx) => {
+                    const clientMatch = s.client && getObjectIdStr(s.client) === id.toString();
+                    const cashMatch = s.cashLedger && getObjectIdStr(s.cashLedger) === id.toString();
+                    const onlineMatch = s.onlineLedger && getObjectIdStr(s.onlineLedger) === id.toString();
 
-                    if (s.cashLedger && s.cashLedger.toString() === id.toString()) {
-                        debit += s.cashPaid || 0;
-                        isRelevant = true;
-                    }
-                    if (s.onlineLedger && s.onlineLedger.toString() === id.toString()) {
-                        debit += s.onlinePaid || 0;
-                        isRelevant = true;
+                    if (clientMatch) {
+                        if ((s.amount || 0) > 0) {
+                            transactions.push({
+                                _id: `${t._id}_sale_${sIdx}`,
+                                date: t.date || t.createdAt,
+                                createdAt: t.createdAt,
+                                type: 'Sale',
+                                refNo: s.billNumber || t.tripId || '-',
+                                description: `Trip Bill: ${s.billNumber || ''} (${s.birds || 0} birds, ${s.weight || 0} kg @ ₹${s.rate || 0})`,
+                                debit: s.amount || 0,
+                                credit: 0,
+                                source: 'trip',
+                                narration: s.narration || (t.tripId ? `Trip: ${t.tripId}` : '')
+                            });
+                        }
+                        const paymentAmt = (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
+                        if (paymentAmt > 0) {
+                            transactions.push({
+                                _id: `${t._id}_rec_${sIdx}`,
+                                date: t.date || t.createdAt,
+                                createdAt: t.createdAt,
+                                type: 'Receipt',
+                                refNo: s.billNumber || t.tripId || '-',
+                                description: `Payment for Bill: ${s.billNumber || ''}${s.discount ? ` (incl. ₹${s.discount} disc)` : ''}`,
+                                debit: 0,
+                                credit: paymentAmt,
+                                source: 'trip',
+                                narration: s.narration || (t.tripId ? `Trip: ${t.tripId}` : '')
+                            });
+                        }
                     }
 
-                    if (isRelevant && (debit > 0)) {
+                    if (cashMatch && (s.cashPaid || 0) > 0) {
                         transactions.push({
-                            _id: t._id,
+                            _id: `${t._id}_cash_${sIdx}`,
                             date: t.date || t.createdAt,
                             createdAt: t.createdAt,
                             type: 'Receipt',
                             refNo: t.tripId,
                             description: `Trip Bill: ${s.billNumber} (${s.birds} birds) - ${s.client?.shopName || s.client?.ownerName || s.product || 'Bird Sale'}`,
-                            debit,
-                            credit,
-                            source: 'trip'
+                            debit: s.cashPaid || 0,
+                            credit: 0,
+                            source: 'trip',
+                            narration: t.tripId ? `Trip: ${t.tripId}` : ''
+                        });
+                    }
+                    if (onlineMatch && (s.onlinePaid || 0) > 0) {
+                        transactions.push({
+                            _id: `${t._id}_online_${sIdx}`,
+                            date: t.date || t.createdAt,
+                            createdAt: t.createdAt,
+                            type: 'Receipt',
+                            refNo: t.tripId,
+                            description: `Trip Bill: ${s.billNumber} (${s.birds} birds) - ${s.client?.shopName || s.client?.ownerName || s.product || 'Bird Sale'}`,
+                            debit: s.onlinePaid || 0,
+                            credit: 0,
+                            source: 'trip',
+                            narration: t.tripId ? `Trip: ${t.tripId}` : ''
                         });
                     }
                 });
             }
 
+            // B) Purchases (for Vendor)
+            if (t.purchases && t.purchases.length > 0) {
+                t.purchases.forEach((p, pIdx) => {
+                    const supplierMatch = p.supplier && getObjectIdStr(p.supplier) === id.toString();
+                    if (supplierMatch && (p.amount || 0) > 0) {
+                        transactions.push({
+                            _id: `${t._id}_pur_${pIdx}`,
+                            date: t.date || t.createdAt,
+                            createdAt: t.createdAt,
+                            type: 'Purchase',
+                            refNo: p.dcNumber || t.tripId || '-',
+                            description: `Birds Purchase: ${p.birds || 0} birds, ${p.weight || 0} kg @ ₹${p.rate || 0}${vNo ? ` (${vNo})` : ''}`,
+                            debit: 0,
+                            credit: p.amount || 0,
+                            source: 'trip',
+                            narration: t.tripId ? `Trip: ${t.tripId}` : ''
+                        });
+                    }
+                });
+            }
+
+            // C) Diesel Stations
+            if (t.diesel && t.diesel.stations && t.diesel.stations.length > 0) {
+                t.diesel.stations.forEach((s, sIdx) => {
+                    const stationMatch = (s.dieselStation && getObjectIdStr(s.dieselStation) === id.toString()) ||
+                        (subjectType === 'dieselStation' && s.stationName && s.stationName.toLowerCase().trim() === subjectNameStr);
+                    const paymentLedgerMatch = s.paymentLedger && getObjectIdStr(s.paymentLedger) === id.toString();
+
+                    if (stationMatch && (s.amount || 0) > 0) {
+                        transactions.push({
+                            _id: `${t._id}_diesel_${sIdx}`,
+                            date: t.date || t.createdAt,
+                            createdAt: s.timestamp || t.createdAt || t.date,
+                            type: 'Purchase',
+                            refNo: s.indentNumber || s.receipt || t.tripId || '-',
+                            description: `Diesel Purchase: ${s.volume || 0}L @ ₹${s.rate || 0}${vNo ? ` (${vNo})` : ''}`,
+                            debit: 0,
+                            credit: s.amount || 0,
+                            source: 'trip',
+                            narration: s.narration || (t.tripId ? `Trip: ${t.tripId}` : '')
+                        });
+                    }
+
+                    if (paymentLedgerMatch && (s.amount || 0) > 0) {
+                        transactions.push({
+                            _id: `${t._id}_diesel_pay_${sIdx}`,
+                            date: t.date || t.createdAt,
+                            createdAt: s.timestamp || t.createdAt || t.date,
+                            type: 'Payment',
+                            refNo: s.indentNumber || s.receipt || t.tripId || '-',
+                            description: `Diesel Expense: ${s.stationName || s.name || 'Diesel Station'} (${s.volume || 0}L)`,
+                            debit: 0,
+                            credit: s.amount || 0,
+                            source: 'trip',
+                            narration: s.narration || (t.tripId ? `Trip: ${t.tripId}` : '')
+                        });
+                    }
+                });
+            }
         });
 
-        // Process Inventory Stocks (Sales/Receipts)
+        // 3. Process Inventory Stocks
         stocks.forEach(s => {
             let debit = 0;
             let credit = 0;
             let isRelevant = false;
 
             const sLedgerId = s.ledgerId?._id || s.ledgerId;
-            if (sLedgerId && sLedgerId.toString() === id.toString()) {
+            const sVendorId = s.vendorId?._id || s.vendorId;
+            const sCustomerId = s.customerId?._id || s.customerId;
+            if ((sLedgerId && getObjectIdStr(sLedgerId) === id.toString()) ||
+                (sVendorId && getObjectIdStr(sVendorId) === id.toString()) ||
+                (sCustomerId && getObjectIdStr(sCustomerId) === id.toString())) {
                 if (s.type === 'purchase' || s.inventoryType === 'feed') {
                     credit += s.amount || 0;
                     debit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
@@ -1377,35 +1625,55 @@ export const getLedgerTransactions = async (req, res, next) => {
             }
 
             // Cash Payment
-            if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) {
+            if (s.cashLedgerId && getObjectIdStr(s.cashLedgerId) === id.toString()) {
                 debit += s.cashPaid || 0;
                 isRelevant = true;
             }
 
             // Online Payment
-            if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) {
+            if (s.onlineLedgerId && getObjectIdStr(s.onlineLedgerId) === id.toString()) {
                 debit += s.onlinePaid || 0;
                 isRelevant = true;
             }
 
             // Expense (Feed Consume, etc.)
-            if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) {
-                debit += s.amount || 0; // Usage is an expense (Debit)
+            if (s.expenseLedgerId && getObjectIdStr(s.expenseLedgerId) === id.toString()) {
+                debit += s.amount || 0;
                 isRelevant = true;
             }
 
-            if (isRelevant && (debit > 0)) {
+            if (isRelevant && (debit > 0 || credit > 0)) {
+                let vchType = 'Journal';
+                let vchDesc = '';
+                if (s.type === 'purchase' || s.inventoryType === 'feed') {
+                    vchType = 'Purchase';
+                    const parts = [];
+                    if (s.bags) parts.push(`${s.bags} bags`);
+                    if (s.weight || s.feedQty) parts.push(`${s.weight || s.feedQty} kg`);
+                    if (s.rate) parts.push(`@ ₹${s.rate}`);
+                    vchDesc = `Feed Purchase${parts.length > 0 ? ` (${parts.join(', ')})` : ''}`;
+                } else if (s.type === 'receipt') {
+                    vchType = 'Receipt';
+                    vchDesc = `STOCK_RECEIPT_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'}`;
+                } else if (s.type === 'consume') {
+                    vchType = 'Journal';
+                    vchDesc = 'FEED CONSUMPTION';
+                } else if (s.type === 'sale') {
+                    vchType = 'Receipt';
+                    vchDesc = `STOCK_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'} (${s.birds || 0} birds)`;
+                } else {
+                    vchType = 'Stock Sale';
+                    vchDesc = `STOCK_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'} (${s.birds || 0} birds)`;
+                }
+
                 transactions.push({
                     _id: s._id,
                     date: s.date || s.createdAt,
                     createdAt: s.createdAt,
-                    type: s.type === 'receipt' ? 'Receipt' : s.type === 'sale' ? 'Receipt' : 'Stock Sale',
+                    type: vchType,
                     refNo: s.billNumber || s.refNo || '-',
-                    description: s.type === 'receipt'
-                        ? `STOCK_RECEIPT_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'}`
-                        : s.type === 'consume'
-                            ? `FEED CONSUMPTION`
-                            : `STOCK_BILL - ${s.customerId?.shopName || s.customerId?.ownerName || 'Customer'} (${s.birds || 0} birds)`,
+                    description: vchDesc,
+                    narration: s.narration || s.notes || '',
                     debit,
                     credit,
                     source: 'stock'
@@ -1413,37 +1681,29 @@ export const getLedgerTransactions = async (req, res, next) => {
             }
         });
 
-        // Calculate Opening Balance if StartDate is present
-        // Use Ledger's opening balance + sum of all previous transactions
-
+        // 4. Calculate Opening Balance
         let openingBalance = ledger.openingBalance || 0;
-        let openingType = ledger.openingBalanceType || 'debit';
+        let openingType = ledger.openingBalanceType || (subjectType === 'customer' ? 'debit' : 'credit');
         let signedOpening = toSignedValue(openingBalance, openingType);
 
         if (queryStartDate) {
-            // Find transactions BEFORE queryStartDate
             const preVoucherQuery = {
                 isActive: true,
                 date: { $lt: queryStartDate },
-                $or: [
-                    { 'entries.account': ledger.name },
-                    { account: id },
-                    { 'parties.partyId': id }
-                ]
+                $or: voucherConditions
             };
 
             const preTripQuery = {
                 date: { $lt: queryStartDate },
-                $or: [
-                    { 'sales.cashLedger': id },
-                    { 'sales.onlineLedger': id }
-                ]
+                $or: tripConditions
             };
 
             const stackQuery = {
                 date: { $lt: queryStartDate },
                 $or: [
                     { 'ledgerId': id },
+                    { 'vendorId': id },
+                    { 'customerId': id },
                     { 'cashLedgerId': id },
                     { 'onlineLedgerId': id },
                     { 'expenseLedgerId': id }
@@ -1451,40 +1711,48 @@ export const getLedgerTransactions = async (req, res, next) => {
             };
 
             const [preVouchers, preTrips, preStocks] = await Promise.all([
-                Voucher.find(preVoucherQuery).lean().select('voucherType date account parties entries'),
-                Trip.find(preTripQuery).lean().select('sales date'),
-                InventoryStock.find(stackQuery).lean().select('cashLedgerId onlineLedgerId cashPaid onlinePaid type')
+                Voucher.find(preVoucherQuery).lean().select('voucherType date account parties entries isMultiPartyDisplay createdAt'),
+                Trip.find(preTripQuery).lean().select('sales purchases diesel date createdAt'),
+                InventoryStock.find(stackQuery).lean().select('ledgerId vendorId customerId inventoryType type amount discount cashLedgerId onlineLedgerId cashPaid onlinePaid expenseLedgerId')
             ]);
 
             preVouchers.forEach(v => {
                 let debit = 0;
                 let credit = 0;
-                if (v.voucherType === 'Payment' || v.voucherType === 'Receipt') {
+                const isPaymentReceipt = v.voucherType === 'Payment' || v.voucherType === 'Receipt';
+                if (isPaymentReceipt) {
                     if (v.account && getObjectIdStr(v.account) === id.toString()) {
-                        const total = v.parties.reduce((s, p) => s + (p.amount || 0), 0);
+                        const total = (v.parties || []).reduce((s, p) => s + (p.amount || 0), 0);
                         if (v.voucherType === 'Payment') credit += total;
                         else debit += total;
                     }
                     if (v.parties) {
                         v.parties.forEach(p => {
                             if (p.partyId && getObjectIdStr(p.partyId) === id.toString()) {
-                                if (v.voucherType === 'Payment') debit += p.amount || 0;
-                                else credit += p.amount || 0;
+                                const pAmount = p.amount || 0;
+                                if (subjectType === 'customer') {
+                                    if (v.voucherType === 'Receipt') credit += pAmount;
+                                    else debit += pAmount;
+                                } else {
+                                    if (v.voucherType === 'Payment') debit += pAmount;
+                                    else credit += pAmount;
+                                }
                             }
                         });
                     }
-                    // Fallback: match via entries name if ObjectId match missed
                     if (debit === 0 && credit === 0 && v.entries && v.entries.length > 0) {
                         v.entries.forEach(e => {
-                            if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                            const accName = e.account ? e.account.toLowerCase().trim() : '';
+                            if (nameMatches.some(nm => nm && nm.toLowerCase().trim() === accName)) {
                                 debit += e.debitAmount || 0;
                                 credit += e.creditAmount || 0;
                             }
                         });
                     }
                 } else {
-                    v.entries.forEach(e => {
-                        if (e.account && e.account.toLowerCase() === ledger.name.toLowerCase()) {
+                    (v.entries || []).forEach(e => {
+                        const accName = e.account ? e.account.toLowerCase().trim() : '';
+                        if (nameMatches.some(nm => nm && nm.toLowerCase().trim() === accName) || (e.account && e.account.toString() === id.toString())) {
                             debit += e.debitAmount || 0;
                             credit += e.creditAmount || 0;
                         }
@@ -1496,36 +1764,60 @@ export const getLedgerTransactions = async (req, res, next) => {
             preTrips.forEach(t => {
                 if (t.sales) {
                     t.sales.forEach(s => {
-                        let debit = 0;
-                        if (s.cashLedger && s.cashLedger.toString() === id.toString()) debit += s.cashPaid || 0;
-                        if (s.onlineLedger && s.onlineLedger.toString() === id.toString()) debit += s.onlinePaid || 0;
-                        signedOpening += debit;
+                        if (s.client && getObjectIdStr(s.client) === id.toString()) {
+                            signedOpening += (s.amount || 0);
+                            signedOpening -= ((s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0));
+                        }
+                        if (s.cashLedger && getObjectIdStr(s.cashLedger) === id.toString()) signedOpening += (s.cashPaid || 0);
+                        if (s.onlineLedger && getObjectIdStr(s.onlineLedger) === id.toString()) signedOpening += (s.onlinePaid || 0);
+                    });
+                }
+                if (t.purchases) {
+                    t.purchases.forEach(p => {
+                        if (p.supplier && getObjectIdStr(p.supplier) === id.toString()) {
+                            signedOpening -= (p.amount || 0);
+                        }
+                    });
+                }
+                if (t.diesel && t.diesel.stations) {
+                    t.diesel.stations.forEach(s => {
+                        const stationMatch = (s.dieselStation && getObjectIdStr(s.dieselStation) === id.toString()) ||
+                            (subjectType === 'dieselStation' && s.stationName && s.stationName.toLowerCase().trim() === subjectNameStr);
+                        if (stationMatch) {
+                            signedOpening -= (s.amount || 0);
+                        }
+                        if (s.paymentLedger && getObjectIdStr(s.paymentLedger) === id.toString()) {
+                            signedOpening -= (s.amount || 0);
+                        }
                     });
                 }
             });
 
             preStocks.forEach(s => {
                 let debit = 0;
+                let credit = 0;
                 const sLedgerId = s.ledgerId?._id || s.ledgerId;
-                if (sLedgerId && sLedgerId.toString() === id.toString()) {
+                const sVendorId = s.vendorId?._id || s.vendorId;
+                const sCustomerId = s.customerId?._id || s.customerId;
+                if ((sLedgerId && getObjectIdStr(sLedgerId) === id.toString()) ||
+                    (sVendorId && getObjectIdStr(sVendorId) === id.toString()) ||
+                    (sCustomerId && getObjectIdStr(sCustomerId) === id.toString())) {
                     if (s.type === 'purchase' || s.inventoryType === 'feed') {
-                        let c = s.amount || 0;
-                        let d = (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
-                        signedOpening += (d - c);
+                        credit += s.amount || 0;
+                        debit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
                     } else if (s.type === 'sale') {
-                        let d = s.amount || 0;
-                        let c = (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
-                        signedOpening += (d - c);
+                        debit += s.amount || 0;
+                        credit += (s.cashPaid || 0) + (s.onlinePaid || 0) + (s.discount || 0);
                     }
                 }
-                if (s.cashLedgerId && s.cashLedgerId.toString() === id.toString()) debit += s.cashPaid || 0;
-                if (s.onlineLedgerId && s.onlineLedgerId.toString() === id.toString()) debit += s.onlinePaid || 0;
-                if (s.expenseLedgerId && s.expenseLedgerId.toString() === id.toString()) debit += s.amount || 0; // Expense is Debit
-                signedOpening += debit; // Sales/Receipts receiving money into Cash/Bank are debits. Expenses are Debits.
+                if (s.cashLedgerId && getObjectIdStr(s.cashLedgerId) === id.toString()) debit += s.cashPaid || 0;
+                if (s.onlineLedgerId && getObjectIdStr(s.onlineLedgerId) === id.toString()) debit += s.onlinePaid || 0;
+                if (s.expenseLedgerId && getObjectIdStr(s.expenseLedgerId) === id.toString()) debit += s.amount || 0;
+                signedOpening += (debit - credit);
             });
         }
 
-        // Sort transactions chronologically by Date and entry creation time
+        // 5. Sort transactions chronologically
         transactions.sort((a, b) => {
             const timeA = new Date(a.date || a.createdAt || 0).getTime();
             const timeB = new Date(b.date || b.createdAt || 0).getTime();
@@ -1535,7 +1827,7 @@ export const getLedgerTransactions = async (req, res, next) => {
             return createA - createB;
         });
 
-        // Calculate Running Balance
+        // 6. Calculate Running Balance
         let currentBalance = signedOpening;
         transactions = transactions.map(t => {
             currentBalance += (t.debit - t.credit);
@@ -1547,7 +1839,7 @@ export const getLedgerTransactions = async (req, res, next) => {
             };
         });
 
-        // Final Opening Balance for Display (at queryStartDate)
+        // 7. Final Opening Balance for Display (at queryStartDate)
         const displayOpening = fromSignedValue(signedOpening);
 
         // Add Opening Balance Entry
@@ -1566,8 +1858,8 @@ export const getLedgerTransactions = async (req, res, next) => {
         successResponse(res, "Ledger transactions retrieved", 200, {
             ledger: {
                 _id: ledger._id,
-                name: ledger.name,
-                group: ledger.group
+                name: subjectName,
+                group: ledgerGroup
             },
             openingBalance: displayOpening.amount,
             openingBalanceType: displayOpening.type,

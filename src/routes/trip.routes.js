@@ -34,8 +34,9 @@ router.delete('/:id/diesel/:index', authenticateToken, authorize(['admin', 'supe
 router.delete('/:id/expenses/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteExpense);
 router.delete('/:id/losses/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteLoss);
 router.delete('/:id/transfer/:index', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.deleteTransfer);
-router.put('/:id/death-birds', authenticateToken, authorize(['supervisor']), tripController.addDeathBirds);
+router.put('/:id/death-birds', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.addDeathBirds);
 router.put('/:id/complete', authenticateToken, authorize(['admin', 'superadmin']), tripController.completeTrip);
+router.put('/:id/lock', authenticateToken, authorize(['admin', 'superadmin']), tripController.toggleTripLock);
 router.put('/:id/complete-details', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.completeTripDetails);
 router.put('/:id/status', authenticateToken, authorize(['admin', 'superadmin', 'supervisor']), tripController.updateTripStatus);
 

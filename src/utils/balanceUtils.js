@@ -115,7 +115,78 @@ export const populateVoucherParties = async (vouchers) => {
     const Customer = mongoose.model('Customer');
     const Vendor = mongoose.model('Vendor');
     const Ledger = mongoose.model('Ledger');
+    const DieselStation = mongoose.model('DieselStation');
 
+    // Collect all unique party IDs by type
+    const customerIds = new Set();
+    const vendorIds = new Set();
+    const ledgerIds = new Set();
+    const stationIds = new Set();
+    const allIds = new Set();
+
+    for (const v of voucherList) {
+        if (v && v.parties && v.parties.length > 0) {
+            for (const p of v.parties) {
+                if (p.partyId) {
+                    const partyIdStr = (typeof p.partyId === 'object' && p.partyId?._id) 
+                        ? p.partyId._id.toString() 
+                        : (typeof p.partyId === 'object' && p.partyId?.id)
+                            ? p.partyId.id.toString()
+                            : p.partyId.toString();
+
+                    allIds.add(partyIdStr);
+                    if (p.partyType === 'customer') customerIds.add(partyIdStr);
+                    else if (p.partyType === 'vendor') vendorIds.add(partyIdStr);
+                    else if (p.partyType === 'ledger') ledgerIds.add(partyIdStr);
+                    else if (p.partyType === 'dieselStation') stationIds.add(partyIdStr);
+                    else {
+                        customerIds.add(partyIdStr);
+                        vendorIds.add(partyIdStr);
+                        ledgerIds.add(partyIdStr);
+                        stationIds.add(partyIdStr);
+                    }
+                }
+            }
+        }
+    }
+
+    if (allIds.size === 0) return vouchers;
+
+    // Batch query all models concurrently
+    const [customers, vendors, ledgers, stations] = await Promise.all([
+        customerIds.size ? Customer.find({ _id: { $in: Array.from(customerIds) } }).select('shopName ownerName').lean() : [],
+        vendorIds.size ? Vendor.find({ _id: { $in: Array.from(vendorIds) } }).select('vendorName').lean() : [],
+        ledgerIds.size ? Ledger.find({ _id: { $in: Array.from(ledgerIds) } }).select('name').lean() : [],
+        stationIds.size ? DieselStation.find({ _id: { $in: Array.from(stationIds) } }).select('name').lean() : []
+    ]);
+
+    const customerMap = new Map(customers.map(c => [c._id.toString(), c]));
+    const vendorMap = new Map(vendors.map(v => [v._id.toString(), v]));
+    const ledgerMap = new Map(ledgers.map(l => [l._id.toString(), l]));
+    const stationMap = new Map(stations.map(s => [s._id.toString(), s]));
+
+    // Check if any IDs were not resolved by their declared type, and fetch fallbacks in batch if needed
+    const unresolvedIds = [];
+    for (const idStr of allIds) {
+        if (!customerMap.has(idStr) && !vendorMap.has(idStr) && !ledgerMap.has(idStr) && !stationMap.has(idStr)) {
+            unresolvedIds.push(idStr);
+        }
+    }
+
+    if (unresolvedIds.length > 0) {
+        const [fbCust, fbVend, fbLedg, fbStat] = await Promise.all([
+            Customer.find({ _id: { $in: unresolvedIds } }).select('shopName ownerName').lean(),
+            Vendor.find({ _id: { $in: unresolvedIds } }).select('vendorName').lean(),
+            Ledger.find({ _id: { $in: unresolvedIds } }).select('name').lean(),
+            DieselStation.find({ _id: { $in: unresolvedIds } }).select('name').lean()
+        ]);
+        fbCust.forEach(c => customerMap.set(c._id.toString(), c));
+        fbVend.forEach(v => vendorMap.set(v._id.toString(), v));
+        fbLedg.forEach(l => ledgerMap.set(l._id.toString(), l));
+        fbStat.forEach(s => stationMap.set(s._id.toString(), s));
+    }
+
+    // Populate each party using in-memory maps
     for (const v of voucherList) {
         if (v && v.parties && v.parties.length > 0) {
             for (const p of v.parties) {
@@ -129,33 +200,25 @@ export const populateVoucherParties = async (vouchers) => {
                     let partyDoc = null;
                     let foundType = p.partyType;
 
-                    if (foundType === 'customer') {
-                        partyDoc = await Customer.findById(partyIdStr).select('shopName ownerName').lean();
-                    } else if (foundType === 'vendor') {
-                        partyDoc = await Vendor.findById(partyIdStr).select('vendorName').lean();
-                    } else if (foundType === 'ledger') {
-                        partyDoc = await Ledger.findById(partyIdStr).select('name').lean();
-                    } else if (foundType === 'dieselStation') {
-                        const DieselStation = mongoose.model('DieselStation');
-                        partyDoc = await DieselStation.findById(partyIdStr).select('name').lean();
-                    }
+                    if (foundType === 'customer') partyDoc = customerMap.get(partyIdStr);
+                    else if (foundType === 'vendor') partyDoc = vendorMap.get(partyIdStr);
+                    else if (foundType === 'ledger') partyDoc = ledgerMap.get(partyIdStr);
+                    else if (foundType === 'dieselStation') partyDoc = stationMap.get(partyIdStr);
 
-                    // Fallback search across all models if partyType was missing or invalid
                     if (!partyDoc) {
-                        partyDoc = await Customer.findById(partyIdStr).select('shopName ownerName').lean();
+                        partyDoc = customerMap.get(partyIdStr);
                         if (partyDoc) foundType = 'customer';
                     }
                     if (!partyDoc) {
-                        partyDoc = await Vendor.findById(partyIdStr).select('vendorName').lean();
+                        partyDoc = vendorMap.get(partyIdStr);
                         if (partyDoc) foundType = 'vendor';
                     }
                     if (!partyDoc) {
-                        partyDoc = await Ledger.findById(partyIdStr).select('name').lean();
+                        partyDoc = ledgerMap.get(partyIdStr);
                         if (partyDoc) foundType = 'ledger';
                     }
                     if (!partyDoc) {
-                        const DieselStation = mongoose.model('DieselStation');
-                        partyDoc = await DieselStation.findById(partyIdStr).select('name').lean();
+                        partyDoc = stationMap.get(partyIdStr);
                         if (partyDoc) foundType = 'dieselStation';
                     }
 

@@ -64,7 +64,8 @@ export const getVendors = async (req, res, next) => {
     try {
         const vendors = await Vendor.find({ isActive: true })
             .populate('group', 'name type slug')
-            .sort({ vendorName: 1 });
+            .sort({ vendorName: 1 })
+            .lean();
         successResponse(res, "vendors", 200, vendors)
     } catch (error) {
         next(error);
@@ -75,7 +76,8 @@ export const getVendorById = async (req, res, next) => {
     const { id } = req?.params;
     try {
         const vendor = await Vendor.findOne({ _id: id, isActive: true })
-            .populate('group', 'name type slug');
+            .populate('group', 'name type slug')
+            .lean();
         successResponse(res, "vendor", 200, vendor)
     } catch (error) {
         next(error);
@@ -234,7 +236,7 @@ export const getVendorLedger = async (req, res, next) => {
         const trips = await Trip.find(tripQuery)
             .populate('vehicle', 'vehicleNumber')
             .populate('supervisor', 'name')
-            .populate('purchases.supplier', '_id vendorName')
+            .populate('purchases.supplier', '_id vendorName companyName')
             .lean();
 
 

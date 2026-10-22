@@ -143,7 +143,8 @@ export const getIndirectSales = async (req, res, next) => {
                 .populate('vendor', 'vendorName companyName')
                 .sort({ date: -1, createdAt: -1 })
                 .skip((numericPage - 1) * numericLimit)
-                .limit(numericLimit),
+                .limit(numericLimit)
+                .lean(),
             IndirectSale.countDocuments(filter),
             IndirectSale.aggregate([
                 { $match: filter },
@@ -198,7 +199,8 @@ export const getIndirectSaleById = async (req, res, next) => {
             .populate('customer', 'shopName ownerName contact place')
             .populate('vendor', 'vendorName companyName contactNumber')
             .populate('createdBy', 'name')
-            .populate('updatedBy', 'name');
+            .populate('updatedBy', 'name')
+            .lean();
 
         if (!record || !record.isActive) {
             throw new AppError('Indirect record not found', 404);
